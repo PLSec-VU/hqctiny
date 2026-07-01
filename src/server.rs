@@ -6,7 +6,7 @@ use crate::math::segmentation::{evaluate_at_generator, split};
 use crate::traits::*;
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
 };
 
 pub struct Server<SCHEME, SStore, E, Time>
@@ -49,19 +49,17 @@ where
     }
 
     fn encrypt_cookie(&self, plaintext: &[u8], timestamp: u64) -> Result<Vec<u8>> {
-        let mut derived_key = [0u8; 32];
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&self.server_key);
-        hasher.update(&timestamp.to_le_bytes());
-        let mut xof = hasher.finalize_xof();
-        xof.fill(&mut derived_key);
-
         let mut nonce = [0u8; 24];
         self.entropy_provider.random_bytes(&mut nonce);
 
-        let cipher = XChaCha20Poly1305::new(&derived_key.into());
+        let cipher = XChaCha20Poly1305::new(&self.server_key.into());
+        let aad = timestamp.to_le_bytes();
+        let payload = Payload {
+            msg: plaintext,
+            aad: &aad,
+        };
         let ct = cipher
-            .encrypt(XNonce::from_slice(&nonce), plaintext)
+            .encrypt(XNonce::from_slice(&nonce), payload)
             .map_err(|_| Error::EncryptionError)?;
 
         let mut cookie = vec![0u8; 24 + ct.len()];
@@ -75,17 +73,15 @@ where
             return Err(Error::InvalidCookieLength);
         }
 
-        let mut derived_key = [0u8; 32];
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&self.server_key);
-        hasher.update(&timestamp.to_le_bytes());
-        let mut xof = hasher.finalize_xof();
-        xof.fill(&mut derived_key);
-
         let (nonce_bytes, ct_bytes) = cookie.split_at(24);
-        let cipher = XChaCha20Poly1305::new(&derived_key.into());
+        let cipher = XChaCha20Poly1305::new(&self.server_key.into());
+        let aad = timestamp.to_le_bytes();
+        let payload = Payload {
+            msg: ct_bytes,
+            aad: &aad,
+        };
         let pt = cipher
-            .decrypt(XNonce::from_slice(nonce_bytes), ct_bytes)
+            .decrypt(XNonce::from_slice(nonce_bytes), payload)
             .map_err(|_| Error::DecryptionError)?;
         Ok(pt)
     }

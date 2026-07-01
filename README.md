@@ -28,8 +28,7 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
                                                 2. Generate random m (PARAM_SECURITY_BYTES) and salt (16 B).
                                                 3. K_session, theta <- derive_shared_secret(m, salt, hash_ek_kem).
                                                 4. OVERWRITE RAM: table[hash_ek_kem] = {K_session, timestamp}.
-                                                5. Derive per-session key = KDF(ServerKey, timestamp).
-                                                   Encrypt Cookie = AEAD_{derived_key}(theta || m) with a random 24‑byte nonce.
+                                                5. Encrypt Cookie = AEAD_{ServerKey}(theta || m) with a random 24‑byte nonce and timestamp as Associated Authenticated Data (AAD).
 
      [Packet 2: Handshake Response] 
      <--------------------------------------------------------------------
@@ -52,8 +51,7 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       Header encodes direction (c→s), point_type (U/V), and point_index in a single byte.
 
                                                    1. TTL CHECK: If (Current_Time - Handshake_Timestamp) > timeout, DROP.
-                                                   2. Derive per-session encryption key = KDF(ServerKey, Handshake_Timestamp).
-                                                      Decrypt Cookie → extract theta and m.
+                                                   2. Decrypt Cookie using ServerKey and Handshake_Timestamp as Associated Authenticated Data (AAD) → extract theta and m.
                                                    3. Gen random quotient-blinding mask.
                                                    For Type u:
                                                     4. Load r1(x_i), r2(x_i) from theta, m.
