@@ -13,9 +13,9 @@ pub trait HqcScheme {
     const SALT_BYTES: usize = 16;
     const SEED_BYTES: usize = 32;
 
-    type PublicKeyParameters;
-    type SharedSecretParameters;
-    type MessageParameters;
+    type PublicKeyParameters: HqcPublicKeyParameters;
+    type SharedSecretParameters: HqcSharedSecretParameters;
+    type MessageParameters: HqcMessageParameters;
 
     /// Seeds the internal global PRNG state.
     ///
@@ -84,7 +84,7 @@ pub trait HqcScheme {
     ///
     /// # Arguments
     /// * `theta` - Input seed byte array. Must have length `Self::SEED_BYTES` (32 bytes).
-    fn partial_message_encaps(theta: &[u8]) -> Self::MessageParameters;
+    fn partial_message_encaps(m: &[u8], theta: &[u8]) -> Self::MessageParameters;
 
     /// Performs the PKE encryption step to reconstruct ciphertext components `u` and `v`.
     ///
@@ -101,12 +101,8 @@ pub trait HqcScheme {
     fn encrypt_pke(
         u: &mut [u64],
         v: &mut [u64],
-        m: &[u8],
-        r1: &[u64],
-        h: &[u64],
-        r2: &[u64],
-        s: &[u64],
-        e: &[u64],
+        pk_params: &Self::PublicKeyParameters,
+        msg_params: &Self::MessageParameters,
     );
 
     /// Serializes KEM ciphertext components `u`, `v`, and `salt` into a byte array.
@@ -136,6 +132,7 @@ pub trait HqcSharedSecretParameters {
 }
 
 pub trait HqcMessageParameters {
+    fn m(&self) -> &[u8];
     fn r1(&self) -> &[u64];
     fn r2(&self) -> &[u64];
     fn e(&self) -> &[u64];
@@ -165,6 +162,9 @@ macro_rules! define_hqc_variant {
         $param_omega_e:expr
     ) => {
         pub mod $mod_name {
+            #[cfg(test)]
+            use crate::hqc::{HqcPublicKeyParameters, HqcMessageParameters};
+
             pub const PUBLIC_KEY_BYTES: usize = $pk_bytes;
             pub const SECRET_KEY_BYTES: usize = $sk_bytes;
             pub const SHARED_SECRET_BYTES: usize = $ss_bytes;
@@ -212,12 +212,16 @@ macro_rules! define_hqc_variant {
             }
 
             pub struct MessageParameters {
+                pub m: [u8; PARAM_SECURITY_BYTES],
                 pub r1: [u64; VEC_N_SIZE_64],
                 pub r2: [u64; VEC_N_SIZE_64],
                 pub e: [u64; VEC_N_SIZE_64],
             }
 
             impl crate::hqc::HqcMessageParameters for MessageParameters {
+                fn m(&self) -> &[u8] {
+                    &self.m
+                }
                 fn r1(&self) -> &[u64] {
                     &self.r1
                 }
@@ -398,7 +402,8 @@ macro_rules! define_hqc_variant {
                     SharedSecretParameters { K, theta }
                 }
 
-                fn partial_message_encaps(theta: &[u8]) -> Self::MessageParameters {
+                fn partial_message_encaps(m: &[u8], theta: &[u8]) -> Self::MessageParameters {
+                    assert_eq!(m.len(), PARAM_SECURITY_BYTES);
                     assert_eq!(theta.len(), SEED_BYTES);
                     let mut theta_xof_ctx = crate::hqc::shake256_xof_ctx { ctx: [0; 26] };
                     unsafe {
@@ -415,7 +420,10 @@ macro_rules! define_hqc_variant {
                         c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r1.as_mut_ptr(), PARAM_OMEGA_R);
                     }
 
-                    MessageParameters { r1, r2, e }
+                    let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
+                    m_arr.copy_from_slice(m);
+
+                    MessageParameters { m: m_arr, r1, r2, e }
                 }
 
 
@@ -423,13 +431,16 @@ macro_rules! define_hqc_variant {
                 fn encrypt_pke(
                     u: &mut [u64],
                     v: &mut [u64],
-                    m: &[u8],
-                    r1: &[u64],
-                    h: &[u64],
-                    r2: &[u64],
-                    s: &[u64],
-                    e: &[u64],
+                    pk_params: &Self::PublicKeyParameters,
+                    msg_params: &Self::MessageParameters,
                 ) {
+                    let m = msg_params.m();
+                    let r1 = msg_params.r1();
+                    let h = pk_params.h();
+                    let r2 = msg_params.r2();
+                    let s = pk_params.s();
+                    let e = msg_params.e();
+
                     assert_eq!(u.len(), VEC_N_SIZE_64);
                     assert_eq!(v.len(), VEC_N_SIZE_64);
                     assert_eq!(m.len(), PARAM_SECURITY_BYTES);
@@ -524,9 +535,10 @@ macro_rules! define_hqc_variant {
 
             /// Computes sampled error/randomness vectors using the encryption seed `theta`.
             pub fn partial_message_encaps(
+                m: &[u8; PARAM_SECURITY_BYTES],
                 theta: &[u8; SEED_BYTES],
             ) -> MessageParameters {
-                <$struct_name as crate::hqc::HqcScheme>::partial_message_encaps(theta)
+                <$struct_name as crate::hqc::HqcScheme>::partial_message_encaps(m, theta)
             }
         }
     };
@@ -590,7 +602,7 @@ mod tests {
             let ss_params = T::derive_shared_secret(&m, &salt, pk_params.hash_ek_kem());
 
             // 3. Process message parameters (sampling vectors using theta directly)
-            let msg_params = T::partial_message_encaps(ss_params.theta());
+            let msg_params = T::partial_message_encaps(&m, ss_params.theta());
 
             // Reconstruct PKE ciphertext components u and v
             let mut u = vec![0u64; T::VEC_N_SIZE_64];
@@ -598,12 +610,8 @@ mod tests {
             T::encrypt_pke(
                 &mut u,
                 &mut v,
-                &m,
-                msg_params.r1(),
-                pk_params.h(),
-                msg_params.r2(),
-                pk_params.s(),
-                msg_params.e(),
+                &pk_params,
+                &msg_params,
             );
 
             // Serialize KEM ciphertext
