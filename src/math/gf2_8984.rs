@@ -271,9 +271,9 @@ fn schoolbook_mul(a: &[u64], b: &[u64], out: &mut [u64]) {
 /// Reduce a polynomial product (degree < 2*DEGREE) modulo
 /// x^8984 + x^9 + x^8 + x^6 + 1.
 ///
-/// Constant‑time: iterates over every bit position unconditionally.
+/// Constant‑time: processes word-by-word.
 fn reduce(poly: &[u64], result: &mut Gf2_8984) {
-    const RED_OFFSETS: [u64; 4] = [9, 8, 6, 0];
+    const RED_OFFSETS: [usize; 4] = [9, 8, 6, 0];
 
     let min_len = GF28984_NUM_U64 + 2;
     let len = poly.len().max(min_len);
@@ -285,32 +285,19 @@ fn reduce(poly: &[u64], result: &mut Gf2_8984) {
     let start_word = DEGREE / 64; // 140
     let start_bit = DEGREE % 64; // 24
 
-    // Two passes always suffice for degree < 2·DEGREE.
-    let max_passes = 2;
-    for _pass in 0..max_passes {
-        // Iterate over every high word / bit unconditionally.
-        for wi in (start_word..len).rev() {
-            let w = buf[wi];
-            if wi == start_word {
-                buf[wi] = w & ((1u64 << start_bit) - 1); // keep low 24 bits
-            } else {
-                buf[wi] = 0;
+    for wi in (start_word..len).rev() {
+        let w = buf[wi];
+        if wi == start_word {
+            let w_high = w >> start_bit;
+            buf[wi] = w & ((1u64 << start_bit) - 1); // keep low 24 bits
+            for &off in &RED_OFFSETS {
+                xor_word_at_bit(&mut buf, off, w_high);
             }
-
-            // Check every bit position in this word — unconditional.
-            let first_bi: usize = if wi == start_word { start_bit } else { 0 };
-            for bi in first_bi..64 {
-                let bit = (w >> bi) & 1;
-                let i = wi * 64 + bi;
-                let base = i - DEGREE;
-                for &off in &RED_OFFSETS {
-                    let pos = base as u64 + off;
-                    let pw = (pos / 64) as usize;
-                    let pb = (pos % 64) as usize;
-                    if pw < len {
-                        buf[pw] ^= bit << pb;
-                    }
-                }
+        } else {
+            buf[wi] = 0;
+            let base_bit = wi * 64 - DEGREE;
+            for &off in &RED_OFFSETS {
+                xor_word_at_bit(&mut buf, base_bit + off, w);
             }
         }
     }
@@ -319,6 +306,18 @@ fn reduce(poly: &[u64], result: &mut Gf2_8984) {
     result.data.fill(0);
     result.data[..copy_len].copy_from_slice(&buf[..copy_len]);
     result.normalize();
+}
+
+#[inline(always)]
+fn xor_word_at_bit(buf: &mut [u64], bit_pos: usize, w: u64) {
+    let ws = bit_pos / 64;
+    let bs = bit_pos % 64;
+    if ws < buf.len() {
+        buf[ws] ^= w << bs;
+    }
+    if bs > 0 && ws + 1 < buf.len() {
+        buf[ws + 1] ^= w >> (64 - bs);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -8,31 +8,54 @@ use super::gf2_8984::{Gf2_8984, DEGREE, GF28984_NUM_U64};
 /// Block size: half the field degree.
 pub const W: usize = DEGREE / 2; // 4492
 
+#[inline(always)]
+fn get_64_bits(poly: &[u64], bit_idx: usize) -> u64 {
+    let word_idx = bit_idx / 64;
+    let shift = bit_idx % 64;
+    if word_idx >= poly.len() {
+        return 0;
+    }
+    let mut val = poly[word_idx] >> shift;
+    if shift > 0 && word_idx + 1 < poly.len() {
+        val |= poly[word_idx + 1] << (64 - shift);
+    }
+    val
+}
+
 /// Split an F2[x] polynomial into GF(2^8984) elements.
 pub fn split(poly: &[u64]) -> Vec<Gf2_8984> {
     let total_bits = poly.len() * 64;
     let num_blocks = total_bits.div_ceil(W).max(1);
     let mut out = vec![Gf2_8984::zero(); num_blocks];
 
-    for (k, slot) in out.iter_mut().enumerate() {
+    for k in 0..num_blocks {
         let mut data = [0u64; GF28984_NUM_U64];
         let block_start_bit = k * W;
-        for j in 0..W {
-            let bit_pos = block_start_bit + j;
-            let word_idx = bit_pos / 64;
-            let bit_idx = bit_pos % 64;
-            let bit = if word_idx < poly.len() {
-                (poly[word_idx] >> bit_idx) & 1
-            } else {
-                0
-            };
-            let out_word = j / 64;
-            let out_bit = j % 64;
-            data[out_word] ^= bit << out_bit;
+
+        // 4492 bits = 70 words of 64 bits (4480 bits) + 1 word of 12 bits
+        for w_out in 0..70 {
+            let bit_idx = block_start_bit + w_out * 64;
+            data[w_out] = get_64_bits(poly, bit_idx);
         }
-        *slot = Gf2_8984::new(data);
+        let bit_idx = block_start_bit + 70 * 64;
+        let last_word = get_64_bits(poly, bit_idx);
+        data[70] = last_word & ((1u64 << 12) - 1);
+
+        out[k] = Gf2_8984::new(data);
     }
     out
+}
+
+#[inline(always)]
+fn xor_64_bits(out: &mut [u64], bit_idx: usize, val: u64) {
+    let word_idx = bit_idx / 64;
+    let shift = bit_idx % 64;
+    if word_idx < out.len() {
+        out[word_idx] ^= val << shift;
+    }
+    if shift > 0 && word_idx + 1 < out.len() {
+        out[word_idx + 1] ^= val >> (64 - shift);
+    }
 }
 
 /// Combine a slice of GF(2^8984) elements back into an F2[x] polynomial.
@@ -47,14 +70,9 @@ pub fn combine(blocks: &[Gf2_8984]) -> Vec<u64> {
 
     for (k, elem) in blocks.iter().enumerate() {
         let block_start_bit = k * W;
-        for j in 0..DEGREE {
-            let in_word = j / 64;
-            let in_bit = j % 64;
-            let bit = (elem.data[in_word] >> in_bit) & 1;
-            let bit_pos = block_start_bit + j;
-            let out_word = bit_pos / 64;
-            let out_bit = bit_pos % 64;
-            out[out_word] ^= bit << out_bit;
+        for w_in in 0..GF28984_NUM_U64 {
+            let val = elem.data[w_in];
+            xor_64_bits(&mut out, block_start_bit + w_in * 64, val);
         }
     }
     out
