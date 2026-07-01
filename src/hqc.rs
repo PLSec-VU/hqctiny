@@ -19,11 +19,20 @@ pub trait HqcScheme {
 
     /// Seeds the internal global PRNG state.
     ///
+    /// # Arguments
+    /// * `entropy` - High-entropy seed input (usually 48 bytes).
+    ///
     /// # Safety
     /// This function mutates global state and is not thread-safe.
     unsafe fn prng_init(entropy: &[u8]);
 
-    /// Generates a keypair.
+    /// Generates a public and secret keypair.
+    ///
+    /// Returns `0` on success.
+    ///
+    /// # Arguments
+    /// * `pk` - Output buffer where the public key will be written. Must have length `Self::PUBLIC_KEY_BYTES`.
+    /// * `sk` - Output buffer where the secret key will be written. Must have length `Self::SECRET_KEY_BYTES`.
     ///
     /// # Safety
     /// `prng_init` must have been called prior to calling this function.
@@ -31,18 +40,40 @@ pub trait HqcScheme {
 
     /// Encapsulates a shared secret.
     ///
+    /// Returns `0` on success.
+    ///
+    /// # Arguments
+    /// * `ct` - Output buffer where the ciphertext will be written. Must have length `Self::CIPHERTEXT_BYTES`.
+    /// * `ss` - Output buffer where the shared secret will be written. Must have length `Self::SHARED_SECRET_BYTES`.
+    /// * `pk` - Input public key buffer. Must have length `Self::PUBLIC_KEY_BYTES`.
+    ///
     /// # Safety
     /// `prng_init` must have been called prior to calling this function.
     #[cfg(test)]
     unsafe fn enc(ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32;
 
     /// Decapsulates a ciphertext.
+    ///
+    /// Returns `0` on success.
+    ///
+    /// # Arguments
+    /// * `ss` - Output buffer where the shared secret will be written. Must have length `Self::SHARED_SECRET_BYTES`.
+    /// * `ct` - Input ciphertext buffer. Must have length `Self::CIPHERTEXT_BYTES`.
+    /// * `sk` - Input secret key buffer. Must have length `Self::SECRET_KEY_BYTES`.
     fn dec(ss: &mut [u8], ct: &[u8], sk: &[u8]) -> i32;
 
     /// Computes public key parameters `h`, `s`, and its hash.
+    ///
+    /// # Arguments
+    /// * `ek` - Input public/encryption key buffer. Must have length `Self::PUBLIC_KEY_BYTES`.
     fn partial_public_key_encaps(ek: &[u8]) -> Self::PublicKeyParameters;
 
     /// Derives the shared secret key `K` and encryption seed `theta`.
+    ///
+    /// # Arguments
+    /// * `m` - Input message byte array. Must have length `Self::PARAM_SECURITY_BYTES`.
+    /// * `salt` - Input salt byte array. Must have length `Self::SALT_BYTES` (16 bytes).
+    /// * `hash_ek_kem` - Input hash of the public key. Must have length `Self::SEED_BYTES` (32 bytes).
     fn derive_shared_secret(
         m: &[u8],
         salt: &[u8],
@@ -50,9 +81,22 @@ pub trait HqcScheme {
     ) -> Self::SharedSecretParameters;
 
     /// Computes sampled error/randomness vectors using the encryption seed `theta`.
+    ///
+    /// # Arguments
+    /// * `theta` - Input seed byte array. Must have length `Self::SEED_BYTES` (32 bytes).
     fn partial_message_encaps(theta: &[u8]) -> Self::MessageParameters;
 
     /// Performs the PKE encryption step to reconstruct ciphertext components `u` and `v`.
+    ///
+    /// # Arguments
+    /// * `u` - Output buffer for PKE component `u`. Must have length `Self::VEC_N_SIZE_64` words.
+    /// * `v` - Output buffer for PKE component `v`. Must have length `Self::VEC_N_SIZE_64` words.
+    /// * `m` - Input message byte array. Must have length `Self::PARAM_SECURITY_BYTES`.
+    /// * `r1` - Randomness vector `r1` from message parameters. Must have length `Self::VEC_N_SIZE_64` words.
+    /// * `h` - Parameter vector `h` from public key parameters. Must have length `Self::VEC_N_SIZE_64` words.
+    /// * `r2` - Randomness vector `r2` from message parameters. Must have length `Self::VEC_N_SIZE_64` words.
+    /// * `s` - Parameter vector `s` from public key parameters. Must have length `Self::VEC_N_SIZE_64` words.
+    /// * `e` - Error vector `e` from message parameters. Must have length `Self::VEC_N_SIZE_64` words.
     #[cfg(test)]
     fn encrypt_pke(
         u: &mut [u64],
@@ -66,6 +110,12 @@ pub trait HqcScheme {
     );
 
     /// Serializes KEM ciphertext components `u`, `v`, and `salt` into a byte array.
+    ///
+    /// # Arguments
+    /// * `ct` - Output buffer where serialized KEM ciphertext will be stored. Must have length `Self::CIPHERTEXT_BYTES`.
+    /// * `u` - PKE ciphertext component `u`. Must have length `Self::VEC_N_SIZE_64` words.
+    /// * `v` - PKE ciphertext component `v`. Must have length `Self::VEC_N_SIZE_64` words.
+    /// * `salt` - Salt byte array. Must have length `Self::SALT_BYTES` (16 bytes).
     fn serialize_ciphertext(
         ct: &mut [u8],
         u: &[u64],
@@ -232,15 +282,19 @@ macro_rules! define_hqc_variant {
                     weight: u16,
                 );
 
+                #[cfg(test)]
                 #[link_name = concat!($prefix, "vect_mul")]
                 pub(crate) fn c_vect_mul(o: *mut u64, v1: *const u64, v2: *const u64);
 
+                #[cfg(test)]
                 #[link_name = concat!($prefix, "vect_add")]
                 pub(crate) fn c_vect_add(o: *mut u64, v1: *const u64, v2: *const u64, size: u32);
 
+                #[cfg(test)]
                 #[link_name = concat!($prefix, "code_encode")]
                 pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
 
+                #[cfg(test)]
                 #[link_name = concat!($prefix, "vect_truncate")]
                 pub(crate) fn c_vect_truncate(v: *mut u64);
             }
