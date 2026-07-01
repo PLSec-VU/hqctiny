@@ -35,13 +35,20 @@ macro_rules! define_hqc_variant {
             pub const SALT_BYTES: usize = 16;
             pub const SEED_BYTES: usize = 32;
 
-            pub struct PartialEncaps {
+            pub struct PublicKeyParameters {
+                pub hash_ek_kem: [u8; SEED_BYTES],
+                pub h: [u64; VEC_N_SIZE_64],
+                pub s: [u64; VEC_N_SIZE_64],
+            }
+
+            pub struct SharedSecretParameters {
                 pub K: [u8; SHARED_SECRET_BYTES],
                 pub theta: [u8; SEED_BYTES],
+            }
+
+            pub struct MessageParameters {
                 pub r1: [u64; VEC_N_SIZE_64],
-                pub h: [u64; VEC_N_SIZE_64],
                 pub r2: [u64; VEC_N_SIZE_64],
-                pub s: [u64; VEC_N_SIZE_64],
                 pub e: [u64; VEC_N_SIZE_64],
             }
 
@@ -150,18 +157,28 @@ macro_rules! define_hqc_variant {
                 }
             }
 
-            /// Performs partial deterministic KEM encapsulation, returning the key `K`,
-            /// randomness `theta`, and intermediate vectors `r1`, `h`, `r2`, `s`, `e`.
-            pub fn encaps_parameters(
-                ek: &[u8; PUBLIC_KEY_BYTES],
-                m: &[u8; PARAM_SECURITY_BYTES],
-                salt: &[u8; SALT_BYTES],
-            ) -> PartialEncaps {
+            /// Computes public key parameters `h`, `s`, and its hash.
+            pub fn partial_public_key_encaps(ek: &[u8; PUBLIC_KEY_BYTES]) -> PublicKeyParameters {
                 let mut hash_ek_kem = [0u8; SEED_BYTES];
                 unsafe {
                     c_hash_h(hash_ek_kem.as_mut_ptr(), ek.as_ptr());
                 }
 
+                let mut h = [0u64; VEC_N_SIZE_64];
+                let mut s = [0u64; VEC_N_SIZE_64];
+                unsafe {
+                    c_hqc_ek_pke_from_string(h.as_mut_ptr(), s.as_mut_ptr(), ek.as_ptr());
+                }
+
+                PublicKeyParameters { hash_ek_kem, h, s }
+            }
+
+            /// Derives the shared secret key `K` and encryption seed `theta` from the message `m`, `salt`, and public key hash.
+            pub fn derive_shared_secret(
+                m: &[u8; PARAM_SECURITY_BYTES],
+                salt: &[u8; SALT_BYTES],
+                hash_ek_kem: &[u8; SEED_BYTES],
+            ) -> SharedSecretParameters {
                 let mut K_theta = [0u8; SHARED_SECRET_BYTES + SEED_BYTES];
                 unsafe {
                     c_hash_g(
@@ -177,12 +194,13 @@ macro_rules! define_hqc_variant {
                 K.copy_from_slice(&K_theta[..SHARED_SECRET_BYTES]);
                 theta.copy_from_slice(&K_theta[SHARED_SECRET_BYTES..]);
 
-                let mut h = [0u64; VEC_N_SIZE_64];
-                let mut s = [0u64; VEC_N_SIZE_64];
-                unsafe {
-                    c_hqc_ek_pke_from_string(h.as_mut_ptr(), s.as_mut_ptr(), ek.as_ptr());
-                }
+                SharedSecretParameters { K, theta }
+            }
 
+            /// Computes sampled error/randomness vectors using the encryption seed `theta`.
+            pub fn partial_message_encaps(
+                theta: &[u8; SEED_BYTES],
+            ) -> MessageParameters {
                 let mut theta_xof_ctx = crate::hqc::shake256_xof_ctx { ctx: [0; 26] };
                 unsafe {
                     c_xof_init(&mut theta_xof_ctx, theta.as_ptr(), SEED_BYTES as u32);
@@ -198,7 +216,7 @@ macro_rules! define_hqc_variant {
                     c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r1.as_mut_ptr(), PARAM_OMEGA_R);
                 }
 
-                PartialEncaps { K, theta, r1, h, r2, s, e }
+                MessageParameters { r1, r2, e }
             }
         }
     };
@@ -280,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hqc1_partial_encaps() {
+    fn test_hqc1_decoupled_flow() {
         unsafe {
             let entropy = [42u8; 48];
             hqc1::prng_init(&entropy);
@@ -292,20 +310,26 @@ mod tests {
             let m = [0xAAu8; hqc1::PARAM_SECURITY_BYTES];
             let salt = [0x55u8; hqc1::SALT_BYTES];
 
-            // Perform partial deterministic encaps
-            let res = hqc1::encaps_parameters(&pk, &m, &salt);
+            // 1. Process public key parameters
+            let pk_params = hqc1::partial_public_key_encaps(&pk);
+
+            // 2. Derive shared secret and theta
+            let ss_params = hqc1::derive_shared_secret(&m, &salt, &pk_params.hash_ek_kem);
+
+            // 3. Process message parameters (sampling vectors using theta directly)
+            let msg_params = hqc1::partial_message_encaps(&ss_params.theta);
 
             // Reconstruct PKE ciphertext components u and v
             let mut u = [0u64; hqc1::VEC_N_SIZE_64];
-            hqc1::c_vect_mul(u.as_mut_ptr(), res.r2.as_ptr(), res.h.as_ptr());
-            hqc1::c_vect_add(u.as_mut_ptr(), res.r1.as_ptr(), u.as_ptr(), hqc1::VEC_N_SIZE_64 as u32);
+            hqc1::c_vect_mul(u.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.h.as_ptr());
+            hqc1::c_vect_add(u.as_mut_ptr(), msg_params.r1.as_ptr(), u.as_ptr(), hqc1::VEC_N_SIZE_64 as u32);
 
             let mut v = [0u64; hqc1::VEC_N_SIZE_64];
             hqc1::c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
 
             let mut tmp = [0u64; hqc1::VEC_N_SIZE_64];
-            hqc1::c_vect_mul(tmp.as_mut_ptr(), res.r2.as_ptr(), res.s.as_ptr());
-            hqc1::c_vect_add(tmp.as_mut_ptr(), res.e.as_ptr(), tmp.as_ptr(), hqc1::VEC_N_SIZE_64 as u32);
+            hqc1::c_vect_mul(tmp.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.s.as_ptr());
+            hqc1::c_vect_add(tmp.as_mut_ptr(), msg_params.e.as_ptr(), tmp.as_ptr(), hqc1::VEC_N_SIZE_64 as u32);
             hqc1::c_vect_truncate(tmp.as_mut_ptr());
 
             hqc1::c_vect_add(v.as_mut_ptr(), v.as_ptr(), tmp.as_ptr(), hqc1::VEC_N1N2_SIZE_64 as u32);
@@ -324,12 +348,12 @@ mod tests {
             assert_eq!(hqc1::dec(&mut ss_dec, &ct, &sk), 0);
 
             // Verify they match
-            assert_eq!(res.K, ss_dec);
+            assert_eq!(ss_params.K, ss_dec);
         }
     }
 
     #[test]
-    fn test_hqc3_partial_encaps() {
+    fn test_hqc3_decoupled_flow() {
         unsafe {
             let entropy = [43u8; 48];
             hqc3::prng_init(&entropy);
@@ -341,20 +365,26 @@ mod tests {
             let m = [0xAAu8; hqc3::PARAM_SECURITY_BYTES];
             let salt = [0x55u8; hqc3::SALT_BYTES];
 
-            // Perform partial deterministic encaps
-            let res = hqc3::encaps_parameters(&pk, &m, &salt);
+            // 1. Process public key parameters
+            let pk_params = hqc3::partial_public_key_encaps(&pk);
+
+            // 2. Derive shared secret and theta
+            let ss_params = hqc3::derive_shared_secret(&m, &salt, &pk_params.hash_ek_kem);
+
+            // 3. Process message parameters (sampling vectors using theta directly)
+            let msg_params = hqc3::partial_message_encaps(&ss_params.theta);
 
             // Reconstruct PKE ciphertext components u and v
             let mut u = [0u64; hqc3::VEC_N_SIZE_64];
-            hqc3::c_vect_mul(u.as_mut_ptr(), res.r2.as_ptr(), res.h.as_ptr());
-            hqc3::c_vect_add(u.as_mut_ptr(), res.r1.as_ptr(), u.as_ptr(), hqc3::VEC_N_SIZE_64 as u32);
+            hqc3::c_vect_mul(u.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.h.as_ptr());
+            hqc3::c_vect_add(u.as_mut_ptr(), msg_params.r1.as_ptr(), u.as_ptr(), hqc3::VEC_N_SIZE_64 as u32);
 
             let mut v = [0u64; hqc3::VEC_N_SIZE_64];
             hqc3::c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
 
             let mut tmp = [0u64; hqc3::VEC_N_SIZE_64];
-            hqc3::c_vect_mul(tmp.as_mut_ptr(), res.r2.as_ptr(), res.s.as_ptr());
-            hqc3::c_vect_add(tmp.as_mut_ptr(), res.e.as_ptr(), tmp.as_ptr(), hqc3::VEC_N_SIZE_64 as u32);
+            hqc3::c_vect_mul(tmp.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.s.as_ptr());
+            hqc3::c_vect_add(tmp.as_mut_ptr(), msg_params.e.as_ptr(), tmp.as_ptr(), hqc3::VEC_N_SIZE_64 as u32);
             hqc3::c_vect_truncate(tmp.as_mut_ptr());
 
             hqc3::c_vect_add(v.as_mut_ptr(), v.as_ptr(), tmp.as_ptr(), hqc3::VEC_N1N2_SIZE_64 as u32);
@@ -373,12 +403,12 @@ mod tests {
             assert_eq!(hqc3::dec(&mut ss_dec, &ct, &sk), 0);
 
             // Verify they match
-            assert_eq!(res.K, ss_dec);
+            assert_eq!(ss_params.K, ss_dec);
         }
     }
 
     #[test]
-    fn test_hqc5_partial_encaps() {
+    fn test_hqc5_decoupled_flow() {
         unsafe {
             let entropy = [44u8; 48];
             hqc5::prng_init(&entropy);
@@ -390,20 +420,26 @@ mod tests {
             let m = [0xAAu8; hqc5::PARAM_SECURITY_BYTES];
             let salt = [0x55u8; hqc5::SALT_BYTES];
 
-            // Perform partial deterministic encaps
-            let res = hqc5::encaps_parameters(&pk, &m, &salt);
+            // 1. Process public key parameters
+            let pk_params = hqc5::partial_public_key_encaps(&pk);
+
+            // 2. Derive shared secret and theta
+            let ss_params = hqc5::derive_shared_secret(&m, &salt, &pk_params.hash_ek_kem);
+
+            // 3. Process message parameters (sampling vectors using theta directly)
+            let msg_params = hqc5::partial_message_encaps(&ss_params.theta);
 
             // Reconstruct PKE ciphertext components u and v
             let mut u = [0u64; hqc5::VEC_N_SIZE_64];
-            hqc5::c_vect_mul(u.as_mut_ptr(), res.r2.as_ptr(), res.h.as_ptr());
-            hqc5::c_vect_add(u.as_mut_ptr(), res.r1.as_ptr(), u.as_ptr(), hqc5::VEC_N_SIZE_64 as u32);
+            hqc5::c_vect_mul(u.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.h.as_ptr());
+            hqc5::c_vect_add(u.as_mut_ptr(), msg_params.r1.as_ptr(), u.as_ptr(), hqc5::VEC_N_SIZE_64 as u32);
 
             let mut v = [0u64; hqc5::VEC_N_SIZE_64];
             hqc5::c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
 
             let mut tmp = [0u64; hqc5::VEC_N_SIZE_64];
-            hqc5::c_vect_mul(tmp.as_mut_ptr(), res.r2.as_ptr(), res.s.as_ptr());
-            hqc5::c_vect_add(tmp.as_mut_ptr(), res.e.as_ptr(), tmp.as_ptr(), hqc5::VEC_N_SIZE_64 as u32);
+            hqc5::c_vect_mul(tmp.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.s.as_ptr());
+            hqc5::c_vect_add(tmp.as_mut_ptr(), msg_params.e.as_ptr(), tmp.as_ptr(), hqc5::VEC_N_SIZE_64 as u32);
             hqc5::c_vect_truncate(tmp.as_mut_ptr());
 
             hqc5::c_vect_add(v.as_mut_ptr(), v.as_ptr(), tmp.as_ptr(), hqc5::VEC_N1N2_SIZE_64 as u32);
@@ -422,7 +458,7 @@ mod tests {
             assert_eq!(hqc5::dec(&mut ss_dec, &ct, &sk), 0);
 
             // Verify they match
-            assert_eq!(res.K, ss_dec);
+            assert_eq!(ss_params.K, ss_dec);
         }
     }
 }
