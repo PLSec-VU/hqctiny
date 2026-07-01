@@ -157,7 +157,7 @@ where
         let n = SCHEME::PARAM_N;
         let n_words = n.div_ceil(64);
         let mut mask_poly = vec![0u64; n_words];
-        hqc_bridge::generate_mask(&theta, b"mask", n, &mut mask_poly);
+        hqc_bridge::generate_mask(&theta, b"quotient mask", n, &mut mask_poly);
 
         let r2_blocks = split(r2_poly);
         let e_blocks = split(e_poly);
@@ -202,7 +202,7 @@ where
 
                 // Generate truncate mask polynomial
                 let mut t_poly = vec![0u64; n_words];
-                hqc_bridge::generate_mask(&theta, b"truncate_mask", n, &mut t_poly);
+                hqc_bridge::generate_mask(&theta, b"truncate mask", n, &mut t_poly);
 
                 // Clear the first PARAM_N1N2 bits of t_poly
                 let n1n2 = SCHEME::PARAM_N1N2;
