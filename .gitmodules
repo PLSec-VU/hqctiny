@@ -1,0 +1,3 @@
+[submodule "hqc"]
+	path = hqc
+	url = https://gitlab.com/pqc-hqc/hqc.git

@@ -23,3 +23,7 @@ hqctiny-rocq/Makefile.conf
 scratch/
 rocq_mcp*.v
 *.bak
+
+# Added by cargo
+
+/target
