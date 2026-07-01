@@ -1,47 +1,41 @@
 # HQC-Tiny Protocol
 
 A stateless, non-interactive post-quantum key-exchange protocol built on
-**Hamming Quasi-Cyclic (HQC)** encryption, with mutual authentication via
-**MAYO** signatures.
+**Hamming Quasi-Cyclic (HQC)** encryption.
 
 We use the following primitives:
-- MAC: BLAKE3
-- AEAD: ChaCha20-Poly1305
-- Signatures: MAYO
+- MAC / KDF: BLAKE3
+- AEAD: XChaCha20-Poly1305
 
 ```
 [CLIENT]                                                                   [SERVER]
-Holds: Static signature Keypair (Identity)                                 Holds: Static signature Keypair (Identity)
-Generates: Ephemeral HQC Keypair (h, s)                                    Holds: Bounded RAM Table (table[ID])
+Generates: Ephemeral HQC Keypair (h, s)                                    Holds: Bounded RAM Table (table[hash_ek_kem])
                                                                            Holds: Ephemeral ServerKey for encrypting cookies
 
 ========================================================================================================
-                          PHASE 1: AUTHENTICATED ENTROPY ESTABLISHMENT
+                          PHASE 1: ENTROPY ESTABLISHMENT (HANDSHAKE)
 ========================================================================================================
 
-  1. Generate 'Client_Nonce' (Timestamp + Random)
-  2. Sign: Signature(Client_ID + Nonce)
+  1. ephem_pk, ephem_sk <- keypair()
+  2. hash_ek_kem <- hash(ephem_pk)
+  3. timestamp <- now()
 
      [Packet 1: Handshake Request] 
      -------------------------------------------------------------------->
-      | Client_ID | Client_Nonce | Client_Sig
+      | 0x00 | hash_ek_kem (32 B) | timestamp (8 B LE)
 
-                                                1. Verify Client_Sig. (Drops if bad).
-                                                2. TIME CHECK: If Client_Nonce.Timestamp <= table[ID].time or Client_Nonce.Timestamp < now - timeout, DROP.
-                                                3. Generate HQC Seed (θ).
-                                                4. Derive Session Key (K_session) from θ.
-                                                5. OVERWRITE RAM: table[Client_ID] = {K_session, new_timestamp}.
-                                                6. Compute Transcript_MAC = MAC_{K_session}(History).
-                                                7. Derive per-session encryption key = KDF(ServerKey, Client_Nonce.Timestamp).
-                                                   Encrypt Cookie = AEAD_{derived_key}(θ) with a random 12‑byte nonce.
-                                                8. Sign: Signature(Cookie + Transcript_MAC).
+                                                1. TIME CHECK: If timestamp <= table[hash_ek_kem].time or timestamp < now - timeout, DROP.
+                                                2. Generate random m (PARAM_SECURITY_BYTES) and salt (16 B).
+                                                3. K_session, theta <- derive_shared_secret(m, salt, hash_ek_kem).
+                                                4. OVERWRITE RAM: table[hash_ek_kem] = {K_session, timestamp}.
+                                                5. Derive per-session key = KDF(ServerKey, timestamp).
+                                                   Encrypt Cookie = AEAD_{derived_key}(theta || m) with a random 24‑byte nonce.
 
      [Packet 2: Handshake Response] 
      <--------------------------------------------------------------------
-      | Cookie | Transcript_MAC | Server_Sig
+      | 0x80 | cookie_len (2 B LE) | Cookie | Salt (16 B)
 
-  1. Verify Server_Sig.
-  2. Save Transcript_MAC for later.
+  1. Store cookie and salt.
 
 
 ========================================================================================================
@@ -51,150 +45,122 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
   waiting is required between requests, and the server can respond in any order.
   The Client appends the original plaintext Handshake_Timestamp from Phase 1)
 
-  -- [ REQ TYPE 0: 'u' POLYNOMIAL POINTS ] --
-
-     [Packet 3: Request 'u/v' Point] 
+     [Packet 3: Point Request] 
      -------------------------------------------------------------------->
-      | Cookie | Handshake_Timestamp | h(x_i) or s(x_i) |
+      | Header | cookie_len (2 B LE) | Cookie | Handshake_Timestamp (8 B LE) | h(x_i) or s(x_i) (1128 B) |
       
       Header encodes direction (c→s), point_type (U/V), and point_index in a single byte.
 
-                                                  1. TTL CHECK: If (Current_Time - Handshake_Timestamp) > timeout, DROP.
-                                                  2. Derive per-session encryption key = KDF(ServerKey, Handshake_Timestamp).
-                                                     Decrypt Cookie → extract θ.
-                                                     (If the timestamp was tampered with, the derived key is wrong and decryption fails).
-                                                  3. Gen random quotient-blinding mask = k*(X^n-1) for random k.
-                                                  For Type u:
-                                                   4. Parse Type (U) -> load r1(x_i), r2(x_i) from θ.
-                                                   5. Compute: u_eval = r1 + [h(x_i)]*r2 + mask.
-                                                  For Type v:
-                                                   4. Parse Type (V) -> load e(x_i), r2(x_i), K_session from θ.
-                                                   5. Compute: v_eval = K_session + [s(x_i)]*r2 + e + mask.
+                                                   1. TTL CHECK: If (Current_Time - Handshake_Timestamp) > timeout, DROP.
+                                                   2. Derive per-session encryption key = KDF(ServerKey, Handshake_Timestamp).
+                                                      Decrypt Cookie → extract theta and m.
+                                                   3. Gen random quotient-blinding mask.
+                                                   For Type u:
+                                                    4. Load r1(x_i), r2(x_i) from theta, m.
+                                                    5. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1).
+                                                   For Type v:
+                                                    4. Load e(x_i), r2(x_i) from theta, m.
+                                                    5. Gen random truncate-blinding mask T(x) over [n1n2, n-1] from theta.
+                                                    6. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1).
 
-     [Packet 4: Response 'u/v' Point] 
+     [Packet 4: Point Response] 
      <--------------------------------------------------------------------
-      | Handshake_Timestamp | u_eval / v_eval |
+      | Header | Handshake_Timestamp (8 B LE) | u_eval / v_eval (1128 B) |
       
       Header encodes direction (s→c), point_type, and point_index.
 
-  1. Verify Handshake_Timestamp = Client_Nonce.Timestamp (from Phase 1).
+  1. Verify Handshake_Timestamp matches Phase 1.
   2. Save (x_i, u_eval) or (x_i, v_eval) for later interpolation.
 
 ========================================================================================================
-                          PHASE 3: DEFERRED KEY CONFIRMATION & SECURE TUNNEL
+                          PHASE 3: DEFERRED DECRYPTION
 ========================================================================================================
 
-  1. Interpolate the collected 'u' and 'v' points.
-  3. Reduce modulo (X^n - 1) to vanish the blinding polynomials.
+  1. Interpolate the collected 'u' and 'v' evaluations.
+  2. Reduce modulo (x^n - 1) to vanish the blinding mask polynomials.
+  3. Truncate the resulting v(x) modulo x^n1n2 (discarding the upper randomized truncate mask coefficients).
   4. Decode HQC ciphertext -> Extract K_session.
-  5. Verify Transcript_MAC (from Packet 2) using the newly decoded K_session.
-  6. Tunnel is now active, K_session is used for encrypting application data with AEAD.
 ```
 
 ## Wire Format
 
-Every packet starts with a single **tag byte** that encodes direction, point type,
-and the packet kind:
+Every packet starts with a single **tag byte** that encodes direction, point type, and the packet kind:
 
 | Bit 7 (MSB) | Bit 6       | Bits 5–0       |
 |-------------|-------------|-----------------|
 | Direction   | Point type  | Kind            |
 
-- **Direction**: `0` = client → server, `1` = server → client
+- **Direction**: `0` = client → server, `1` = server → client.
 - **Point type**: `0` = U, `1` = V. Ignored when Kind = 0 (handshake).
-- **Kind**: `0` = handshake, `1`–`63` = point index
+- **Kind**: `0` = handshake, `1`–`63` = point index.
 
-All fixed‑length fields are packed sequentially after the tag byte.
-Variable‑length signatures (`Vec<u8>`) always appear at the very end
-and consume the remainder of the packet — no length prefix is needed.
+All fields are packed sequentially after the tag byte. 
 
-### Packet layouts
+### Packet Layouts
 
 > `LE` = little‑endian. `Gf2_8984` = 141 × 8 = **1128 bytes**.
-> `Cookie` = 12‑byte nonce + 56‑byte AEAD ciphertext = **68 bytes**.
+> `Cookie` = 24‑byte nonce + (32‑byte `theta` + `PARAM_SECURITY_BYTES` `m` + 16‑byte tag) = **72 + PARAM_SECURITY_BYTES** bytes.
 
 #### HandshakeRequest (tag `0x00`)
 
 ```
-┌────────┬───────────────┬──────────────────┬────────────────┬───────────────┐
-│ 1 B    │ 32 B          │ 8 B              │ 16 B           │ …             │
-│ 0x00   │ client_id     │ timestamp (u64)  │ random         │ client_sig    │
-└────────┴───────────────┴──────────────────┴────────────────┴───────────────┘
+┌───────┬──────────────────────┬─────────────────┐
+│ 1 B   │ 32 B                 │ 8 B             │
+│ 0x00  │ hash_ek_kem          │ timestamp (u64) │
+└───────┴──────────────────────┴─────────────────┘
 ```
 
-Minimum size: 57 bytes + signature.
+Fixed size: **41 bytes**.
 
 #### HandshakeResponse (tag `0x80`)
 
 ```
-┌────────┬─────────────┬───────────────────┬──────────────┐
-│ 1 B    │ 68 B        │ 32 B              │ …            │
-│ 0x80   │ cookie      │ transcript_mac    │ server_sig   │
-└────────┴─────────────┴───────────────────┴──────────────┘
+┌───────┬────────────────┬──────────┬────────┐
+│ 1 B   │ 2 B            │ Var B    │ 16 B   │
+│ 0x80  │ cookie_len LE  │ cookie   │ salt   │
+└───────┴────────────────┴──────────┴────────┘
 ```
 
-Minimum size: 101 bytes + signature.
+Size: **19 + cookie_len bytes**.
 
 #### PointRequest (tag = `T | idx`, direction = 0)
 
 ```
-┌──────────────┬─────────────┬───────────────────────┬──────────────────┐
-│ 1 B          │ 68 B        │ 8 B                   │ 1128 B           │
-│ 0 | T | idx  │ cookie      │ handshake_timestamp   │ public_eval      │
-│ (c→s)        │             │ (u64 LE)              │ (Gf2_8984 LE)    │
-└──────────────┴─────────────┴───────────────────────┴──────────────────┘
+┌──────────────┬────────────────┬──────────┬───────────────────────┬────────────────┐
+│ 1 B          │ 2 B            │ Var B    │ 8 B                   │ 1128 B         │
+│ 0 | T | idx  │ cookie_len LE  │ cookie   │ handshake_timestamp   │ public_eval    │
+│ (c→s)        │                │          │ (u64 LE)              │ (Gf2_8984 LE)  │
+└──────────────┴────────────────┴──────────┴───────────────────────┴────────────────┘
 ```
 
-- `T` = point type (`0` = U, `1` = V)
-- `idx` = point index (`1`–`63`, 6 bits)
+- `T` = point type (`0` = U, `1` = V).
+- `idx` = point index (`1`–`63`, 6 bits).
 
-Total fixed size: **1205 bytes**.
+Size: **1139 + cookie_len bytes**.
 
 #### PointResponse (tag = `1 | T | idx`)
 
 ```
-┌──────────────┬───────────────────────┬──────────────────┐
-│ 1 B          │ 8 B                   │ 1128 B           │
-│ 1 | T | idx  │ handshake_timestamp   │ eval             │
-│ (s→c)        │ (u64 LE)              │ (Gf2_8984 LE)    │
-└──────────────┴───────────────────────┴──────────────────┘
+┌──────────────┬───────────────────────┬────────────────┐
+│ 1 B          │ 8 B                   │ 1128 B         │
+│ 1 | T | idx  │ handshake_timestamp   │ eval           │
+│ (s→c)        │ (u64 LE)              │ (Gf2_8984 LE)  │
+└──────────────┴───────────────────────┴────────────────┘
 ```
 
-- `T` = point type (`0` = U, `1` = V)
-- `idx` = point index (`1`–`63`, 6 bits)
+- `T` = point type (`0` = U, `1` = V).
+- `idx` = point index (`1`–`63`, 6 bits).
 
-Total fixed size: **1137 bytes**.
+Fixed size: **1137 bytes**.
 
-### Gf2_8984 encoding
+### Gf2_8984 Encoding
 
-Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1))
-is serialized as 141 consecutive `u64` limbs, each in little‑endian byte order.
+Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is serialized as 141 consecutive `u64` limbs, each in little‑endian byte order.
 
 ### Security Warning
 
-This implementation is for educational and research purposes only. It is
-not suitable for production or secure communication.
+This implementation is for educational and research purposes only. It is not suitable for production or secure communication.
 
 ## Requirements
 
 - [Rust](https://www.rust-lang.org/) (nightly)
-- [SageMath](https://www.sagemath.org/) (for the reference implementation in `sagemath/`)
-
-## Quick start (`hqctiny-net` CLI)
-
-The `hqctiny-network` crate provides a UDP server/client for running the
-protocol on real networks.
-
-```bash
-# Terminal 1 — start the server
-cargo run -p hqctiny-network -- server --bind 0.0.0.0:9000
-
-# Terminal 2 — connect a client (session key printed to stdout as hex)
-cargo run -p hqctiny-network -- client --server 127.0.0.1:9000
-```
-
-| Flag | Description |
-|---|---|
-| `server --bind <ADDR>` | UDP listen address (default `0.0.0.0:9000`) |
-| `server --server-key <HEX>` | 32‑byte static server key as hex (64 chars) |
-| `client --server <ADDR>` | Server address (default `127.0.0.1:9000`) |

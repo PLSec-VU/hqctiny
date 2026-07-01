@@ -70,10 +70,13 @@ where
         Client<SCHEME, SStore, E, Time, AwaitingHandshake>,
         HandshakeRequest,
     ) {
+        let mut entropy = [0u8; 48];
+        self.entropy_provider.random_bytes(&mut entropy);
+
         let mut pk = vec![0u8; SCHEME::PUBLIC_KEY_BYTES];
         let mut sk = vec![0u8; SCHEME::SECRET_KEY_BYTES];
         unsafe {
-            SCHEME::keypair(&mut pk, &mut sk);
+            SCHEME::keypair(&entropy, &mut pk, &mut sk);
         }
 
         let pk_params = SCHEME::partial_public_key_encaps(&pk);

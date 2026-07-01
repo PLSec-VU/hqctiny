@@ -1,3 +1,7 @@
+lazy_static::lazy_static! {
+    static ref FFI_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
 pub trait HqcScheme {
     const PUBLIC_KEY_BYTES: usize;
     const SECRET_KEY_BYTES: usize;
@@ -17,40 +21,33 @@ pub trait HqcScheme {
     type SharedSecretParameters: HqcSharedSecretParameters;
     type MessageParameters: HqcMessageParameters;
 
-    /// Seeds the internal global PRNG state.
-    ///
-    /// # Arguments
-    /// * `entropy` - High-entropy seed input (usually 48 bytes).
-    ///
-    /// # Safety
-    /// This function mutates global state and is not thread-safe.
-    unsafe fn prng_init(entropy: &[u8]);
-
     /// Generates a public and secret keypair.
     ///
     /// Returns `0` on success.
     ///
     /// # Arguments
+    /// * `entropy` - High-entropy seed input (usually 48 bytes) to seed the PRNG.
     /// * `pk` - Output buffer where the public key will be written. Must have length `Self::PUBLIC_KEY_BYTES`.
     /// * `sk` - Output buffer where the secret key will be written. Must have length `Self::SECRET_KEY_BYTES`.
     ///
     /// # Safety
-    /// `prng_init` must have been called prior to calling this function.
-    unsafe fn keypair(pk: &mut [u8], sk: &mut [u8]) -> i32;
+    /// This function is thread-safe.
+    unsafe fn keypair(entropy: &[u8], pk: &mut [u8], sk: &mut [u8]) -> i32;
 
     /// Encapsulates a shared secret.
     ///
     /// Returns `0` on success.
     ///
     /// # Arguments
+    /// * `entropy` - High-entropy seed input (usually 48 bytes) to seed the PRNG.
     /// * `ct` - Output buffer where the ciphertext will be written. Must have length `Self::CIPHERTEXT_BYTES`.
     /// * `ss` - Output buffer where the shared secret will be written. Must have length `Self::SHARED_SECRET_BYTES`.
     /// * `pk` - Input public key buffer. Must have length `Self::PUBLIC_KEY_BYTES`.
     ///
     /// # Safety
-    /// `prng_init` must have been called prior to calling this function.
+    /// This function is thread-safe.
     #[cfg(test)]
-    unsafe fn enc(ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32;
+    unsafe fn enc(entropy: &[u8], ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32;
 
     /// Decapsulates a ciphertext.
     ///
@@ -370,7 +367,10 @@ macro_rules! define_hqc_variant {
                 }
 
 
-                unsafe fn prng_init(entropy: &[u8]) {
+                unsafe fn keypair(entropy: &[u8], pk: &mut [u8], sk: &mut [u8]) -> i32 {
+                    assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
+                    assert_eq!(sk.len(), SECRET_KEY_BYTES);
+                    let _guard = crate::hqc::FFI_LOCK.lock().unwrap();
                     let mut personal = [0u8; 0];
                     unsafe {
                         c_prng_init(
@@ -379,23 +379,24 @@ macro_rules! define_hqc_variant {
                             entropy.len() as u32,
                             0,
                         );
-                    }
-                }
-
-                unsafe fn keypair(pk: &mut [u8], sk: &mut [u8]) -> i32 {
-                    assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
-                    assert_eq!(sk.len(), SECRET_KEY_BYTES);
-                    unsafe {
                         c_crypto_kem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr())
                     }
                 }
 
                 #[cfg(test)]
-                unsafe fn enc(ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32 {
+                unsafe fn enc(entropy: &[u8], ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32 {
                     assert_eq!(ct.len(), CIPHERTEXT_BYTES);
                     assert_eq!(ss.len(), SHARED_SECRET_BYTES);
                     assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
+                    let _guard = crate::hqc::FFI_LOCK.lock().unwrap();
+                    let mut personal = [0u8; 0];
                     unsafe {
+                        c_prng_init(
+                            entropy.as_ptr() as *mut u8,
+                            personal.as_mut_ptr(),
+                            entropy.len() as u32,
+                            0,
+                        );
                         c_crypto_kem_enc(ct.as_mut_ptr(), ss.as_mut_ptr(), pk.as_ptr())
                     }
                 }
@@ -540,25 +541,12 @@ macro_rules! define_hqc_variant {
             }
 
             // Backward-compatible module-level functions:
-            /// Seeds the internal global PRNG state required for keypair generation.
+            /// Generates a public and secret keypair seeded with cryptographic entropy.
             ///
-            /// # Safety
-            /// This function mutates global state and is not thread-safe.
-            pub unsafe fn prng_init(entropy: &[u8]) {
+            /// Returns `0` on success. Thread-safe.
+            pub unsafe fn keypair(entropy: &[u8], pk: &mut [u8; PUBLIC_KEY_BYTES], sk: &mut [u8; SECRET_KEY_BYTES]) -> i32 {
                 unsafe {
-                    <$struct_name as crate::hqc::HqcScheme>::prng_init(entropy);
-                }
-            }
-
-            /// Generates a public and secret keypair.
-            ///
-            /// Returns `0` on success.
-            ///
-            /// # Safety
-            /// `prng_init` must have been called prior to calling this function.
-            pub unsafe fn keypair(pk: &mut [u8; PUBLIC_KEY_BYTES], sk: &mut [u8; SECRET_KEY_BYTES]) -> i32 {
-                unsafe {
-                    <$struct_name as crate::hqc::HqcScheme>::keypair(pk, sk)
+                    <$struct_name as crate::hqc::HqcScheme>::keypair(entropy, pk, sk)
                 }
             }
 
@@ -608,17 +596,15 @@ mod tests {
     use super::*;
 
     fn test_flow_generic<T: HqcScheme>() {
+        let entropy = [42u8; 48];
         unsafe {
-            let entropy = [42u8; 48];
-            T::prng_init(&entropy);
-
             let mut pk = vec![0u8; T::PUBLIC_KEY_BYTES];
             let mut sk = vec![0u8; T::SECRET_KEY_BYTES];
-            assert_eq!(T::keypair(&mut pk, &mut sk), 0);
+            assert_eq!(T::keypair(&entropy, &mut pk, &mut sk), 0);
 
             let mut ct = vec![0u8; T::CIPHERTEXT_BYTES];
             let mut ss_enc = vec![0u8; T::SHARED_SECRET_BYTES];
-            assert_eq!(T::enc(&mut ct, &mut ss_enc, &pk), 0);
+            assert_eq!(T::enc(&entropy, &mut ct, &mut ss_enc, &pk), 0);
 
             let mut ss_dec = vec![0u8; T::SHARED_SECRET_BYTES];
             assert_eq!(T::dec(&mut ss_dec, &ct, &sk), 0);
@@ -634,13 +620,11 @@ mod tests {
         T::SharedSecretParameters: HqcSharedSecretParameters,
         T::MessageParameters: HqcMessageParameters,
     {
+        let entropy = [42u8; 48];
         unsafe {
-            let entropy = [42u8; 48];
-            T::prng_init(&entropy);
-
             let mut pk = vec![0u8; T::PUBLIC_KEY_BYTES];
             let mut sk = vec![0u8; T::SECRET_KEY_BYTES];
-            assert_eq!(T::keypair(&mut pk, &mut sk), 0);
+            assert_eq!(T::keypair(&entropy, &mut pk, &mut sk), 0);
 
             let m = vec![0xAAu8; T::PARAM_SECURITY_BYTES];
             let salt = vec![0x55u8; T::SALT_BYTES];
