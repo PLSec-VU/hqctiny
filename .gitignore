@@ -1,0 +1,25 @@
+__pycache__
+*.sage.py
+target/
+bin/
+minimal_irreducibles_2.txt
+sagemath/*.json
+sagemath/*.bin
+sagemath/*.txt
+.DS_Store
+
+# Coq/Rocq
+*.vo
+*.vok
+*.vos
+*.glob
+*.aux
+.lia.cache
+.coq-native/
+hqctiny-rocq/Makefile
+hqctiny-rocq/Makefile.conf
+
+*.eco
+scratch/
+rocq_mcp*.v
+*.bak
