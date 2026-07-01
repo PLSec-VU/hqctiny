@@ -200,11 +200,29 @@ where
                 let mut e_xi = Gf2_8984::zero();
                 evaluate_at_generator(&e_blocks, power, &mut e_xi);
 
+                // Generate truncate mask polynomial
+                let mut t_poly = vec![0u64; n_words];
+                hqc_bridge::generate_mask(&theta, b"truncate_mask", n, &mut t_poly);
+
+                // Clear the first PARAM_N1N2 bits of t_poly
+                let n1n2 = SCHEME::PARAM_N1N2;
+                let full_words = n1n2 / 64;
+                let rem_bits = n1n2 % 64;
+                t_poly[..full_words].fill(0);
+                if rem_bits > 0 && full_words < t_poly.len() {
+                    t_poly[full_words] &= !((1u64 << rem_bits) - 1);
+                }
+
+                let t_blocks = split(&t_poly);
+                let mut t_xi = Gf2_8984::zero();
+                evaluate_at_generator(&t_blocks, power, &mut t_xi);
+
                 let mut v_xi = k_xi;
                 let mut term_v = req.public_eval;
                 term_v.mul(&r2_xi);
                 v_xi.add(&term_v);
                 v_xi.add(&e_xi);
+                v_xi.add(&t_xi);
 
                 let mut term_mask = mask_xi;
                 crate::math::modulus_points::mul_by_modulus_point::<SCHEME>(

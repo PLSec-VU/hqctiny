@@ -120,6 +120,7 @@ pub trait HqcScheme {
     );
 
     const PARAM_N: usize;
+    const PARAM_N1N2: usize;
     const POINTS_NUM: usize;
 
     fn interpolate(evals: &[crate::math::gf2_8984::Gf2_8984]) -> Vec<crate::math::gf2_8984::Gf2_8984>;
@@ -332,6 +333,7 @@ macro_rules! define_hqc_variant {
                 const PARAM_OMEGA_E: u16 = PARAM_OMEGA_E;
 
                 const PARAM_N: usize = $param_n;
+                const PARAM_N1N2: usize = VEC_N1N2_SIZE_BYTES * 8;
                 const POINTS_NUM: usize = $points_num;
 
                 type PublicKeyParameters = PublicKeyParameters;
