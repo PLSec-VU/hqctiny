@@ -1,3 +1,96 @@
+pub trait HqcScheme {
+    const PUBLIC_KEY_BYTES: usize;
+    const SECRET_KEY_BYTES: usize;
+    const SHARED_SECRET_BYTES: usize;
+    const CIPHERTEXT_BYTES: usize;
+    const VEC_N_SIZE_64: usize;
+    const VEC_N1N2_SIZE_64: usize;
+    const VEC_N_SIZE_BYTES: usize;
+    const VEC_N1N2_SIZE_BYTES: usize;
+    const PARAM_SECURITY_BYTES: usize;
+    const PARAM_OMEGA_R: u16;
+    const PARAM_OMEGA_E: u16;
+    const SALT_BYTES: usize = 16;
+    const SEED_BYTES: usize = 32;
+
+    type PublicKeyParameters;
+    type SharedSecretParameters;
+    type MessageParameters;
+
+    /// Seeds the internal global PRNG state.
+    ///
+    /// # Safety
+    /// This function mutates global state and is not thread-safe.
+    unsafe fn prng_init(entropy: &[u8]);
+
+    /// Generates a keypair.
+    ///
+    /// # Safety
+    /// `prng_init` must have been called prior to calling this function.
+    unsafe fn keypair(pk: &mut [u8], sk: &mut [u8]) -> i32;
+
+    /// Encapsulates a shared secret.
+    ///
+    /// # Safety
+    /// `prng_init` must have been called prior to calling this function.
+    #[cfg(test)]
+    unsafe fn enc(ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32;
+
+    /// Decapsulates a ciphertext.
+    fn dec(ss: &mut [u8], ct: &[u8], sk: &[u8]) -> i32;
+
+    /// Computes public key parameters `h`, `s`, and its hash.
+    fn partial_public_key_encaps(ek: &[u8]) -> Self::PublicKeyParameters;
+
+    /// Derives the shared secret key `K` and encryption seed `theta`.
+    fn derive_shared_secret(
+        m: &[u8],
+        salt: &[u8],
+        hash_ek_kem: &[u8],
+    ) -> Self::SharedSecretParameters;
+
+    /// Computes sampled error/randomness vectors using the encryption seed `theta`.
+    fn partial_message_encaps(theta: &[u8]) -> Self::MessageParameters;
+
+    /// Performs the PKE encryption step to reconstruct ciphertext components `u` and `v`.
+    #[cfg(test)]
+    fn encrypt_pke(
+        u: &mut [u64],
+        v: &mut [u64],
+        m: &[u8],
+        r1: &[u64],
+        h: &[u64],
+        r2: &[u64],
+        s: &[u64],
+        e: &[u64],
+    );
+
+    /// Serializes KEM ciphertext components `u`, `v`, and `salt` into a byte array.
+    fn serialize_ciphertext(
+        ct: &mut [u8],
+        u: &[u64],
+        v: &[u64],
+        salt: &[u8],
+    );
+}
+
+pub trait HqcPublicKeyParameters {
+    fn hash_ek_kem(&self) -> &[u8; 32];
+    fn h(&self) -> &[u64];
+    fn s(&self) -> &[u64];
+}
+
+pub trait HqcSharedSecretParameters {
+    fn K(&self) -> &[u8];
+    fn theta(&self) -> &[u8; 32];
+}
+
+pub trait HqcMessageParameters {
+    fn r1(&self) -> &[u64];
+    fn r2(&self) -> &[u64];
+    fn e(&self) -> &[u64];
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct shake256_xof_ctx {
@@ -7,6 +100,7 @@ pub struct shake256_xof_ctx {
 macro_rules! define_hqc_variant {
     (
         $mod_name:ident,
+        $struct_name:ident,
         $prefix:literal,
         $pk_bytes:expr,
         $sk_bytes:expr,
@@ -41,9 +135,30 @@ macro_rules! define_hqc_variant {
                 pub s: [u64; VEC_N_SIZE_64],
             }
 
+            impl crate::hqc::HqcPublicKeyParameters for PublicKeyParameters {
+                fn hash_ek_kem(&self) -> &[u8; 32] {
+                    &self.hash_ek_kem
+                }
+                fn h(&self) -> &[u64] {
+                    &self.h
+                }
+                fn s(&self) -> &[u64] {
+                    &self.s
+                }
+            }
+
             pub struct SharedSecretParameters {
                 pub K: [u8; SHARED_SECRET_BYTES],
                 pub theta: [u8; SEED_BYTES],
+            }
+
+            impl crate::hqc::HqcSharedSecretParameters for SharedSecretParameters {
+                fn K(&self) -> &[u8] {
+                    &self.K
+                }
+                fn theta(&self) -> &[u8; 32] {
+                    &self.theta
+                }
             }
 
             pub struct MessageParameters {
@@ -51,6 +166,20 @@ macro_rules! define_hqc_variant {
                 pub r2: [u64; VEC_N_SIZE_64],
                 pub e: [u64; VEC_N_SIZE_64],
             }
+
+            impl crate::hqc::HqcMessageParameters for MessageParameters {
+                fn r1(&self) -> &[u64] {
+                    &self.r1
+                }
+                fn r2(&self) -> &[u64] {
+                    &self.r2
+                }
+                fn e(&self) -> &[u64] {
+                    &self.e
+                }
+            }
+
+            pub struct $struct_name;
 
             unsafe extern "C" {
                 #[link_name = concat!($prefix, "prng_init")]
@@ -103,36 +232,206 @@ macro_rules! define_hqc_variant {
                     weight: u16,
                 );
 
-                #[cfg(test)]
                 #[link_name = concat!($prefix, "vect_mul")]
                 pub(crate) fn c_vect_mul(o: *mut u64, v1: *const u64, v2: *const u64);
 
-                #[cfg(test)]
                 #[link_name = concat!($prefix, "vect_add")]
                 pub(crate) fn c_vect_add(o: *mut u64, v1: *const u64, v2: *const u64, size: u32);
 
-                #[cfg(test)]
                 #[link_name = concat!($prefix, "code_encode")]
                 pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
 
-                #[cfg(test)]
                 #[link_name = concat!($prefix, "vect_truncate")]
                 pub(crate) fn c_vect_truncate(v: *mut u64);
             }
 
+            impl crate::hqc::HqcScheme for $struct_name {
+                const PUBLIC_KEY_BYTES: usize = PUBLIC_KEY_BYTES;
+                const SECRET_KEY_BYTES: usize = SECRET_KEY_BYTES;
+                const SHARED_SECRET_BYTES: usize = SHARED_SECRET_BYTES;
+                const CIPHERTEXT_BYTES: usize = CIPHERTEXT_BYTES;
+                const VEC_N_SIZE_64: usize = VEC_N_SIZE_64;
+                const VEC_N1N2_SIZE_64: usize = VEC_N1N2_SIZE_64;
+                const VEC_N_SIZE_BYTES: usize = VEC_N_SIZE_BYTES;
+                const VEC_N1N2_SIZE_BYTES: usize = VEC_N1N2_SIZE_BYTES;
+                const PARAM_SECURITY_BYTES: usize = PARAM_SECURITY_BYTES;
+                const PARAM_OMEGA_R: u16 = PARAM_OMEGA_R;
+                const PARAM_OMEGA_E: u16 = PARAM_OMEGA_E;
+
+                type PublicKeyParameters = PublicKeyParameters;
+                type SharedSecretParameters = SharedSecretParameters;
+                type MessageParameters = MessageParameters;
+
+                unsafe fn prng_init(entropy: &[u8]) {
+                    let mut personal = [0u8; 0];
+                    unsafe {
+                        c_prng_init(
+                            entropy.as_ptr() as *mut u8,
+                            personal.as_mut_ptr(),
+                            entropy.len() as u32,
+                            0,
+                        );
+                    }
+                }
+
+                unsafe fn keypair(pk: &mut [u8], sk: &mut [u8]) -> i32 {
+                    assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
+                    assert_eq!(sk.len(), SECRET_KEY_BYTES);
+                    unsafe {
+                        c_crypto_kem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr())
+                    }
+                }
+
+                #[cfg(test)]
+                unsafe fn enc(ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32 {
+                    assert_eq!(ct.len(), CIPHERTEXT_BYTES);
+                    assert_eq!(ss.len(), SHARED_SECRET_BYTES);
+                    assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
+                    unsafe {
+                        c_crypto_kem_enc(ct.as_mut_ptr(), ss.as_mut_ptr(), pk.as_ptr())
+                    }
+                }
+
+                fn dec(ss: &mut [u8], ct: &[u8], sk: &[u8]) -> i32 {
+                    assert_eq!(ss.len(), SHARED_SECRET_BYTES);
+                    assert_eq!(ct.len(), CIPHERTEXT_BYTES);
+                    assert_eq!(sk.len(), SECRET_KEY_BYTES);
+                    unsafe {
+                        c_crypto_kem_dec(ss.as_mut_ptr(), ct.as_ptr(), sk.as_ptr())
+                    }
+                }
+
+                fn partial_public_key_encaps(ek: &[u8]) -> Self::PublicKeyParameters {
+                    assert_eq!(ek.len(), PUBLIC_KEY_BYTES);
+                    let mut hash_ek_kem = [0u8; SEED_BYTES];
+                    unsafe {
+                        c_hash_h(hash_ek_kem.as_mut_ptr(), ek.as_ptr());
+                    }
+
+                    let mut h = [0u64; VEC_N_SIZE_64];
+                    let mut s = [0u64; VEC_N_SIZE_64];
+                    unsafe {
+                        c_hqc_ek_pke_from_string(h.as_mut_ptr(), s.as_mut_ptr(), ek.as_ptr());
+                    }
+
+                    PublicKeyParameters { hash_ek_kem, h, s }
+                }
+
+                fn derive_shared_secret(
+                    m: &[u8],
+                    salt: &[u8],
+                    hash_ek_kem: &[u8],
+                ) -> Self::SharedSecretParameters {
+                    assert_eq!(m.len(), PARAM_SECURITY_BYTES);
+                    assert_eq!(salt.len(), SALT_BYTES);
+                    assert_eq!(hash_ek_kem.len(), SEED_BYTES);
+
+                    let mut K_theta = [0u8; SHARED_SECRET_BYTES + SEED_BYTES];
+                    unsafe {
+                        c_hash_g(
+                            K_theta.as_mut_ptr(),
+                            hash_ek_kem.as_ptr(),
+                            m.as_ptr(),
+                            salt.as_ptr(),
+                        );
+                    }
+
+                    let mut K = [0u8; SHARED_SECRET_BYTES];
+                    let mut theta = [0u8; SEED_BYTES];
+                    K.copy_from_slice(&K_theta[..SHARED_SECRET_BYTES]);
+                    theta.copy_from_slice(&K_theta[SHARED_SECRET_BYTES..]);
+
+                    SharedSecretParameters { K, theta }
+                }
+
+                fn partial_message_encaps(theta: &[u8]) -> Self::MessageParameters {
+                    assert_eq!(theta.len(), SEED_BYTES);
+                    let mut theta_xof_ctx = crate::hqc::shake256_xof_ctx { ctx: [0; 26] };
+                    unsafe {
+                        c_xof_init(&mut theta_xof_ctx, theta.as_ptr(), SEED_BYTES as u32);
+                    }
+
+                    let mut r2 = [0u64; VEC_N_SIZE_64];
+                    let mut e = [0u64; VEC_N_SIZE_64];
+                    let mut r1 = [0u64; VEC_N_SIZE_64];
+
+                    unsafe {
+                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
+                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
+                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r1.as_mut_ptr(), PARAM_OMEGA_R);
+                    }
+
+                    MessageParameters { r1, r2, e }
+                }
+
+
+                #[cfg(test)]
+                fn encrypt_pke(
+                    u: &mut [u64],
+                    v: &mut [u64],
+                    m: &[u8],
+                    r1: &[u64],
+                    h: &[u64],
+                    r2: &[u64],
+                    s: &[u64],
+                    e: &[u64],
+                ) {
+                    assert_eq!(u.len(), VEC_N_SIZE_64);
+                    assert_eq!(v.len(), VEC_N_SIZE_64);
+                    assert_eq!(m.len(), PARAM_SECURITY_BYTES);
+                    assert_eq!(r1.len(), VEC_N_SIZE_64);
+                    assert_eq!(h.len(), VEC_N_SIZE_64);
+                    assert_eq!(r2.len(), VEC_N_SIZE_64);
+                    assert_eq!(s.len(), VEC_N_SIZE_64);
+                    assert_eq!(e.len(), VEC_N_SIZE_64);
+
+                    unsafe {
+                        c_vect_mul(u.as_mut_ptr(), r2.as_ptr(), h.as_ptr());
+                        c_vect_add(u.as_mut_ptr(), r1.as_ptr(), u.as_ptr(), VEC_N_SIZE_64 as u32);
+
+                        c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
+
+                        let mut tmp = [0u64; VEC_N_SIZE_64];
+                        c_vect_mul(tmp.as_mut_ptr(), r2.as_ptr(), s.as_ptr());
+                        c_vect_add(tmp.as_mut_ptr(), e.as_ptr(), tmp.as_ptr(), VEC_N_SIZE_64 as u32);
+                        c_vect_truncate(tmp.as_mut_ptr());
+
+                        c_vect_add(v.as_mut_ptr(), v.as_ptr(), tmp.as_ptr(), VEC_N1N2_SIZE_64 as u32);
+                    }
+                }
+
+                fn serialize_ciphertext(
+                    ct: &mut [u8],
+                    u: &[u64],
+                    v: &[u64],
+                    salt: &[u8],
+                ) {
+                    assert_eq!(ct.len(), CIPHERTEXT_BYTES);
+                    assert_eq!(u.len(), VEC_N_SIZE_64);
+                    assert_eq!(v.len(), VEC_N_SIZE_64);
+                    assert_eq!(salt.len(), SALT_BYTES);
+
+                    let u_bytes = unsafe {
+                        core::slice::from_raw_parts(u.as_ptr() as *const u8, VEC_N_SIZE_BYTES)
+                    };
+                    ct[..VEC_N_SIZE_BYTES].copy_from_slice(u_bytes);
+
+                    let v_bytes = unsafe {
+                        core::slice::from_raw_parts(v.as_ptr() as *const u8, VEC_N1N2_SIZE_BYTES)
+                    };
+                    ct[VEC_N_SIZE_BYTES .. VEC_N_SIZE_BYTES + VEC_N1N2_SIZE_BYTES].copy_from_slice(v_bytes);
+                    ct[VEC_N_SIZE_BYTES + VEC_N1N2_SIZE_BYTES..].copy_from_slice(salt);
+                }
+            }
+
+            // Backward-compatible module-level functions:
             /// Seeds the internal global PRNG state required for keypair generation.
             ///
             /// # Safety
             /// This function mutates global state and is not thread-safe.
             pub unsafe fn prng_init(entropy: &[u8]) {
-                let mut personal = [0u8; 0];
                 unsafe {
-                    c_prng_init(
-                        entropy.as_ptr() as *mut u8,
-                        personal.as_mut_ptr(),
-                        entropy.len() as u32,
-                        0,
-                    );
+                    <$struct_name as crate::hqc::HqcScheme>::prng_init(entropy);
                 }
             }
 
@@ -144,7 +443,7 @@ macro_rules! define_hqc_variant {
             /// `prng_init` must have been called prior to calling this function.
             pub unsafe fn keypair(pk: &mut [u8; PUBLIC_KEY_BYTES], sk: &mut [u8; SECRET_KEY_BYTES]) -> i32 {
                 unsafe {
-                    c_crypto_kem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr())
+                    <$struct_name as crate::hqc::HqcScheme>::keypair(pk, sk)
                 }
             }
 
@@ -152,25 +451,12 @@ macro_rules! define_hqc_variant {
             ///
             /// Returns `0` on success.
             pub fn dec(ss: &mut [u8; SHARED_SECRET_BYTES], ct: &[u8; CIPHERTEXT_BYTES], sk: &[u8; SECRET_KEY_BYTES]) -> i32 {
-                unsafe {
-                    c_crypto_kem_dec(ss.as_mut_ptr(), ct.as_ptr(), sk.as_ptr())
-                }
+                <$struct_name as crate::hqc::HqcScheme>::dec(ss, ct, sk)
             }
 
             /// Computes public key parameters `h`, `s`, and its hash.
             pub fn partial_public_key_encaps(ek: &[u8; PUBLIC_KEY_BYTES]) -> PublicKeyParameters {
-                let mut hash_ek_kem = [0u8; SEED_BYTES];
-                unsafe {
-                    c_hash_h(hash_ek_kem.as_mut_ptr(), ek.as_ptr());
-                }
-
-                let mut h = [0u64; VEC_N_SIZE_64];
-                let mut s = [0u64; VEC_N_SIZE_64];
-                unsafe {
-                    c_hqc_ek_pke_from_string(h.as_mut_ptr(), s.as_mut_ptr(), ek.as_ptr());
-                }
-
-                PublicKeyParameters { hash_ek_kem, h, s }
+                <$struct_name as crate::hqc::HqcScheme>::partial_public_key_encaps(ek)
             }
 
             /// Derives the shared secret key `K` and encryption seed `theta` from the message `m`, `salt`, and public key hash.
@@ -179,286 +465,133 @@ macro_rules! define_hqc_variant {
                 salt: &[u8; SALT_BYTES],
                 hash_ek_kem: &[u8; SEED_BYTES],
             ) -> SharedSecretParameters {
-                let mut K_theta = [0u8; SHARED_SECRET_BYTES + SEED_BYTES];
-                unsafe {
-                    c_hash_g(
-                        K_theta.as_mut_ptr(),
-                        hash_ek_kem.as_ptr(),
-                        m.as_ptr(),
-                        salt.as_ptr(),
-                    );
-                }
-
-                let mut K = [0u8; SHARED_SECRET_BYTES];
-                let mut theta = [0u8; SEED_BYTES];
-                K.copy_from_slice(&K_theta[..SHARED_SECRET_BYTES]);
-                theta.copy_from_slice(&K_theta[SHARED_SECRET_BYTES..]);
-
-                SharedSecretParameters { K, theta }
+                <$struct_name as crate::hqc::HqcScheme>::derive_shared_secret(m, salt, hash_ek_kem)
             }
 
             /// Computes sampled error/randomness vectors using the encryption seed `theta`.
             pub fn partial_message_encaps(
                 theta: &[u8; SEED_BYTES],
             ) -> MessageParameters {
-                let mut theta_xof_ctx = crate::hqc::shake256_xof_ctx { ctx: [0; 26] };
-                unsafe {
-                    c_xof_init(&mut theta_xof_ctx, theta.as_ptr(), SEED_BYTES as u32);
-                }
-
-                let mut r2 = [0u64; VEC_N_SIZE_64];
-                let mut e = [0u64; VEC_N_SIZE_64];
-                let mut r1 = [0u64; VEC_N_SIZE_64];
-
-                unsafe {
-                    c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
-                    c_vect_sample_fixed_weight2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
-                    c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r1.as_mut_ptr(), PARAM_OMEGA_R);
-                }
-
-                MessageParameters { r1, r2, e }
+                <$struct_name as crate::hqc::HqcScheme>::partial_message_encaps(theta)
             }
         }
     };
 }
 
 // Instantiate variants with respective parameters:
-define_hqc_variant!(hqc1, "hqc_1_", 2241, 2321, 32, 4433, 277, 276, 2209, 2208, 16, 75, 75);
-define_hqc_variant!(hqc3, "hqc_3_", 4514, 4602, 32, 8978, 561, 560, 4482, 4480, 24, 114, 114);
-define_hqc_variant!(hqc5, "hqc_5_", 7237, 7333, 32, 14421, 901, 900, 7205, 7200, 32, 149, 149);
+define_hqc_variant!(hqc1, Hqc1, "hqc_1_", 2241, 2321, 32, 4433, 277, 276, 2209, 2208, 16, 75, 75);
+define_hqc_variant!(hqc3, Hqc3, "hqc_3_", 4514, 4602, 32, 8978, 561, 560, 4482, 4480, 24, 114, 114);
+define_hqc_variant!(hqc5, Hqc5, "hqc_5_", 7237, 7333, 32, 14421, 901, 900, 7205, 7200, 32, 149, 149);
+
+pub use hqc1::Hqc1;
+pub use hqc3::Hqc3;
+pub use hqc5::Hqc5;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_hqc1_flow() {
+    fn test_flow_generic<T: HqcScheme>() {
         unsafe {
             let entropy = [42u8; 48];
-            hqc1::prng_init(&entropy);
+            T::prng_init(&entropy);
 
-            let mut pk = [0u8; hqc1::PUBLIC_KEY_BYTES];
-            let mut sk = [0u8; hqc1::SECRET_KEY_BYTES];
-            assert_eq!(hqc1::keypair(&mut pk, &mut sk), 0);
+            let mut pk = vec![0u8; T::PUBLIC_KEY_BYTES];
+            let mut sk = vec![0u8; T::SECRET_KEY_BYTES];
+            assert_eq!(T::keypair(&mut pk, &mut sk), 0);
 
-            let mut ct = [0u8; hqc1::CIPHERTEXT_BYTES];
-            let mut ss_enc = [0u8; hqc1::SHARED_SECRET_BYTES];
-            assert_eq!(hqc1::c_crypto_kem_enc(ct.as_mut_ptr(), ss_enc.as_mut_ptr(), pk.as_ptr()), 0);
+            let mut ct = vec![0u8; T::CIPHERTEXT_BYTES];
+            let mut ss_enc = vec![0u8; T::SHARED_SECRET_BYTES];
+            assert_eq!(T::enc(&mut ct, &mut ss_enc, &pk), 0);
 
-            let mut ss_dec = [0u8; hqc1::SHARED_SECRET_BYTES];
-            assert_eq!(hqc1::dec(&mut ss_dec, &ct, &sk), 0);
+            let mut ss_dec = vec![0u8; T::SHARED_SECRET_BYTES];
+            assert_eq!(T::dec(&mut ss_dec, &ct, &sk), 0);
 
             assert_eq!(ss_enc, ss_dec);
-            assert_ne!(ss_enc, [0u8; hqc1::SHARED_SECRET_BYTES]);
+            assert_ne!(ss_enc, vec![0u8; T::SHARED_SECRET_BYTES]);
         }
+    }
+
+    fn test_decoupled_flow_generic<T: HqcScheme>()
+    where
+        T::PublicKeyParameters: HqcPublicKeyParameters,
+        T::SharedSecretParameters: HqcSharedSecretParameters,
+        T::MessageParameters: HqcMessageParameters,
+    {
+        unsafe {
+            let entropy = [42u8; 48];
+            T::prng_init(&entropy);
+
+            let mut pk = vec![0u8; T::PUBLIC_KEY_BYTES];
+            let mut sk = vec![0u8; T::SECRET_KEY_BYTES];
+            assert_eq!(T::keypair(&mut pk, &mut sk), 0);
+
+            let m = vec![0xAAu8; T::PARAM_SECURITY_BYTES];
+            let salt = vec![0x55u8; T::SALT_BYTES];
+
+            // 1. Process public key parameters
+            let pk_params = T::partial_public_key_encaps(&pk);
+
+            // 2. Derive shared secret and theta
+            let ss_params = T::derive_shared_secret(&m, &salt, pk_params.hash_ek_kem());
+
+            // 3. Process message parameters (sampling vectors using theta directly)
+            let msg_params = T::partial_message_encaps(ss_params.theta());
+
+            // Reconstruct PKE ciphertext components u and v
+            let mut u = vec![0u64; T::VEC_N_SIZE_64];
+            let mut v = vec![0u64; T::VEC_N_SIZE_64];
+            T::encrypt_pke(
+                &mut u,
+                &mut v,
+                &m,
+                msg_params.r1(),
+                pk_params.h(),
+                msg_params.r2(),
+                pk_params.s(),
+                msg_params.e(),
+            );
+
+            // Serialize KEM ciphertext
+            let mut ct = vec![0u8; T::CIPHERTEXT_BYTES];
+            T::serialize_ciphertext(&mut ct, &u, &v, &salt);
+
+            // Decapsulate
+            let mut ss_dec = vec![0u8; T::SHARED_SECRET_BYTES];
+            assert_eq!(T::dec(&mut ss_dec, &ct, &sk), 0);
+
+            // Verify they match
+            assert_eq!(ss_params.K(), ss_dec.as_slice());
+        }
+    }
+
+    #[test]
+    fn test_hqc1_flow() {
+        test_flow_generic::<Hqc1>();
     }
 
     #[test]
     fn test_hqc3_flow() {
-        unsafe {
-            let entropy = [43u8; 48];
-            hqc3::prng_init(&entropy);
-
-            let mut pk = [0u8; hqc3::PUBLIC_KEY_BYTES];
-            let mut sk = [0u8; hqc3::SECRET_KEY_BYTES];
-            assert_eq!(hqc3::keypair(&mut pk, &mut sk), 0);
-
-            let mut ct = [0u8; hqc3::CIPHERTEXT_BYTES];
-            let mut ss_enc = [0u8; hqc3::SHARED_SECRET_BYTES];
-            assert_eq!(hqc3::c_crypto_kem_enc(ct.as_mut_ptr(), ss_enc.as_mut_ptr(), pk.as_ptr()), 0);
-
-            let mut ss_dec = [0u8; hqc3::SHARED_SECRET_BYTES];
-            assert_eq!(hqc3::dec(&mut ss_dec, &ct, &sk), 0);
-
-            assert_eq!(ss_enc, ss_dec);
-            assert_ne!(ss_enc, [0u8; hqc3::SHARED_SECRET_BYTES]);
-        }
+        test_flow_generic::<Hqc3>();
     }
 
     #[test]
     fn test_hqc5_flow() {
-        unsafe {
-            let entropy = [44u8; 48];
-            hqc5::prng_init(&entropy);
-
-            let mut pk = [0u8; hqc5::PUBLIC_KEY_BYTES];
-            let mut sk = [0u8; hqc5::SECRET_KEY_BYTES];
-            assert_eq!(hqc5::keypair(&mut pk, &mut sk), 0);
-
-            let mut ct = [0u8; hqc5::CIPHERTEXT_BYTES];
-            let mut ss_enc = [0u8; hqc5::SHARED_SECRET_BYTES];
-            assert_eq!(hqc5::c_crypto_kem_enc(ct.as_mut_ptr(), ss_enc.as_mut_ptr(), pk.as_ptr()), 0);
-
-            let mut ss_dec = [0u8; hqc5::SHARED_SECRET_BYTES];
-            assert_eq!(hqc5::dec(&mut ss_dec, &ct, &sk), 0);
-
-            assert_eq!(ss_enc, ss_dec);
-            assert_ne!(ss_enc, [0u8; hqc5::SHARED_SECRET_BYTES]);
-        }
+        test_flow_generic::<Hqc5>();
     }
 
     #[test]
     fn test_hqc1_decoupled_flow() {
-        unsafe {
-            let entropy = [42u8; 48];
-            hqc1::prng_init(&entropy);
-
-            let mut pk = [0u8; hqc1::PUBLIC_KEY_BYTES];
-            let mut sk = [0u8; hqc1::SECRET_KEY_BYTES];
-            assert_eq!(hqc1::keypair(&mut pk, &mut sk), 0);
-
-            let m = [0xAAu8; hqc1::PARAM_SECURITY_BYTES];
-            let salt = [0x55u8; hqc1::SALT_BYTES];
-
-            // 1. Process public key parameters
-            let pk_params = hqc1::partial_public_key_encaps(&pk);
-
-            // 2. Derive shared secret and theta
-            let ss_params = hqc1::derive_shared_secret(&m, &salt, &pk_params.hash_ek_kem);
-
-            // 3. Process message parameters (sampling vectors using theta directly)
-            let msg_params = hqc1::partial_message_encaps(&ss_params.theta);
-
-            // Reconstruct PKE ciphertext components u and v
-            let mut u = [0u64; hqc1::VEC_N_SIZE_64];
-            hqc1::c_vect_mul(u.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.h.as_ptr());
-            hqc1::c_vect_add(u.as_mut_ptr(), msg_params.r1.as_ptr(), u.as_ptr(), hqc1::VEC_N_SIZE_64 as u32);
-
-            let mut v = [0u64; hqc1::VEC_N_SIZE_64];
-            hqc1::c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
-
-            let mut tmp = [0u64; hqc1::VEC_N_SIZE_64];
-            hqc1::c_vect_mul(tmp.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.s.as_ptr());
-            hqc1::c_vect_add(tmp.as_mut_ptr(), msg_params.e.as_ptr(), tmp.as_ptr(), hqc1::VEC_N_SIZE_64 as u32);
-            hqc1::c_vect_truncate(tmp.as_mut_ptr());
-
-            hqc1::c_vect_add(v.as_mut_ptr(), v.as_ptr(), tmp.as_ptr(), hqc1::VEC_N1N2_SIZE_64 as u32);
-
-            // Serialize KEM ciphertext
-            let mut ct = [0u8; hqc1::CIPHERTEXT_BYTES];
-            let u_bytes = core::slice::from_raw_parts(u.as_ptr() as *const u8, hqc1::VEC_N_SIZE_BYTES);
-            ct[..hqc1::VEC_N_SIZE_BYTES].copy_from_slice(u_bytes);
-
-            let v_bytes = core::slice::from_raw_parts(v.as_ptr() as *const u8, hqc1::VEC_N1N2_SIZE_BYTES);
-            ct[hqc1::VEC_N_SIZE_BYTES .. hqc1::VEC_N_SIZE_BYTES + hqc1::VEC_N1N2_SIZE_BYTES].copy_from_slice(v_bytes);
-            ct[hqc1::VEC_N_SIZE_BYTES + hqc1::VEC_N1N2_SIZE_BYTES ..].copy_from_slice(&salt);
-
-            // Decapsulate
-            let mut ss_dec = [0u8; hqc1::SHARED_SECRET_BYTES];
-            assert_eq!(hqc1::dec(&mut ss_dec, &ct, &sk), 0);
-
-            // Verify they match
-            assert_eq!(ss_params.K, ss_dec);
-        }
+        test_decoupled_flow_generic::<Hqc1>();
     }
 
     #[test]
     fn test_hqc3_decoupled_flow() {
-        unsafe {
-            let entropy = [43u8; 48];
-            hqc3::prng_init(&entropy);
-
-            let mut pk = [0u8; hqc3::PUBLIC_KEY_BYTES];
-            let mut sk = [0u8; hqc3::SECRET_KEY_BYTES];
-            assert_eq!(hqc3::keypair(&mut pk, &mut sk), 0);
-
-            let m = [0xAAu8; hqc3::PARAM_SECURITY_BYTES];
-            let salt = [0x55u8; hqc3::SALT_BYTES];
-
-            // 1. Process public key parameters
-            let pk_params = hqc3::partial_public_key_encaps(&pk);
-
-            // 2. Derive shared secret and theta
-            let ss_params = hqc3::derive_shared_secret(&m, &salt, &pk_params.hash_ek_kem);
-
-            // 3. Process message parameters (sampling vectors using theta directly)
-            let msg_params = hqc3::partial_message_encaps(&ss_params.theta);
-
-            // Reconstruct PKE ciphertext components u and v
-            let mut u = [0u64; hqc3::VEC_N_SIZE_64];
-            hqc3::c_vect_mul(u.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.h.as_ptr());
-            hqc3::c_vect_add(u.as_mut_ptr(), msg_params.r1.as_ptr(), u.as_ptr(), hqc3::VEC_N_SIZE_64 as u32);
-
-            let mut v = [0u64; hqc3::VEC_N_SIZE_64];
-            hqc3::c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
-
-            let mut tmp = [0u64; hqc3::VEC_N_SIZE_64];
-            hqc3::c_vect_mul(tmp.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.s.as_ptr());
-            hqc3::c_vect_add(tmp.as_mut_ptr(), msg_params.e.as_ptr(), tmp.as_ptr(), hqc3::VEC_N_SIZE_64 as u32);
-            hqc3::c_vect_truncate(tmp.as_mut_ptr());
-
-            hqc3::c_vect_add(v.as_mut_ptr(), v.as_ptr(), tmp.as_ptr(), hqc3::VEC_N1N2_SIZE_64 as u32);
-
-            // Serialize KEM ciphertext
-            let mut ct = [0u8; hqc3::CIPHERTEXT_BYTES];
-            let u_bytes = core::slice::from_raw_parts(u.as_ptr() as *const u8, hqc3::VEC_N_SIZE_BYTES);
-            ct[..hqc3::VEC_N_SIZE_BYTES].copy_from_slice(u_bytes);
-
-            let v_bytes = core::slice::from_raw_parts(v.as_ptr() as *const u8, hqc3::VEC_N1N2_SIZE_BYTES);
-            ct[hqc3::VEC_N_SIZE_BYTES .. hqc3::VEC_N_SIZE_BYTES + hqc3::VEC_N1N2_SIZE_BYTES].copy_from_slice(v_bytes);
-            ct[hqc3::VEC_N_SIZE_BYTES + hqc3::VEC_N1N2_SIZE_BYTES ..].copy_from_slice(&salt);
-
-            // Decapsulate
-            let mut ss_dec = [0u8; hqc3::SHARED_SECRET_BYTES];
-            assert_eq!(hqc3::dec(&mut ss_dec, &ct, &sk), 0);
-
-            // Verify they match
-            assert_eq!(ss_params.K, ss_dec);
-        }
+        test_decoupled_flow_generic::<Hqc3>();
     }
 
     #[test]
     fn test_hqc5_decoupled_flow() {
-        unsafe {
-            let entropy = [44u8; 48];
-            hqc5::prng_init(&entropy);
-
-            let mut pk = [0u8; hqc5::PUBLIC_KEY_BYTES];
-            let mut sk = [0u8; hqc5::SECRET_KEY_BYTES];
-            assert_eq!(hqc5::keypair(&mut pk, &mut sk), 0);
-
-            let m = [0xAAu8; hqc5::PARAM_SECURITY_BYTES];
-            let salt = [0x55u8; hqc5::SALT_BYTES];
-
-            // 1. Process public key parameters
-            let pk_params = hqc5::partial_public_key_encaps(&pk);
-
-            // 2. Derive shared secret and theta
-            let ss_params = hqc5::derive_shared_secret(&m, &salt, &pk_params.hash_ek_kem);
-
-            // 3. Process message parameters (sampling vectors using theta directly)
-            let msg_params = hqc5::partial_message_encaps(&ss_params.theta);
-
-            // Reconstruct PKE ciphertext components u and v
-            let mut u = [0u64; hqc5::VEC_N_SIZE_64];
-            hqc5::c_vect_mul(u.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.h.as_ptr());
-            hqc5::c_vect_add(u.as_mut_ptr(), msg_params.r1.as_ptr(), u.as_ptr(), hqc5::VEC_N_SIZE_64 as u32);
-
-            let mut v = [0u64; hqc5::VEC_N_SIZE_64];
-            hqc5::c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
-
-            let mut tmp = [0u64; hqc5::VEC_N_SIZE_64];
-            hqc5::c_vect_mul(tmp.as_mut_ptr(), msg_params.r2.as_ptr(), pk_params.s.as_ptr());
-            hqc5::c_vect_add(tmp.as_mut_ptr(), msg_params.e.as_ptr(), tmp.as_ptr(), hqc5::VEC_N_SIZE_64 as u32);
-            hqc5::c_vect_truncate(tmp.as_mut_ptr());
-
-            hqc5::c_vect_add(v.as_mut_ptr(), v.as_ptr(), tmp.as_ptr(), hqc5::VEC_N1N2_SIZE_64 as u32);
-
-            // Serialize KEM ciphertext
-            let mut ct = [0u8; hqc5::CIPHERTEXT_BYTES];
-            let u_bytes = core::slice::from_raw_parts(u.as_ptr() as *const u8, hqc5::VEC_N_SIZE_BYTES);
-            ct[..hqc5::VEC_N_SIZE_BYTES].copy_from_slice(u_bytes);
-
-            let v_bytes = core::slice::from_raw_parts(v.as_ptr() as *const u8, hqc5::VEC_N1N2_SIZE_BYTES);
-            ct[hqc5::VEC_N_SIZE_BYTES .. hqc5::VEC_N_SIZE_BYTES + hqc5::VEC_N1N2_SIZE_BYTES].copy_from_slice(v_bytes);
-            ct[hqc5::VEC_N_SIZE_BYTES + hqc5::VEC_N1N2_SIZE_BYTES ..].copy_from_slice(&salt);
-
-            // Decapsulate
-            let mut ss_dec = [0u8; hqc5::SHARED_SECRET_BYTES];
-            assert_eq!(hqc5::dec(&mut ss_dec, &ct, &sk), 0);
-
-            // Verify they match
-            assert_eq!(ss_params.K, ss_dec);
-        }
+        test_decoupled_flow_generic::<Hqc5>();
     }
 }
