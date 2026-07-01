@@ -118,6 +118,13 @@ pub trait HqcScheme {
         v: &[u64],
         salt: &[u8],
     );
+
+    const PARAM_N: usize;
+    const POINTS_NUM: usize;
+
+    fn interpolate(evals: &[crate::math::gf2_8984::Gf2_8984]) -> Vec<crate::math::gf2_8984::Gf2_8984>;
+    fn code_encode(em: &mut [u64], m: &[u8]);
+    fn get_point_degree(point_idx: usize) -> usize;
 }
 
 pub trait HqcPublicKeyParameters {
@@ -159,11 +166,20 @@ macro_rules! define_hqc_variant {
         $vec_n1n2_size_bytes:expr,
         $param_security_bytes:expr,
         $param_omega_r:expr,
-        $param_omega_e:expr
+        $param_omega_e:expr,
+        $param_n:expr,
+        $points_num:expr,
+        $matrix_file:literal,
+        $point_degrees:expr
     ) => {
         pub mod $mod_name {
             #[cfg(test)]
             use crate::hqc::{HqcPublicKeyParameters, HqcMessageParameters};
+
+            lazy_static::lazy_static! {
+                static ref MATRIX: Box<[[crate::math::gf2_8984::Gf2_8984; $points_num]; $points_num]> =
+                    crate::math::interpolate::load_matrix::<$points_num>(include_bytes!($matrix_file));
+            }
 
             pub const PUBLIC_KEY_BYTES: usize = $pk_bytes;
             pub const SECRET_KEY_BYTES: usize = $sk_bytes;
@@ -294,7 +310,6 @@ macro_rules! define_hqc_variant {
                 #[link_name = concat!($prefix, "vect_add")]
                 pub(crate) fn c_vect_add(o: *mut u64, v1: *const u64, v2: *const u64, size: u32);
 
-                #[cfg(test)]
                 #[link_name = concat!($prefix, "code_encode")]
                 pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
 
@@ -316,9 +331,42 @@ macro_rules! define_hqc_variant {
                 const PARAM_OMEGA_R: u16 = PARAM_OMEGA_R;
                 const PARAM_OMEGA_E: u16 = PARAM_OMEGA_E;
 
+                const PARAM_N: usize = $param_n;
+                const POINTS_NUM: usize = $points_num;
+
                 type PublicKeyParameters = PublicKeyParameters;
                 type SharedSecretParameters = SharedSecretParameters;
                 type MessageParameters = MessageParameters;
+
+                fn interpolate(evals: &[crate::math::gf2_8984::Gf2_8984]) -> Vec<crate::math::gf2_8984::Gf2_8984> {
+                    assert_eq!(evals.len(), Self::POINTS_NUM);
+                    let matrix = &*MATRIX;
+                    let mut result = vec![crate::math::gf2_8984::Gf2_8984::zero(); Self::POINTS_NUM];
+                    for j in 0..Self::POINTS_NUM {
+                        let mut sum = crate::math::gf2_8984::Gf2_8984::zero();
+                        for i in 0..Self::POINTS_NUM {
+                            let mut term = matrix[j][i];
+                            term.mul(&evals[i]);
+                            sum.add(&term);
+                        }
+                        result[j] = sum;
+                    }
+                    result
+                }
+
+                fn code_encode(em: &mut [u64], m: &[u8]) {
+                    assert_eq!(em.len(), VEC_N_SIZE_64);
+                    assert_eq!(m.len(), PARAM_SECURITY_BYTES);
+                    unsafe {
+                        c_code_encode(em.as_mut_ptr(), m.as_ptr() as *const u64);
+                    }
+                }
+
+                fn get_point_degree(point_idx: usize) -> usize {
+                    let degrees: &[usize] = &$point_degrees;
+                    degrees[point_idx - 1]
+                }
+
 
                 unsafe fn prng_init(entropy: &[u8]) {
                     let mut personal = [0u8; 0];
@@ -545,9 +593,9 @@ macro_rules! define_hqc_variant {
 }
 
 // Instantiate variants with respective parameters:
-define_hqc_variant!(hqc1, Hqc1, "hqc_1_", 2241, 2321, 32, 4433, 277, 276, 2209, 2208, 16, 75, 75);
-define_hqc_variant!(hqc3, Hqc3, "hqc_3_", 4514, 4602, 32, 8978, 561, 560, 4482, 4480, 24, 114, 114);
-define_hqc_variant!(hqc5, Hqc5, "hqc_5_", 7237, 7333, 32, 14421, 901, 900, 7205, 7200, 32, 149, 149);
+define_hqc_variant!(hqc1, Hqc1, "hqc_1_", 2241, 2321, 32, 4433, 277, 276, 2209, 2208, 16, 75, 75, 17669, 7, "math/interpolate_matrix_17669.bin", [4196, 4199, 4202, 4205, 4208, 4211, 4214]);
+define_hqc_variant!(hqc3, Hqc3, "hqc_3_", 4514, 4602, 32, 8978, 561, 560, 4482, 4480, 24, 114, 114, 35851, 15, "math/interpolate_matrix_35851.bin", [4414, 4421, 4428, 4435, 4442, 4449, 4456, 4463, 4470, 4477, 4484, 4491, 4498, 4505, 4512]);
+define_hqc_variant!(hqc5, Hqc5, "hqc_5_", 7237, 7333, 32, 14421, 901, 900, 7205, 7200, 32, 149, 149, 57637, 25, "math/interpolate_matrix_57637.bin", [3745, 3757, 3769, 3781, 3793, 3805, 3817, 3829, 3841, 3853, 3865, 3877, 3889, 3901, 3913, 3925, 3937, 3949, 3961, 3973, 3985, 3997, 4009, 4021, 4033]);
 
 pub use hqc1::Hqc1;
 pub use hqc3::Hqc3;
