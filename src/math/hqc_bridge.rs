@@ -71,7 +71,7 @@ pub fn generate_mask<'o>(
     ctx_seed[tl..tl + cl].copy_from_slice(context);
 
     let out_bytes = bytemuck::cast_slice_mut::<u64, u8>(&mut out[..n_words]);
-    
+
     let mut hasher = blake3::Hasher::new();
     hasher.update(ctx_seed);
     hasher.update(b"mask");

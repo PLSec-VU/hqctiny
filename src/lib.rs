@@ -1,13 +1,13 @@
 #![allow(non_snake_case)]
 
-pub mod hqc;
 pub mod client;
-pub mod server;
-pub mod traits;
 pub mod encoding;
 pub mod error;
+pub mod hqc;
 pub mod math;
-pub use hqc::{hqc1, hqc3, hqc5, Hqc1, Hqc3, Hqc5, HqcScheme};
+pub mod server;
+pub mod traits;
+pub use hqc::{Hqc1, Hqc3, Hqc5, HqcScheme, hqc1, hqc3, hqc5};
 
 #[cfg(test)]
 mod tests {
@@ -55,13 +55,13 @@ mod tests {
         let store = SharedSessionStore {
             sessions: sessions.clone(),
         };
-        
+
         let server = Server::<SCHEME, _, _, _>::new(
             store,
             MockEntropy,
             MockTime { time: 1000 },
             [0x42; 32], // server key
-            3600, // timeout
+            3600,       // timeout
         );
 
         let client = Client::<SCHEME, _, _, _, _>::new(
@@ -77,12 +77,19 @@ mod tests {
 
         // 1. Initialize Handshake Request
         let (client, req) = client.initialize();
-        
+
         // Serialize Handshake Request
         let mut buf = vec![0u8; 4096];
-        let encoded_req = crate::encoding::encode_packet(&crate::encoding::Packet::HandshakeRequest(req), &mut buf);
+        let encoded_req = crate::encoding::encode_packet(
+            &crate::encoding::Packet::HandshakeRequest(req),
+            &mut buf,
+        );
         packets_sent += 1;
-        println!("[{}] Client -> Server: HandshakeRequest ({} bytes)", name, encoded_req.len());
+        println!(
+            "[{}] Client -> Server: HandshakeRequest ({} bytes)",
+            name,
+            encoded_req.len()
+        );
 
         // Deserialize Handshake Request on the server side
         let decoded_req_pkt = crate::encoding::decode_packet(encoded_req).unwrap();
@@ -96,9 +103,16 @@ mod tests {
 
         // Serialize Handshake Response
         let mut buf = vec![0u8; 4096];
-        let encoded_res = crate::encoding::encode_packet(&crate::encoding::Packet::HandshakeResponse(res), &mut buf);
+        let encoded_res = crate::encoding::encode_packet(
+            &crate::encoding::Packet::HandshakeResponse(res),
+            &mut buf,
+        );
         packets_received += 1;
-        println!("[{}] Server -> Client: HandshakeResponse ({} bytes)", name, encoded_res.len());
+        println!(
+            "[{}] Server -> Client: HandshakeResponse ({} bytes)",
+            name,
+            encoded_res.len()
+        );
 
         // Deserialize Handshake Response on the client side
         let decoded_res_pkt = crate::encoding::decode_packet(encoded_res).unwrap();
@@ -120,11 +134,17 @@ mod tests {
 
             // Serialize Point Request
             let mut buf = vec![0u8; 8192];
-            let encoded_preq = crate::encoding::encode_packet(&crate::encoding::Packet::PointRequest(req), &mut buf);
+            let encoded_preq = crate::encoding::encode_packet(
+                &crate::encoding::Packet::PointRequest(req),
+                &mut buf,
+            );
             packets_sent += 1;
             println!(
                 "[{}] Client -> Server: PointRequest (index={}, type={:?}, {} bytes)",
-                name, req_index, req_type, encoded_preq.len()
+                name,
+                req_index,
+                req_type,
+                encoded_preq.len()
             );
 
             // Deserialize Point Request on the server side
@@ -139,11 +159,17 @@ mod tests {
 
             // Serialize Point Response
             let mut buf = vec![0u8; 8192];
-            let encoded_pres = crate::encoding::encode_packet(&crate::encoding::Packet::PointResponse(point_res), &mut buf);
+            let encoded_pres = crate::encoding::encode_packet(
+                &crate::encoding::Packet::PointResponse(point_res),
+                &mut buf,
+            );
             packets_received += 1;
             println!(
                 "[{}] Server -> Client: PointResponse (index={}, type={:?}, {} bytes)",
-                name, req_index, req_type, encoded_pres.len()
+                name,
+                req_index,
+                req_type,
+                encoded_pres.len()
             );
 
             // Deserialize Point Response on the client side
@@ -164,7 +190,10 @@ mod tests {
         }
 
         let client_key = client_key.expect("Handshake should complete and return session key");
-        assert!(!client_key.iter().all(|&b| b == 0), "Session key should not be all zeros");
+        assert!(
+            !client_key.iter().all(|&b| b == 0),
+            "Session key should not be all zeros"
+        );
 
         // 5. Verify server has saved the identical session key
         let saved = sessions.lock().unwrap();

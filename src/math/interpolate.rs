@@ -1,6 +1,6 @@
 //! Interpolation via precomputed inverse Vandermonde matrices.
 
-use super::gf2_8984::{Gf2_8984, GF28984_NUM_U64};
+use super::gf2_8984::{GF28984_NUM_U64, Gf2_8984};
 
 /// Load a precomputed matrix from embedded binary data.
 ///

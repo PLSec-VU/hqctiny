@@ -109,18 +109,15 @@ pub trait HqcScheme {
     /// * `u` - PKE ciphertext component `u`. Must have length `Self::VEC_N_SIZE_64` words.
     /// * `v` - PKE ciphertext component `v`. Must have length `Self::VEC_N_SIZE_64` words.
     /// * `salt` - Salt byte array. Must have length `Self::SALT_BYTES` (16 bytes).
-    fn serialize_ciphertext(
-        ct: &mut [u8],
-        u: &[u64],
-        v: &[u64],
-        salt: &[u8],
-    );
+    fn serialize_ciphertext(ct: &mut [u8], u: &[u64], v: &[u64], salt: &[u8]);
 
     const PARAM_N: usize;
     const PARAM_N1N2: usize;
     const POINTS_NUM: usize;
 
-    fn interpolate(evals: &[crate::math::gf2_8984::Gf2_8984]) -> Vec<crate::math::gf2_8984::Gf2_8984>;
+    fn interpolate(
+        evals: &[crate::math::gf2_8984::Gf2_8984],
+    ) -> Vec<crate::math::gf2_8984::Gf2_8984>;
     fn code_encode(em: &mut [u64], m: &[u8]);
     fn get_point_degree(point_idx: usize) -> usize;
 }
@@ -544,6 +541,9 @@ macro_rules! define_hqc_variant {
             /// Generates a public and secret keypair seeded with cryptographic entropy.
             ///
             /// Returns `0` on success. Thread-safe.
+            ///
+            /// # Safety
+            /// `entropy` must contain at least 48 bytes of high-quality randomness.
             pub unsafe fn keypair(entropy: &[u8], pk: &mut [u8; PUBLIC_KEY_BYTES], sk: &mut [u8; SECRET_KEY_BYTES]) -> i32 {
                 unsafe {
                     <$struct_name as crate::hqc::HqcScheme>::keypair(entropy, pk, sk)
@@ -583,9 +583,71 @@ macro_rules! define_hqc_variant {
 }
 
 // Instantiate variants with respective parameters:
-define_hqc_variant!(hqc1, Hqc1, "hqc_1_", 2241, 2321, 32, 4433, 277, 276, 2209, 2208, 16, 75, 75, 17669, 7, "math/interpolate_matrix_17669.bin", [4196, 4199, 4202, 4205, 4208, 4211, 4214]);
-define_hqc_variant!(hqc3, Hqc3, "hqc_3_", 4514, 4602, 32, 8978, 561, 560, 4482, 4480, 24, 114, 114, 35851, 15, "math/interpolate_matrix_35851.bin", [4414, 4421, 4428, 4435, 4442, 4449, 4456, 4463, 4470, 4477, 4484, 4491, 4498, 4505, 4512]);
-define_hqc_variant!(hqc5, Hqc5, "hqc_5_", 7237, 7333, 32, 14421, 901, 900, 7205, 7200, 32, 149, 149, 57637, 25, "math/interpolate_matrix_57637.bin", [3745, 3757, 3769, 3781, 3793, 3805, 3817, 3829, 3841, 3853, 3865, 3877, 3889, 3901, 3913, 3925, 3937, 3949, 3961, 3973, 3985, 3997, 4009, 4021, 4033]);
+define_hqc_variant!(
+    hqc1,
+    Hqc1,
+    "hqc_1_",
+    2241,
+    2321,
+    32,
+    4433,
+    277,
+    276,
+    2209,
+    2208,
+    16,
+    75,
+    75,
+    17669,
+    7,
+    "math/interpolate_matrix_17669.bin",
+    [4196, 4199, 4202, 4205, 4208, 4211, 4214]
+);
+define_hqc_variant!(
+    hqc3,
+    Hqc3,
+    "hqc_3_",
+    4514,
+    4602,
+    32,
+    8978,
+    561,
+    560,
+    4482,
+    4480,
+    24,
+    114,
+    114,
+    35851,
+    15,
+    "math/interpolate_matrix_35851.bin",
+    [
+        4414, 4421, 4428, 4435, 4442, 4449, 4456, 4463, 4470, 4477, 4484, 4491, 4498, 4505, 4512
+    ]
+);
+define_hqc_variant!(
+    hqc5,
+    Hqc5,
+    "hqc_5_",
+    7237,
+    7333,
+    32,
+    14421,
+    901,
+    900,
+    7205,
+    7200,
+    32,
+    149,
+    149,
+    57637,
+    25,
+    "math/interpolate_matrix_57637.bin",
+    [
+        3745, 3757, 3769, 3781, 3793, 3805, 3817, 3829, 3841, 3853, 3865, 3877, 3889, 3901, 3913,
+        3925, 3937, 3949, 3961, 3973, 3985, 3997, 4009, 4021, 4033
+    ]
+);
 
 pub use hqc1::Hqc1;
 pub use hqc3::Hqc3;
@@ -641,12 +703,7 @@ mod tests {
             // Reconstruct PKE ciphertext components u and v
             let mut u = vec![0u64; T::VEC_N_SIZE_64];
             let mut v = vec![0u64; T::VEC_N_SIZE_64];
-            T::encrypt_pke(
-                &mut u,
-                &mut v,
-                &pk_params,
-                &msg_params,
-            );
+            T::encrypt_pke(&mut u, &mut v, &pk_params, &msg_params);
 
             // Serialize KEM ciphertext
             let mut ct = vec![0u8; T::CIPHERTEXT_BYTES];

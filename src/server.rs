@@ -1,12 +1,12 @@
 use crate::error::{Error, Result};
-use crate::hqc::{HqcScheme, HqcSharedSecretParameters, HqcMessageParameters};
+use crate::hqc::{HqcMessageParameters, HqcScheme, HqcSharedSecretParameters};
 use crate::math::gf2_8984::Gf2_8984;
 use crate::math::hqc_bridge;
 use crate::math::segmentation::{evaluate_at_generator, split};
 use crate::traits::*;
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit},
 };
 
 pub struct Server<SCHEME, SStore, E, Time>
@@ -60,7 +60,8 @@ where
         self.entropy_provider.random_bytes(&mut nonce);
 
         let cipher = XChaCha20Poly1305::new(&derived_key.into());
-        let ct = cipher.encrypt(XNonce::from_slice(&nonce), plaintext)
+        let ct = cipher
+            .encrypt(XNonce::from_slice(&nonce), plaintext)
             .map_err(|_| Error::EncryptionError)?;
 
         let mut cookie = vec![0u8; 24 + ct.len()];
@@ -83,7 +84,8 @@ where
 
         let (nonce_bytes, ct_bytes) = cookie.split_at(24);
         let cipher = XChaCha20Poly1305::new(&derived_key.into());
-        let pt = cipher.decrypt(XNonce::from_slice(nonce_bytes), ct_bytes)
+        let pt = cipher
+            .decrypt(XNonce::from_slice(nonce_bytes), ct_bytes)
             .map_err(|_| Error::DecryptionError)?;
         Ok(pt)
     }
@@ -95,10 +97,10 @@ where
         if ts < now.saturating_sub(self.timeout) {
             return Err(Error::TimestampTooOld);
         }
-        if let Some((stored_ts, _)) = self.session_store.get_session(&req.hash_ek_kem) {
-            if ts <= stored_ts {
-                return Err(Error::TimestampNotIncreasing);
-            }
+        if let Some((stored_ts, _)) = self.session_store.get_session(&req.hash_ek_kem)
+            && ts <= stored_ts
+        {
+            return Err(Error::TimestampNotIncreasing);
         }
 
         let mut m = vec![0u8; SCHEME::PARAM_SECURITY_BYTES];
@@ -115,7 +117,8 @@ where
         let copy_len = k_session.len().min(32);
         k_session_32[..copy_len].copy_from_slice(&k_session[..copy_len]);
 
-        self.session_store.save_session(&req.hash_ek_kem, ts, k_session_32);
+        self.session_store
+            .save_session(&req.hash_ek_kem, ts, k_session_32);
 
         let mut plaintext = vec![0u8; 32 + SCHEME::PARAM_SECURITY_BYTES];
         plaintext[..32].copy_from_slice(theta);
@@ -123,10 +126,7 @@ where
 
         let cookie = self.encrypt_cookie(&plaintext, ts)?;
 
-        Ok(HandshakeResponse {
-            cookie,
-            salt,
-        })
+        Ok(HandshakeResponse { cookie, salt })
     }
 
     pub fn handle_point_request(&self, req: PointRequest) -> Result<PointResponse> {

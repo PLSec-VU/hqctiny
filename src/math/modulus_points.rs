@@ -1,5 +1,5 @@
-use crate::math::gf2_8984::Gf2_8984;
 use crate::hqc::HqcScheme;
+use crate::math::gf2_8984::Gf2_8984;
 
 /// Multiplies the element by x^n + 1 where n is an argument
 #[inline]

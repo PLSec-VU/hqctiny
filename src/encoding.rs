@@ -1,7 +1,7 @@
 //! Custom binary packet encoding.
 
 use crate::error::{Error, Result};
-use crate::math::gf2_8984::{Gf2_8984, GF28984_NUM_U64};
+use crate::math::gf2_8984::{GF28984_NUM_U64, Gf2_8984};
 use crate::traits::*;
 
 // ── Packet type enum ───────────────────────────────────────────────
@@ -142,19 +142,13 @@ pub fn decode_handshake_response(data: &[u8]) -> Result<HandshakeResponse> {
     cookie.copy_from_slice(&data[pos..pos + cookie_len]);
     pos += cookie_len;
     let salt = get_array::<16>(data, &mut pos)?;
-    Ok(HandshakeResponse {
-        cookie,
-        salt,
-    })
+    Ok(HandshakeResponse { cookie, salt })
 }
 
 pub fn encode_point_request<'o>(req: &PointRequest, out: &'o mut [u8]) -> &'o mut [u8] {
     let cookie_len = req.cookie.len();
     let total = 1 + 2 + cookie_len + 8 + GF2_8984_BYTES;
-    assert!(
-        out.len() >= total,
-        "encode_point_request buffer too small"
-    );
+    assert!(out.len() >= total, "encode_point_request buffer too small");
     let mut pos = 0;
     let idx = req.point_index.max(1);
     out[pos] = (idx & KIND_MASK)
@@ -210,10 +204,7 @@ pub fn decode_point_request(data: &[u8]) -> Result<PointRequest> {
 
 pub fn encode_point_response<'o>(res: &PointResponse, out: &'o mut [u8]) -> &'o mut [u8] {
     let total = 1 + 8 + GF2_8984_BYTES;
-    assert!(
-        out.len() >= total,
-        "encode_point_response buffer too small"
-    );
+    assert!(out.len() >= total, "encode_point_response buffer too small");
     let mut pos = 0;
     let idx = res.point_index.max(1);
     out[pos] = DIR_BIT

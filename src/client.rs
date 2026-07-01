@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::hqc::{HqcScheme, HqcPublicKeyParameters};
+use crate::hqc::{HqcPublicKeyParameters, HqcScheme};
 use crate::math::gf2_8984::Gf2_8984;
 use crate::math::hqc_bridge;
 use crate::math::segmentation::{combine, evaluate_at_generator, split};
@@ -49,11 +49,7 @@ where
     E: EntropyProvider,
     Time: TimeProvider,
 {
-    pub fn new(
-        session_store: SStore,
-        entropy_provider: E,
-        time_provider: Time,
-    ) -> Self {
+    pub fn new(session_store: SStore, entropy_provider: E, time_provider: Time) -> Self {
         Self {
             session_store,
             entropy_provider,
@@ -112,6 +108,7 @@ where
     Time: TimeProvider,
 {
     /// Process the server's handshake response and prepare point requests.
+    #[allow(clippy::type_complexity)]
     pub fn handle_handshake_response(
         self,
         res: HandshakeResponse,
@@ -254,12 +251,10 @@ where
             // Pack u and v into the expected word arrays
             let mut u_words = vec![0u64; SCHEME::VEC_N_SIZE_64];
             let mut v_words = vec![0u64; SCHEME::VEC_N_SIZE_64];
-            u_words[..u_poly.len().min(SCHEME::VEC_N_SIZE_64)].copy_from_slice(
-                &u_poly[..u_poly.len().min(SCHEME::VEC_N_SIZE_64)],
-            );
-            v_words[..v_poly.len().min(SCHEME::VEC_N_SIZE_64)].copy_from_slice(
-                &v_poly[..v_poly.len().min(SCHEME::VEC_N_SIZE_64)],
-            );
+            u_words[..u_poly.len().min(SCHEME::VEC_N_SIZE_64)]
+                .copy_from_slice(&u_poly[..u_poly.len().min(SCHEME::VEC_N_SIZE_64)]);
+            v_words[..v_poly.len().min(SCHEME::VEC_N_SIZE_64)]
+                .copy_from_slice(&v_poly[..v_poly.len().min(SCHEME::VEC_N_SIZE_64)]);
 
             // Serialize HQC ciphertext
             let mut ct = vec![0u8; SCHEME::CIPHERTEXT_BYTES];
