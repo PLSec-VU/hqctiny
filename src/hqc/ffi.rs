@@ -25,10 +25,6 @@ macro_rules! hqc_ffi_decls {
             #[link_name = concat!($prefix, "crypto_kem_keypair")]
             pub(crate) fn c_crypto_kem_keypair(pk: *mut u8, sk: *mut u8) -> i32;
 
-            #[cfg(test)]
-            #[link_name = concat!($prefix, "crypto_kem_enc")]
-            pub(crate) fn c_crypto_kem_enc(ct: *mut u8, ss: *mut u8, pk: *const u8) -> i32;
-
             #[link_name = concat!($prefix, "crypto_kem_dec")]
             pub(crate) fn c_crypto_kem_dec(ss: *mut u8, ct: *const u8, sk: *const u8) -> i32;
 
@@ -60,18 +56,22 @@ macro_rules! hqc_ffi_decls {
                 weight: u16,
             );
 
-            #[cfg(test)]
+            #[link_name = concat!($prefix, "code_encode")]
+            pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
+        }
+
+        // These are unused outside of tests
+        #[cfg(test)]
+        unsafe extern "C" {
+            #[link_name = concat!($prefix, "crypto_kem_enc")]
+            pub(crate) fn c_crypto_kem_enc(ct: *mut u8, ss: *mut u8, pk: *const u8) -> i32;
+
             #[link_name = concat!($prefix, "vect_mul")]
             pub(crate) fn c_vect_mul(o: *mut u64, v1: *const u64, v2: *const u64);
 
-            #[cfg(test)]
             #[link_name = concat!($prefix, "vect_add")]
             pub(crate) fn c_vect_add(o: *mut u64, v1: *const u64, v2: *const u64, size: u32);
 
-            #[link_name = concat!($prefix, "code_encode")]
-            pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
-
-            #[cfg(test)]
             #[link_name = concat!($prefix, "vect_truncate")]
             pub(crate) fn c_vect_truncate(v: *mut u64);
         }
