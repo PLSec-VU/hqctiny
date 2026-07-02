@@ -42,6 +42,40 @@ where
     _phantom: std::marker::PhantomData<SCHEME>,
 }
 
+fn build_merkle_tree<SCHEME: HqcScheme>(
+    pk: &[u8],
+) -> (
+    rs_merkle::MerkleTree<Blake3Algorithm>,
+    Vec<(u8, PointType, Gf2_8984)>,
+) {
+    let pk_params = SCHEME::partial_public_key_encaps(pk);
+    let h_blocks = split(pk_params.h());
+    let s_blocks = split(pk_params.s());
+    let points_num = SCHEME::POINTS_NUM;
+
+    let mut leaves = Vec::with_capacity(points_num * 2);
+    let mut point_data = Vec::with_capacity(points_num * 2);
+
+    for i in 0..points_num as u8 {
+        let mut h_xi = Gf2_8984::zero();
+        evaluate_at_generator(&h_blocks, i + 1, &mut h_xi);
+        let leaf_bytes = serialize_point_leaf(i + 1, PointType::U, &h_xi);
+        leaves.push(Blake3Algorithm::hash(&leaf_bytes));
+        point_data.push((i + 1, PointType::U, h_xi));
+
+        let mut s_xi = Gf2_8984::zero();
+        evaluate_at_generator(&s_blocks, i + 1, &mut s_xi);
+        let leaf_bytes = serialize_point_leaf(i + 1, PointType::V, &s_xi);
+        leaves.push(Blake3Algorithm::hash(&leaf_bytes));
+        point_data.push((i + 1, PointType::V, s_xi));
+    }
+
+    (
+        rs_merkle::MerkleTree::<Blake3Algorithm>::from_leaves(&leaves),
+        point_data,
+    )
+}
+
 impl<SCHEME, SStore, E> Client<SCHEME, SStore, E, Initial>
 where
     SCHEME: HqcScheme,
@@ -76,7 +110,14 @@ where
         let pk_params = SCHEME::partial_public_key_encaps(&pk);
         let hash_ek_kem = *pk_params.hash_ek_kem();
 
-        let request = HandshakeRequest { hash_ek_kem };
+        // Build Merkle tree to get the root hash
+        let (tree, _) = build_merkle_tree::<SCHEME>(&pk);
+        let merkle_root = tree.root().expect("Merkle tree has leaves");
+
+        let request = HandshakeRequest {
+            hash_ek_kem,
+            merkle_root,
+        };
 
         let next_state = Client {
             session_store: self.session_store,
@@ -108,36 +149,23 @@ where
         Client<SCHEME, SStore, E, CollectingPoints>,
         Vec<PointRequest>,
     )> {
-        let pk_params = SCHEME::partial_public_key_encaps(&self.state.pk);
+        let (tree, point_data) = build_merkle_tree::<SCHEME>(&self.state.pk);
+        let merkle_root = tree
+            .root()
+            .ok_or(Error::Other("Merkle tree root missing"))?;
 
-        // Split h and s into K[z] blocks for efficient evaluation
-        let h_blocks = split(pk_params.h());
-        let s_blocks = split(pk_params.s());
-
-        // Generate POINTS_NUM point requests (one U and one V per point)
-        let points_num = SCHEME::POINTS_NUM;
-        let mut point_requests = Vec::with_capacity(points_num * 2);
-        for i in 0..points_num as u8 {
-            // h(x_i) where x_i = a^(i+1)
-            let mut h_xi = Gf2_8984::zero();
-            evaluate_at_generator(&h_blocks, i + 1, &mut h_xi);
+        let mut point_requests = Vec::with_capacity(point_data.len());
+        for (idx, (point_index, point_type, public_eval)) in point_data.into_iter().enumerate() {
+            let proof = tree.proof(&[idx]);
+            let witness = proof.to_bytes();
             point_requests.push(PointRequest {
                 cookie: res.cookie.clone(),
                 key_index: res.key_index,
-                point_index: i + 1,
-                point_type: PointType::U,
-                public_eval: h_xi,
-            });
-
-            // s(x_i) where x_i = a^(i+1)
-            let mut s_xi = Gf2_8984::zero();
-            evaluate_at_generator(&s_blocks, i + 1, &mut s_xi);
-            point_requests.push(PointRequest {
-                cookie: res.cookie.clone(),
-                key_index: res.key_index,
-                point_index: i + 1,
-                point_type: PointType::V,
-                public_eval: s_xi,
+                point_index,
+                point_type,
+                public_eval,
+                merkle_root,
+                witness,
             });
         }
 

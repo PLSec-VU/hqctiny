@@ -71,7 +71,7 @@ pub fn encode_handshake_request<'o>(
     req: &HandshakeRequest,
     out: &'o mut [u8],
 ) -> Result<&'o mut [u8]> {
-    let total = 33;
+    let total = 65;
     if out.len() < total {
         return Err(Error::SerializationError);
     }
@@ -80,11 +80,13 @@ pub fn encode_handshake_request<'o>(
     pos += 1;
     out[pos..pos + 32].copy_from_slice(&req.hash_ek_kem);
     pos += 32;
+    out[pos..pos + 32].copy_from_slice(&req.merkle_root);
+    pos += 32;
     Ok(&mut out[..pos])
 }
 
 pub fn decode_handshake_request(data: &[u8]) -> Result<HandshakeRequest> {
-    if data.len() < 33 {
+    if data.len() < 65 {
         return Err(Error::SerializationError);
     }
     if data[0] != 0x00 {
@@ -92,7 +94,11 @@ pub fn decode_handshake_request(data: &[u8]) -> Result<HandshakeRequest> {
     }
     let mut pos = 1;
     let hash_ek_kem = get_array::<32>(data, &mut pos)?;
-    Ok(HandshakeRequest { hash_ek_kem })
+    let merkle_root = get_array::<32>(data, &mut pos)?;
+    Ok(HandshakeRequest {
+        hash_ek_kem,
+        merkle_root,
+    })
 }
 
 pub fn encode_handshake_response<'o>(
@@ -158,7 +164,8 @@ pub fn encode_point_request<'o, T: HqcScheme>(
     let cookie_len = req.cookie.len();
     let limbs = public_eval_limbs(req.point_index, T::VEC_N_SIZE_64);
     let eval_bytes = limbs * 8;
-    let total = 1 + 2 + cookie_len + eval_bytes;
+    let witness_len = req.witness.len();
+    let total = 1 + 2 + cookie_len + eval_bytes + 32 + 2 + witness_len;
     if out.len() < total {
         return Err(Error::SerializationError);
     }
@@ -181,6 +188,14 @@ pub fn encode_point_request<'o, T: HqcScheme>(
         out[pos..pos + 8].copy_from_slice(&req.public_eval.data[i].to_le_bytes());
         pos += 8;
     }
+
+    out[pos..pos + 32].copy_from_slice(&req.merkle_root);
+    pos += 32;
+
+    put_u16_into(out, &mut pos, witness_len as u16);
+    out[pos..pos + witness_len].copy_from_slice(&req.witness);
+    pos += witness_len;
+
     Ok(&mut out[..pos])
 }
 
@@ -208,7 +223,7 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
 
     let limbs = public_eval_limbs(point_index, T::VEC_N_SIZE_64);
     let eval_bytes = limbs * 8;
-    if pos + cookie_len + eval_bytes > data.len() {
+    if pos + cookie_len + eval_bytes + 32 + 2 > data.len() {
         return Err(Error::SerializationError);
     }
     let mut cookie = vec![0u8; cookie_len];
@@ -226,12 +241,25 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
     }
     let public_eval = Gf2_8984::new(data_limbs);
 
+    let mut merkle_root = [0u8; 32];
+    merkle_root.copy_from_slice(&data[pos..pos + 32]);
+    pos += 32;
+
+    let witness_len = get_u16(data, &mut pos)? as usize;
+    if pos + witness_len > data.len() {
+        return Err(Error::SerializationError);
+    }
+    let mut witness = vec![0u8; witness_len];
+    witness.copy_from_slice(&data[pos..pos + witness_len]);
+
     Ok(PointRequest {
         cookie,
         key_index,
         point_index,
         point_type,
         public_eval,
+        merkle_root,
+        witness,
     })
 }
 
@@ -324,12 +352,14 @@ mod tests {
     fn test_handshake_request_roundtrip() {
         let req = HandshakeRequest {
             hash_ek_kem: [0x42; 32],
+            merkle_root: [0x55; 32],
         };
         let mut buf = [0u8; 100];
         let enc = encode_handshake_request(&req, &mut buf).unwrap();
-        assert_eq!(enc.len(), 33);
+        assert_eq!(enc.len(), 65);
         let dec = decode_handshake_request(enc).unwrap();
         assert_eq!(dec.hash_ek_kem, req.hash_ek_kem);
+        assert_eq!(dec.merkle_root, req.merkle_root);
     }
 
     #[test]
@@ -356,6 +386,8 @@ mod tests {
             point_index: 1,
             point_type: PointType::U,
             public_eval: Gf2_8984::one(),
+            merkle_root: [0x55; 32],
+            witness: vec![9, 8, 7, 6],
         };
         let mut buf = [0u8; 2000];
         let enc = encode_point_request::<Hqc1>(&req, &mut buf).unwrap();
@@ -363,13 +395,15 @@ mod tests {
         // W = 4492, num_blocks = (277 * 64).div_ceil(4492) = 4
         // max_bits = 4492 + 1 * 3 = 4505
         // limbs = 4505.div_ceil(64) = 71
-        // size = 1 (tag) + 2 (cookie_len) + 3 (cookie) + 71 * 8 (568) = 574 bytes
-        assert_eq!(enc.len(), 574);
+        // size = 574 + 32 (merkle_root) + 2 (witness_len) + 4 (witness) = 612 bytes
+        assert_eq!(enc.len(), 612);
         let dec = decode_point_request::<Hqc1>(enc).unwrap();
         assert_eq!(dec.cookie, req.cookie);
         assert_eq!(dec.key_index, req.key_index);
         assert_eq!(dec.point_index, req.point_index);
         assert_eq!(dec.point_type, req.point_type);
         assert_eq!(dec.public_eval, req.public_eval);
+        assert_eq!(dec.merkle_root, req.merkle_root);
+        assert_eq!(dec.witness, req.witness);
     }
 }

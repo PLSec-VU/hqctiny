@@ -39,7 +39,7 @@ where
         }
     }
 
-    fn encrypt_cookie(&self, plaintext: &[u8]) -> Result<(Vec<u8>, u8)> {
+    fn encrypt_cookie(&self, plaintext: &[u8], merkle_root: &[u8; 32]) -> Result<(Vec<u8>, u8)> {
         let key_index = self.key_provider.current_key_index();
         let key = self
             .key_provider
@@ -50,8 +50,12 @@ where
         self.entropy_provider.random_bytes(&mut nonce);
 
         let cipher = XChaCha20Poly1305::new(&key.into());
+        let payload = chacha20poly1305::aead::Payload {
+            msg: plaintext,
+            aad: merkle_root,
+        };
         let ct = cipher
-            .encrypt(XNonce::from_slice(&nonce), plaintext)
+            .encrypt(XNonce::from_slice(&nonce), payload)
             .map_err(|_| Error::EncryptionError)?;
 
         let mut cookie = vec![0u8; 24 + ct.len()];
@@ -60,7 +64,12 @@ where
         Ok((cookie, key_index))
     }
 
-    fn decrypt_cookie(&self, cookie: &[u8], key_index: u8) -> Result<Vec<u8>> {
+    fn decrypt_cookie(
+        &self,
+        cookie: &[u8],
+        key_index: u8,
+        merkle_root: &[u8; 32],
+    ) -> Result<Vec<u8>> {
         if cookie.len() < 24 {
             return Err(Error::InvalidCookieLength);
         }
@@ -71,8 +80,12 @@ where
             .ok_or(Error::SessionExpired)?;
         let (nonce_bytes, ct_bytes) = cookie.split_at(24);
         let cipher = XChaCha20Poly1305::new(&key.into());
+        let payload = chacha20poly1305::aead::Payload {
+            msg: ct_bytes,
+            aad: merkle_root,
+        };
         let pt = cipher
-            .decrypt(XNonce::from_slice(nonce_bytes), ct_bytes)
+            .decrypt(XNonce::from_slice(nonce_bytes), payload)
             .map_err(|_| Error::DecryptionError)?;
         Ok(pt)
     }
@@ -103,7 +116,7 @@ where
         plaintext[..32].copy_from_slice(theta);
         plaintext[32..].copy_from_slice(&m);
 
-        let (cookie, key_index) = self.encrypt_cookie(&plaintext)?;
+        let (cookie, key_index) = self.encrypt_cookie(&plaintext, &req.merkle_root)?;
 
         Ok(HandshakeResponse {
             cookie,
@@ -119,10 +132,27 @@ where
             return Err(Error::InvalidPointIndex);
         }
 
-        let plaintext = self.decrypt_cookie(&req.cookie, req.key_index)?;
+        // Validate merkle_root using cookie's AAD
+        let plaintext = self.decrypt_cookie(&req.cookie, req.key_index, &req.merkle_root)?;
         if plaintext.len() != 32 + SCHEME::PARAM_SECURITY_BYTES {
             return Err(Error::InvalidCookie);
         }
+
+        // Validate Merkle proof for the public evaluation point
+        let leaf_bytes = serialize_point_leaf(req.point_index, req.point_type, &req.public_eval);
+        let leaf_hash = Blake3Algorithm::hash(&leaf_bytes);
+        let proof = rs_merkle::MerkleProof::<Blake3Algorithm>::try_from(req.witness.clone())
+            .map_err(|_| Error::InvalidWitness)?;
+
+        let index = match req.point_type {
+            PointType::U => (req.point_index as usize - 1) * 2,
+            PointType::V => (req.point_index as usize - 1) * 2 + 1,
+        };
+        let total_leaves = SCHEME::POINTS_NUM * 2;
+        if !proof.verify(req.merkle_root, &[index], &[leaf_hash], total_leaves) {
+            return Err(Error::MerkleVerificationFailed);
+        }
+
         let mut theta = [0u8; 32];
         theta.copy_from_slice(&plaintext[..32]);
         let m = &plaintext[32..];

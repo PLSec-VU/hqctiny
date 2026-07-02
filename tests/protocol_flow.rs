@@ -222,3 +222,85 @@ fn test_cookie_key_rotation() {
         Err(Error::SessionExpired) | Err(Error::DecryptionError)
     ));
 }
+
+#[test]
+fn test_invalid_merkle_witness_rejected() {
+    let sessions = Arc::new(Mutex::new(HashMap::new()));
+    let store = SharedSessionStore {
+        sessions: sessions.clone(),
+    };
+
+    let entropy = MockEntropy;
+    let key_provider = InMemoryKeyProvider::new(&entropy);
+
+    let server = Server::<Hqc1, _, _, _>::new(store, MockEntropy, key_provider);
+
+    let client = Client::<Hqc1, _, _, _>::new(
+        SharedSessionStore {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        },
+        MockEntropy,
+    );
+
+    // 1. Handshake
+    let (client, req) = client.initialize();
+    let res = server.handle_handshake(req).unwrap();
+
+    // 2. Client processes response and generates point requests
+    let (_client, point_reqs) = client.handle_handshake_response(res).unwrap();
+
+    // Test Case 1: Corrupted public evaluation point
+    let mut req_corrupted_val = point_reqs[0].clone();
+    req_corrupted_val.public_eval.data[0] ^= 1; // flip a bit
+    let res_corrupted_val = server.handle_point_request(req_corrupted_val);
+    assert_eq!(
+        res_corrupted_val.unwrap_err(),
+        Error::MerkleVerificationFailed
+    );
+
+    // Test Case 2: Corrupted witness bytes
+    let mut req_corrupted_witness = point_reqs[0].clone();
+    if !req_corrupted_witness.witness.is_empty() {
+        req_corrupted_witness.witness[0] ^= 1;
+    }
+    let res_corrupted_witness = server.handle_point_request(req_corrupted_witness);
+    assert!(matches!(
+        res_corrupted_witness,
+        Err(Error::MerkleVerificationFailed) | Err(Error::InvalidWitness)
+    ));
+}
+
+#[test]
+fn test_invalid_merkle_root_rejected() {
+    let sessions = Arc::new(Mutex::new(HashMap::new()));
+    let store = SharedSessionStore {
+        sessions: sessions.clone(),
+    };
+
+    let entropy = MockEntropy;
+    let key_provider = InMemoryKeyProvider::new(&entropy);
+
+    let server = Server::<Hqc1, _, _, _>::new(store, MockEntropy, key_provider);
+
+    let client = Client::<Hqc1, _, _, _>::new(
+        SharedSessionStore {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        },
+        MockEntropy,
+    );
+
+    // 1. Handshake
+    let (client, req) = client.initialize();
+    let res = server.handle_handshake(req).unwrap();
+
+    // 2. Client processes response and generates point requests
+    let (_client, point_reqs) = client.handle_handshake_response(res).unwrap();
+
+    // Corrupt merkle_root in the point request
+    let mut req_corrupted_root = point_reqs[0].clone();
+    req_corrupted_root.merkle_root[0] ^= 1;
+
+    // Since merkle_root is used as AAD, changing it should make decryption fail
+    let res_corrupted_root = server.handle_point_request(req_corrupted_root);
+    assert_eq!(res_corrupted_root.unwrap_err(), Error::DecryptionError);
+}

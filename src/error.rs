@@ -18,6 +18,8 @@ pub enum Error {
     InterpolationFailed,
     MacVerificationFailed,
     DecodingFailed,
+    MerkleVerificationFailed,
+    InvalidWitness,
     NetworkError(String),
     Other(&'static str),
 }

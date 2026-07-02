@@ -18,17 +18,18 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
 
   1. ephem_pk, ephem_sk <- keypair()
   2. hash_ek_kem <- hash(ephem_pk)
+  3. Generate all client evaluation points and compute Merkle tree root hash (`merkle_root`)
 
      [Packet 1: Handshake Request] 
      -------------------------------------------------------------------->
-      | 0x00 | hash_ek_kem (32 B) |
+      | 0x00 | hash_ek_kem (32 B) | merkle_root (32 B) |
 
                                                  1. REPLAY CHECK: If table[hash_ek_kem] already exists, DROP.
                                                  2. Generate random m (PARAM_SECURITY_BYTES) and salt (16 B).
                                                  3. K_session, theta <- derive_shared_secret(m, salt, hash_ek_kem).
                                                  4. OVERWRITE RAM: table[hash_ek_kem] = {K_session}.
                                                  5. Fetch current key_index (0 or 1) and active key from pool.
-                                                    Encrypt Cookie = AEAD_{ActiveKey}(theta || m) with a random 24‑byte nonce.
+                                                    Encrypt Cookie = AEAD_{ActiveKey}(theta || m) with AAD = merkle_root and a random 24‑byte nonce.
 
      [Packet 2: Handshake Response] 
      <--------------------------------------------------------------------
@@ -37,6 +38,14 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       Tag encodes direction (s→c), handshake kind, and the key_index bit (0x80 or 0xA0).
 
   1. Store cookie, salt, and key_index.
+
+> [!NOTE]
+> To avoid invading the HQC reference implementation (which internally computes
+`hash_ek_kem = hash(ek_pke)`) and prevent code duplication of the decapsulation
+math, this implementation sends `hash_ek_kem` and the Merkle tree root
+(`merkle_root`) as separate things instead. In a real/production implementation
+where modifying the reference code is permitted, one can opt to just use the
+Merkle tree root directly as the `hash_ek_kem`.
 
 
 ========================================================================================================
@@ -47,20 +56,21 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
 
      [Packet 3: Point Request] 
      -------------------------------------------------------------------->
-      | Tag | cookie_len (2 B LE) | Cookie | h(x_i) or s(x_i) (1128 B) |
+      | Tag | cookie_len (2 B LE) | Cookie | h(x_i) or s(x_i) (limbs*8) | merkle_root (32 B) | witness_len (2 B LE) | Witness |
       
       Tag encodes direction (c→s), point_type (U/V), key_index, and point_index.
 
                                                    1. Parse key_index from Tag.
-                                                   2. Decrypt Cookie using key at key_index → extract theta and m. If key was rotated/overwritten or decryption fails, DROP.
-                                                   3. Gen random quotient-blinding mask.
+                                                   2. Decrypt Cookie using key at key_index and AAD = merkle_root → extract theta and m. If key was rotated/overwritten or decryption fails, DROP.
+                                                   3. Verify that h(x_i) or s(x_i) belongs to the Merkle tree with root merkle_root using Witness. If verification fails, DROP.
+                                                   4. Gen random quotient-blinding mask.
                                                    For Type u:
-                                                    4. Load r1(x_i), r2(x_i) from theta, m.
-                                                    5. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1).
+                                                    5. Load r1(x_i), r2(x_i) from theta, m.
+                                                    6. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1).
                                                    For Type v:
-                                                    4. Load e(x_i), r2(x_i) from theta, m.
-                                                    5. Gen random truncate-blinding mask T(x) over [n1n2, n-1] from theta.
-                                                    6. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1).
+                                                    5. Load e(x_i), r2(x_i) from theta, m.
+                                                    6. Gen random truncate-blinding mask T(x) over [n1n2, n-1] from theta.
+                                                    7. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1).
 
      [Packet 4: Point Response] 
      <--------------------------------------------------------------------
@@ -109,13 +119,13 @@ All fields are packed sequentially after the tag byte.
 #### HandshakeRequest (tag `0x00`)
 
 ```
-┌───────┬──────────────────────┐
-│ 1 B   │ 32 B                 │
-│ 0x00  │ hash_ek_kem          │
-└───────┴──────────────────────┘
+┌───────┬──────────────────────┬──────────────────────┐
+│ 1 B   │ 32 B                 │ 32 B                 │
+│ 0x00  │ hash_ek_kem          │ merkle_root          │
+└───────┴──────────────────────┴──────────────────────┘
 ```
 
-Fixed size: **33 bytes**.
+Fixed size: **65 bytes**.
 
 #### HandshakeResponse (tag `0x80` or `0xA0`)
 
@@ -131,14 +141,14 @@ Size: **19 + cookie_len bytes**.
 #### PointRequest (tag = `idx | (if V { 0x40 }) | (if key_index == 1 { 0x20 })`)
 
 ```
-┌──────────────┬────────────────┬──────────┬─────────────────┐
-│ 1 B          │ 2 B            │ Var B    │ Var B           │
-│ Tag          │ cookie_len LE  │ cookie   │ public_eval     │
-│ (c→s)        │                │          │ (segmented LE)  │
-└──────────────┴────────────────┴──────────┴─────────────────┘
+┌───────┬────────────────┬──────────┬─────────────┬─────────────┬────────────────┬───────────┐
+│ 1 B   │ 2 B            │ Var B    │ Var B       │ 32 B        │ 2 B            │ Var B     │
+│ Tag   │ cookie_len LE  │ cookie   │ public_eval │ merkle_root │ witness_len LE │ witness   │
+│ (c→s) │                │          │ (segmented) │             │                │           │
+└───────┴────────────────┴──────────┴─────────────┴─────────────┴────────────────┴───────────┘
 ```
 
-Size: **3 + cookie_len + (limbs * 8) bytes**.
+Size: **5 + cookie_len + (limbs * 8) + 32 + witness_len bytes**.
 
 Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `public_eval` evaluated segmented polynomial has degree `< n/2 + epsilon` and most of its high-order coefficients are empty (zeros). It is only in the response, where the server multiplies two points, that the degree adds up to around `8984`. To optimize network bandwidth, only the active (non-zero) little-endian `u64` limbs of `public_eval` are serialized in the request.
 
