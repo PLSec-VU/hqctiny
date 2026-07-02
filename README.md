@@ -189,7 +189,7 @@ The table below shows the total number of round trips (request-response pairs) a
 
 ## Gf2_9009 Encoding
 
-Each `Gf2_9009` element (a polynomial in $F_2[z] / (z^{9009} + z^{29} + 1)$) is serialized as 141 consecutive `u64` limbs (1128 bytes) in little‑endian byte order.
+Each `Gf2_9009` element (a polynomial in $F_2[z] / z^{9009} + z^{29} + 1$) is serialized as 141 consecutive `u64` limbs (1128 bytes) in little‑endian byte order.
 
 ### Design Rationale
 
