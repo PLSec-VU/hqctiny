@@ -131,14 +131,21 @@ Size: **19 + cookie_len bytes**.
 #### PointRequest (tag = `idx | (if V { 0x40 }) | (if key_index == 1 { 0x20 })`)
 
 ```
-┌──────────────┬────────────────┬──────────┬────────────────┐
-│ 1 B          │ 2 B            │ Var B    │ 1128 B         │
-│ Tag          │ cookie_len LE  │ cookie   │ public_eval    │
-│ (c→s)        │                │          │ (Gf2_8984 LE)  │
-└──────────────┴────────────────┴──────────┴────────────────┘
+┌──────────────┬────────────────┬──────────┬─────────────────┐
+│ 1 B          │ 2 B            │ Var B    │ Var B           │
+│ Tag          │ cookie_len LE  │ cookie   │ public_eval     │
+│ (c→s)        │                │          │ (segmented LE)  │
+└──────────────┴────────────────┴──────────┴─────────────────┘
 ```
 
-Size: **1131 + cookie_len bytes**.
+Size: **3 + cookie_len + (limbs * 8) bytes**.
+
+Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `public_eval` evaluated segmented polynomial has degree `< n/2 + epsilon` and most of its high-order coefficients are empty (zeros). It is only in the response, where the server multiplies two points, that the degree adds up to around `8984`. To optimize network bandwidth, only the active (non-zero) little-endian `u64` limbs of `public_eval` are serialized in the request.
+
+The number of limbs transmitted is calculated as:
+`limbs = ceil((4492 + point_index * (num_blocks - 1)) / 64)`
+
+where `num_blocks` is the number of segmented blocks for the HQC variant (4 for HQC-1, 8 for HQC-3, and 13 for HQC-5).
 
 #### PointResponse (tag = `0x80 | idx | (if V { 0x40 })`)
 
@@ -154,7 +161,7 @@ Fixed size: **1129 bytes**.
 
 ### Gf2_8984 Encoding
 
-Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is serialized as 141 consecutive `u64` limbs, each in little‑endian byte order.
+Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs, each in little‑endian byte order. For `PointRequest` packets, this is optimized to transmit only the active limbs as described above.
 
 ### Security Warning
 
