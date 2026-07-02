@@ -56,17 +56,17 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       
       Tag encodes direction (c→s), point_type (U/V), key_index, and point_index.
 
-                                                   1. Parse key_index from Tag.
-                                                   2. Decrypt Cookie using key at key_index and AAD = merkle_root → extract theta and m. If key was rotated/overwritten or decryption fails, DROP.
-                                                   3. Verify that h(x_i) or s(x_i) belongs to the Merkle tree with root merkle_root using Witness. If verification fails, DROP.
-                                                   4. Gen random quotient-blinding mask.
-                                                   For Type u:
-                                                    5. Load r1(x_i), r2(x_i) from theta, m.
-                                                    6. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1).
-                                                   For Type v:
-                                                    5. Load e(x_i), r2(x_i) from theta, m.
-                                                    6. Gen random truncate-blinding mask T(x) over [n1n2, n-1] from theta.
-                                                    7. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1).
+                                                    1. Parse key_index from Tag.
+                                                    2. Decrypt Cookie using key at key_index and AAD = merkle_root → extract theta and m. If key was rotated/overwritten or decryption fails, DROP.
+                                                    3. Verify that h(x_i) or s(x_i) belongs to the Merkle tree with root merkle_root using Witness. If verification fails, DROP.
+                                                    4. Gen random quotient-blinding mask.
+                                                    For Type u:
+                                                     5. Load r1(x_i), r2(x_i) from theta, m.
+                                                     6. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1).
+                                                    For Type v:
+                                                     5. Load e(x_i), r2(x_i) from theta, m.
+                                                     6. Gen random truncate-blinding mask T(x) over [n1n2, n-1] from theta.
+                                                     7. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1).
 
      [Packet 4: Point Response] 
      <--------------------------------------------------------------------
@@ -88,8 +88,8 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
 ## Cookie Key Rotation
 Time validation is handled implicitly through **Windowed Symmetric Cookie Key Rotation**:
 - **Symmetric Cookie Pool:** The server keeps a local pool of exactly 2 symmetric keys ($s_0, s_1$).
-- **Implicit Expiry:** A background process rotates the keys every 90 seconds (1.5 minute). It generates a new active key and overwrites the older slot, yielding an effective session lifetime of 2 to 3 minutes.
-- **Validation Check:** Every `PointRequest` transmits the `key_index` (0 or 1) in its tag byte. The server attempts to decrypt the cookie using the corresponding key. If that slot was already overwritten by the rotation process, decryption fails automatically.
+- **Implicit Expiry:** A background process rotates the keys every 90 seconds (1.5 minute). It generates a new active key and overwrites the older slot, yielding an effective session lifetime of 2 to [...]
+- **Validation Check:** Every `PointRequest` transmits the `key_index` (0 or 1) in its tag byte. The server attempts to decrypt the cookie using the corresponding key. If that slot was already ove[...]
 
 ## Wire Format
 
@@ -118,23 +118,28 @@ All fields are packed sequentially after the tag byte.
 #### HandshakeResponse (tag `0x80` or `0xA0`)
 
 ```
-┌───────┬─────────────────────┬────────┐
-│ 1 B   │ 72+Sec B            │ 16 B   │
-│ Tag   │ cookie              │ salt   │
-└───────┴─────────────────────┴────────┘
+┌───────┬────────────────────────────────┬────────┐
+│ 1 B   │ 24+32+Sec+16 B                 │ 16 B   │
+│ Tag   │ cookie (nonce + ciphertext)    │ salt   │
+└───────┴────────────────────────────────┴────────┘
 ```
+
+**Cookie structure:**
+- 24 B: XChaCha20 nonce
+- 32 + PARAM_SECURITY_BYTES B: AEAD ciphertext (encrypts `theta || m`)
+- 16 B: Poly1305 authentication tag
 
 #### PointRequest (tag = `idx | (if V { 0x40 }) | (if key_index == 1 { 0x20 })`)
 
 ```
-┌───────┬─────────────────────┬─────────────┬─────────────┬───────────┐
-│ 1 B   │ 72+Sec B            │ limbs*8 B   │ 32 B        │ Var B     │
-│ Tag   │ cookie              │ public_eval │ merkle_root │ witness   │
-│ (c→s) │                     │ (segmented) │             │           │
-└───────┴─────────────────────┴─────────────┴─────────────┴───────────┘
+┌───────┬────────────────────────────────┬──────────────┬──────────────┬───────┐
+│ 1 B   │ 24+32+Sec+16 B                 │ limbs*8 B    │ 32 B         │ Var B │
+│ Tag   │ cookie (nonce + ciphertext)    │ public_eval  │ merkle_root  │witness│
+│ (c→s) │                                │ (segmented)  │              │       │
+└───────┴────────────────────────────────┴──────────────┴──────────────┴───────┘
 ```
 
-Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `public_eval` evaluated segmented polynomial has degree `< n/2 + epsilon` and most of its high-order coefficients are empty (zeros). It is only in the response, where the server multiplies two points, that the degree adds up to around `8984`. To optimize network bandwidth, we transmit a constant number of limbs representing the maximum bound across all evaluation points:
+Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `[...]
 
 `limbs = ceil((4492 + POINTS_NUM * (num_blocks - 1)) / 64)`
 
@@ -159,19 +164,20 @@ This yields a constant limb count for each variant:
 
 ### Packet Sizes
 
-The table below summarizes the maximum sizes of each packet type for each security parameters:
+The table below summarizes the maximum sizes of each packet type for each security parameter:
 
 | Packet Type | HQC-1 (128-bit) | HQC-3 (192-bit) | HQC-5 (256-bit) | Size Formula / Components |
 |-------------|-----------------|-----------------|-----------------|---------------------------|
 | **HandshakeRequest** | 65 B | 65 B | 65 B | `1 + 32 (hash_ek_kem) + 32 (merkle_root)` |
-| **HandshakeResponse** | 105 B | 113 B | 121 B | `19 + Cookie Size` (Cookie is `72 + SecParam`) |
-| **PointRequest** (Max) | 849 B | 905 B | 929 B | `33 + Cookie Size + (limbs * 8) + Witness Size` |
+| **HandshakeResponse** | 105 B | 113 B | 121 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + 16 (salt)` |
+| **PointRequest** (Max) | 849 B | 905 B | 929 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + (limbs * 8) (public_eval) + 32 (merkle_root) + Witness` |
 | **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_8984)` |
 
-- The witness proof size is at most 160 bytes for HQC-1 (depth 5) and 192 bytes for HQC-3/5 (depth 6).
-- The cookie is 24‑byte nonce + 32+`PARAM_SECURITY_BYTES`‑byte ciphertext of `theta` and `m` + 16‑byte tag.
+**Size key:**
+- `SecParam` = `PARAM_SECURITY_BYTES`: 16 B for HQC-1, 24 B for HQC-3, 32 B for HQC-5
+- **Witness** (Merkle proof): at most 160 bytes for HQC-1 (tree depth 5) and 192 bytes for HQC-3/5 (tree depth 6)
 
 
 ### Gf2_8984 Encoding
 
-Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs (1128 bytes), each in little‑endian byte order. For `PointRequest` packets, this is optimized to transmit only the active limbs as described above.
+Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs (1128 bytes), each in little‑endian byte order. For `Po[...]
