@@ -114,8 +114,8 @@ pub trait HqcScheme {
     const POINTS_NUM: usize;
 
     fn interpolate(
-        evals: &[crate::math::gf2_8984::Gf2_8984],
-    ) -> Vec<crate::math::gf2_8984::Gf2_8984>;
+        evals: &[crate::math::gf2_9009::Gf2_9009],
+    ) -> Vec<crate::math::gf2_9009::Gf2_9009>;
     fn code_encode(em: &mut [u64], m: &[u8]);
     fn get_point_degree(point_idx: usize) -> usize;
 }
@@ -165,7 +165,7 @@ macro_rules! define_hqc_variant {
             use crate::hqc::ffi::hqc_ffi_decls;
 
             lazy_static::lazy_static! {
-                static ref MATRIX: Box<[[crate::math::gf2_8984::Gf2_8984; $points_num]; $points_num]> =
+                static ref MATRIX: Box<[[crate::math::gf2_9009::Gf2_9009; $points_num]; $points_num]> =
                     crate::math::interpolate::load_matrix::<$points_num>(include_bytes!($matrix_file));
             }
 
@@ -262,12 +262,12 @@ macro_rules! define_hqc_variant {
                 type SharedSecretParameters = SharedSecretParameters;
                 type MessageParameters = MessageParameters;
 
-                fn interpolate(evals: &[crate::math::gf2_8984::Gf2_8984]) -> Vec<crate::math::gf2_8984::Gf2_8984> {
+                fn interpolate(evals: &[crate::math::gf2_9009::Gf2_9009]) -> Vec<crate::math::gf2_9009::Gf2_9009> {
                     assert_eq!(evals.len(), Self::POINTS_NUM);
                     let matrix = &*MATRIX;
-                    let mut result = vec![crate::math::gf2_8984::Gf2_8984::zero(); Self::POINTS_NUM];
+                    let mut result = vec![crate::math::gf2_9009::Gf2_9009::zero(); Self::POINTS_NUM];
                     for j in 0..Self::POINTS_NUM {
-                        let mut sum = crate::math::gf2_8984::Gf2_8984::zero();
+                        let mut sum = crate::math::gf2_9009::Gf2_9009::zero();
                         for i in 0..Self::POINTS_NUM {
                             let mut term = matrix[j][i];
                             term.mul(&evals[i]);
@@ -528,7 +528,7 @@ define_hqc_variant!(
     17669,
     7,
     "../math/interpolate_matrix_17669.bin",
-    [4196, 4199, 4202, 4205, 4208, 4211, 4214]
+    [4160, 4163, 4166, 4169, 4172, 4175, 4178]
 );
 define_hqc_variant!(
     hqc3,
@@ -549,7 +549,7 @@ define_hqc_variant!(
     15,
     "../math/interpolate_matrix_35851.bin",
     [
-        4414, 4421, 4428, 4435, 4442, 4449, 4456, 4463, 4470, 4477, 4484, 4491, 4498, 4505, 4512
+        4330, 4337, 4344, 4351, 4358, 4365, 4372, 4379, 4386, 4393, 4400, 4407, 4414, 4421, 4428
     ]
 );
 define_hqc_variant!(
@@ -571,8 +571,8 @@ define_hqc_variant!(
     25,
     "../math/interpolate_matrix_57637.bin",
     [
-        3745, 3757, 3769, 3781, 3793, 3805, 3817, 3829, 3841, 3853, 3865, 3877, 3889, 3901, 3913,
-        3925, 3937, 3949, 3961, 3973, 3985, 3997, 4009, 4021, 4033
+        3601, 3613, 3625, 3637, 3649, 3661, 3673, 3685, 3697, 3709, 3721, 3733, 3745, 3757, 3769,
+        3781, 3793, 3805, 3817, 3829, 3841, 3853, 3865, 3877, 3889
     ]
 );
 

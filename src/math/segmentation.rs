@@ -1,12 +1,12 @@
 //! Polynomial segmentation for the Binius-style tower construction.
 //!
-//! Converts between F2[x] polynomials and vectors of GF(2^8984) field elements
+//! Converts between F2[x] polynomials and vectors of GF(2^9009) field elements
 //! by splitting coefficient blocks of size W = DEGREE/2.
 
-use super::gf2_8984::{DEGREE, GF28984_NUM_U64, Gf2_8984};
+use super::gf2_9009::{DEGREE, GF29009_NUM_U64, Gf2_9009};
 
 /// Block size: half the field degree.
-pub const W: usize = DEGREE / 2; // 4492
+pub const W: usize = DEGREE / 2; // 4504
 
 #[inline(always)]
 fn get_64_bits(poly: &[u64], bit_idx: usize) -> u64 {
@@ -22,28 +22,31 @@ fn get_64_bits(poly: &[u64], bit_idx: usize) -> u64 {
     val
 }
 
-/// Split an F2[x] polynomial into GF(2^8984) elements.
-pub fn split(poly: &[u64]) -> Vec<Gf2_8984> {
+/// Split an F2[x] polynomial into GF(2^9009) elements.
+pub fn split(poly: &[u64]) -> Vec<Gf2_9009> {
     let total_bits = poly.len() * 64;
     let num_blocks = total_bits.div_ceil(W).max(1);
-    let mut out = vec![Gf2_8984::zero(); num_blocks];
+    let mut out = vec![Gf2_9009::zero(); num_blocks];
 
     #[allow(clippy::needless_range_loop)]
     for k in 0..num_blocks {
-        let mut data = [0u64; GF28984_NUM_U64];
+        let mut data = [0u64; GF29009_NUM_U64];
         let block_start_bit = k * W;
 
-        // 4492 bits = 70 words of 64 bits (4480 bits) + 1 word of 12 bits
-        #[allow(clippy::needless_range_loop)]
-        for w_out in 0..70 {
+        let full_words = W / 64;
+        let remaining_bits = W % 64;
+        for w_out in 0..full_words {
             let bit_idx = block_start_bit + w_out * 64;
             data[w_out] = get_64_bits(poly, bit_idx);
         }
-        let bit_idx = block_start_bit + 70 * 64;
-        let last_word = get_64_bits(poly, bit_idx);
-        data[70] = last_word & ((1u64 << 12) - 1);
+        if remaining_bits > 0 {
+            let bit_idx = block_start_bit + full_words * 64;
+            let last_word = get_64_bits(poly, bit_idx);
+            let mask = (1u64 << remaining_bits) - 1;
+            data[full_words] = last_word & mask;
+        }
 
-        out[k] = Gf2_8984::new(data);
+        out[k] = Gf2_9009::new(data);
     }
     out
 }
@@ -60,8 +63,8 @@ fn xor_64_bits(out: &mut [u64], bit_idx: usize, val: u64) {
     }
 }
 
-/// Combine a slice of GF(2^8984) elements back into an F2[x] polynomial.
-pub fn combine(blocks: &[Gf2_8984]) -> Vec<u64> {
+/// Combine a slice of GF(2^9009) elements back into an F2[x] polynomial.
+pub fn combine(blocks: &[Gf2_9009]) -> Vec<u64> {
     if blocks.is_empty() {
         return vec![0];
     }
@@ -72,7 +75,7 @@ pub fn combine(blocks: &[Gf2_8984]) -> Vec<u64> {
 
     for (k, elem) in blocks.iter().enumerate() {
         let block_start_bit = k * W;
-        for w_in in 0..GF28984_NUM_U64 {
+        for w_in in 0..GF29009_NUM_U64 {
             let val = elem.data[w_in];
             xor_64_bits(&mut out, block_start_bit + w_in * 64, val);
         }
@@ -81,21 +84,21 @@ pub fn combine(blocks: &[Gf2_8984]) -> Vec<u64> {
 }
 
 /// Evaluate a segmented polynomial at a generator point generator^idx.
-pub fn evaluate_at_generator(blocks: &[Gf2_8984], idx: u8, out: &mut Gf2_8984) {
-    *out = Gf2_8984::zero();
+pub fn evaluate_at_generator(blocks: &[Gf2_9009], idx: u8, out: &mut Gf2_9009) {
+    *out = Gf2_9009::zero();
     let generator = {
-        let mut d = [0u64; GF28984_NUM_U64];
+        let mut d = [0u64; GF29009_NUM_U64];
         d[0] = 2; // bit 1 is generator a = x^1
-        Gf2_8984::new(d)
+        Gf2_9009::new(d)
     };
 
     // point = generator^idx
-    let mut point = Gf2_8984::one();
+    let mut point = Gf2_9009::one();
     for _ in 0..idx {
         point.mul(&generator);
     }
 
-    let mut term_pow = Gf2_8984::one();
+    let mut term_pow = Gf2_9009::one();
     for coeff in blocks {
         let mut term = *coeff;
         term.mul(&term_pow);

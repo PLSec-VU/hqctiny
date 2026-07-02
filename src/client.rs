@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::hqc::{HqcPublicKeyParameters, HqcScheme};
-use crate::math::gf2_8984::Gf2_8984;
+use crate::math::gf2_9009::Gf2_9009;
 use crate::math::hqc_bridge;
 use crate::math::segmentation::{combine, evaluate_at_generator, split};
 use crate::protocol::*;
@@ -21,8 +21,8 @@ pub struct CollectingPoints {
     pub cookie: Vec<u8>,
     pub salt: [u8; 16],
     pub key_index: u8,
-    pub points_u: HashMap<u8, Gf2_8984>,
-    pub points_v: HashMap<u8, Gf2_8984>,
+    pub points_u: HashMap<u8, Gf2_9009>,
+    pub points_v: HashMap<u8, Gf2_9009>,
     pub sk: Vec<u8>,
 }
 
@@ -46,7 +46,7 @@ fn build_merkle_tree<SCHEME: HqcScheme>(
     pk: &[u8],
 ) -> (
     rs_merkle::MerkleTree<Blake3Algorithm>,
-    Vec<(u8, PointType, Gf2_8984)>,
+    Vec<(u8, PointType, Gf2_9009)>,
 ) {
     let pk_params = SCHEME::partial_public_key_encaps(pk);
     let h_blocks = split(pk_params.h());
@@ -57,13 +57,13 @@ fn build_merkle_tree<SCHEME: HqcScheme>(
     let mut point_data = Vec::with_capacity(points_num * 2);
 
     for i in 0..points_num as u8 {
-        let mut h_xi = Gf2_8984::zero();
+        let mut h_xi = Gf2_9009::zero();
         evaluate_at_generator(&h_blocks, i + 1, &mut h_xi);
         let leaf_bytes = serialize_point_leaf(i + 1, PointType::U, &h_xi);
         leaves.push(Blake3Algorithm::hash(&leaf_bytes));
         point_data.push((i + 1, PointType::U, h_xi));
 
-        let mut s_xi = Gf2_8984::zero();
+        let mut s_xi = Gf2_9009::zero();
         evaluate_at_generator(&s_blocks, i + 1, &mut s_xi);
         let leaf_bytes = serialize_point_leaf(i + 1, PointType::V, &s_xi);
         leaves.push(Blake3Algorithm::hash(&leaf_bytes));
@@ -229,8 +229,8 @@ where
 
         if self.state.points_u.len() >= points_num && self.state.points_v.len() >= points_num {
             // Build ordered arrays of evaluations
-            let mut u_evals = vec![Gf2_8984::zero(); points_num];
-            let mut v_evals = vec![Gf2_8984::zero(); points_num];
+            let mut u_evals = vec![Gf2_9009::zero(); points_num];
+            let mut v_evals = vec![Gf2_9009::zero(); points_num];
             for i in 0..points_num {
                 let idx = (i + 1) as u8;
                 u_evals[i] = *self

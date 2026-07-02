@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::hqc::HqcScheme;
-use crate::math::gf2_8984::{GF28984_NUM_U64, Gf2_8984};
+use crate::math::gf2_9009::{GF29009_NUM_U64, Gf2_9009};
 use crate::protocol::*;
 
 // ── Packet type enum ───────────────────────────────────────────────
@@ -25,7 +25,7 @@ const KIND_HANDSHAKE: u8 = 0;
 
 // ── Fixed field sizes ──────────────────────────────────────────────
 
-const GF2_8984_BYTES: usize = GF28984_NUM_U64 * 8; // 1128
+const GF2_9009_BYTES: usize = GF29009_NUM_U64 * 8; // 1128
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -39,14 +39,14 @@ fn get_array<const N: usize>(data: &[u8], pos: &mut usize) -> Result<[u8; N]> {
     Ok(arr)
 }
 
-fn get_gf2(data: &[u8], pos: &mut usize) -> Result<Gf2_8984> {
-    let bytes: [u8; GF2_8984_BYTES] = get_array(data, pos)?;
-    Ok(Gf2_8984::from_bytes(&bytes))
+fn get_gf2(data: &[u8], pos: &mut usize) -> Result<Gf2_9009> {
+    let bytes: [u8; GF2_9009_BYTES] = get_array(data, pos)?;
+    Ok(Gf2_9009::from_bytes(&bytes))
 }
 
-fn put_gf2_into(buf: &mut [u8], pos: &mut usize, val: &Gf2_8984) {
-    buf[*pos..*pos + GF2_8984_BYTES].copy_from_slice(&val.to_bytes());
-    *pos += GF2_8984_BYTES;
+fn put_gf2_into(buf: &mut [u8], pos: &mut usize, val: &Gf2_9009) {
+    buf[*pos..*pos + GF2_9009_BYTES].copy_from_slice(&val.to_bytes());
+    *pos += GF2_9009_BYTES;
 }
 
 // ── Public API ─────────────────────────────────────────────────────
@@ -221,7 +221,7 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
     cookie.copy_from_slice(&data[pos..pos + cookie_len]);
     pos += cookie_len;
 
-    let mut data_limbs = [0u64; GF28984_NUM_U64];
+    let mut data_limbs = [0u64; GF29009_NUM_U64];
     for limb in data_limbs.iter_mut().take(limbs) {
         *limb = u64::from_le_bytes(
             data[pos..pos + 8]
@@ -230,7 +230,7 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
         );
         pos += 8;
     }
-    let public_eval = Gf2_8984::new(data_limbs);
+    let public_eval = Gf2_9009::new(data_limbs);
 
     let mut merkle_root = [0u8; 32];
     merkle_root.copy_from_slice(&data[pos..pos + 32]);
@@ -252,7 +252,7 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
 }
 
 pub fn encode_point_response<'o>(res: &PointResponse, out: &'o mut [u8]) -> Result<&'o mut [u8]> {
-    let total = 1 + GF2_8984_BYTES;
+    let total = 1 + GF2_9009_BYTES;
     if out.len() < total {
         return Err(Error::SerializationError);
     }
@@ -269,7 +269,7 @@ pub fn encode_point_response<'o>(res: &PointResponse, out: &'o mut [u8]) -> Resu
 }
 
 pub fn decode_point_response(data: &[u8]) -> Result<PointResponse> {
-    let total = 1 + GF2_8984_BYTES;
+    let total = 1 + GF2_9009_BYTES;
     if data.len() < total {
         return Err(Error::SerializationError);
     }
@@ -374,7 +374,7 @@ mod tests {
             key_index: 0,
             point_index: 1,
             point_type: PointType::U,
-            public_eval: Gf2_8984::one(),
+            public_eval: Gf2_9009::one(),
             merkle_root: [0x55; 32],
             witness: vec![9, 8, 7, 6],
         };

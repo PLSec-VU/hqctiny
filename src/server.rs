@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::hqc::{HqcMessageParameters, HqcScheme, HqcSharedSecretParameters};
-use crate::math::gf2_8984::Gf2_8984;
+use crate::math::gf2_9009::Gf2_9009;
 use crate::math::hqc_bridge;
 use crate::math::segmentation::{evaluate_at_generator, split};
 use crate::protocol::*;
@@ -172,16 +172,16 @@ where
         let mask_blocks = split(&mask_poly);
 
         let power = req.point_index;
-        let mut r2_xi = Gf2_8984::zero();
+        let mut r2_xi = Gf2_9009::zero();
         evaluate_at_generator(&r2_blocks, power, &mut r2_xi);
 
-        let mut mask_xi = Gf2_8984::zero();
+        let mut mask_xi = Gf2_9009::zero();
         evaluate_at_generator(&mask_blocks, power, &mut mask_xi);
 
         let eval = match req.point_type {
             PointType::U => {
                 let r1_blocks = split(r1_poly);
-                let mut r1_xi = Gf2_8984::zero();
+                let mut r1_xi = Gf2_9009::zero();
                 evaluate_at_generator(&r1_blocks, power, &mut r1_xi);
 
                 let mut u_xi = r1_xi;
@@ -202,10 +202,10 @@ where
                 SCHEME::code_encode(&mut k_encoded, m);
 
                 let k_blocks = split(&k_encoded);
-                let mut k_xi = Gf2_8984::zero();
+                let mut k_xi = Gf2_9009::zero();
                 evaluate_at_generator(&k_blocks, power, &mut k_xi);
 
-                let mut e_xi = Gf2_8984::zero();
+                let mut e_xi = Gf2_9009::zero();
                 evaluate_at_generator(&e_blocks, power, &mut e_xi);
 
                 // Generate truncate mask polynomial
@@ -222,7 +222,7 @@ where
                 }
 
                 let t_blocks = split(&t_poly);
-                let mut t_xi = Gf2_8984::zero();
+                let mut t_xi = Gf2_9009::zero();
                 evaluate_at_generator(&t_blocks, power, &mut t_xi);
 
                 let mut v_xi = k_xi;

@@ -1,4 +1,4 @@
-use crate::math::gf2_8984::Gf2_8984;
+use crate::math::gf2_9009::Gf2_9009;
 
 #[derive(Clone)]
 pub struct Blake3Algorithm;
@@ -20,7 +20,7 @@ impl rs_merkle::Hasher for Blake3Algorithm {
 pub fn serialize_point_leaf(
     point_index: u8,
     point_type: PointType,
-    public_eval: &Gf2_8984,
+    public_eval: &Gf2_9009,
 ) -> [u8; 1130] {
     let mut bytes = [0u8; 1130];
     bytes[0] = point_index;
@@ -61,7 +61,7 @@ pub struct PointRequest {
     pub point_type: PointType,
     /// The client's public evaluation at x_i = a^(point_index).
     /// For Type::U this is h(x_i), for Type::V this is s(x_i).
-    pub public_eval: Gf2_8984,
+    pub public_eval: Gf2_9009,
     pub merkle_root: [u8; 32],
     pub witness: Vec<u8>,
 }
@@ -70,5 +70,5 @@ pub struct PointRequest {
 pub struct PointResponse {
     pub point_index: u8,
     pub point_type: PointType,
-    pub eval: Gf2_8984,
+    pub eval: Gf2_9009,
 }

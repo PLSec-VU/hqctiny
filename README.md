@@ -56,7 +56,7 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       Tag encodes direction (c→s), point_type (U/V), key_index, and point_index.
 
                                                     1. Parse key_index from Tag.
-                                                    2. Decrypt Cookie using key at key_index and AAD = merkle_root → extract theta and m. If key was rotated/overwritten or decryption fails, DROP[...]
+                                                    2. Decrypt Cookie using key at key_index and AAD = merkle_root → extract theta and m. If key was rotated/overwritten or decryption fails, DROP.
                                                     3. Verify that h(x_i) or s(x_i) belongs to the Merkle tree with root merkle_root using Witness. If verification fails, DROP.
                                                     4. Gen random quotient-blinding mask.
                                                     For Type u:
@@ -87,8 +87,8 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
 ## Cookie Key Rotation
 Time validation is handled implicitly through **Windowed Symmetric Cookie Key Rotation**:
 - **Symmetric Cookie Pool:** The server keeps a local pool of exactly 2 symmetric keys ($s_0, s_1$).
-- **Implicit Expiry:** A background process rotates the keys every 90 seconds (1.5 minute). It generates a new active key and overwrites the older slot, yielding an effective session lifetime of 2[...]
-- **Validation Check:** Every `PointRequest` transmits the `key_index` (0 or 1) in its tag byte. The server attempts to decrypt the cookie using the corresponding key. If that slot was already ove[...]
+- **Implicit Expiry:** A background process rotates the keys every 90 seconds (1.5 minute). It generates a new active key and overwrites the older slot, yielding an effective session lifetime of 2-3 minutes.
+- **Validation Check:** Every `PointRequest` transmits the `key_index` (0 or 1) in its tag byte. The server attempts to decrypt the cookie using the corresponding key. If that slot was already overwritten, the request is rejected.
 
 ## Wire Format
 
@@ -142,25 +142,25 @@ All fields are packed sequentially after the tag byte.
 
 **Limbs calculation:**
 
-Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). The limb count is:
+Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4504` (where `n = 9009` is the field degree). The limb count is:
 
-`limbs = ceil((4492 + POINTS_NUM * (num_blocks - 1)) / 64)`
+`limbs = ceil((4504 + POINTS_NUM * (num_blocks - 1)) / 64)`
 
 Where:
-- `POINTS_NUM` is the number of evaluation points (15 for HQC-1, 25 for HQC-3/5)
+- `POINTS_NUM` is the number of evaluation points (7 for HQC-1, 15 for HQC-3, 25 for HQC-5)
 - `num_blocks` is the number of segmented blocks (4 for HQC-1, 8 for HQC-3, 13 for HQC-5)
 
 This yields:
 - **HQC-1**: 71 limbs (568 bytes)
 - **HQC-3**: 73 limbs (584 bytes)
-- **HQC-5**: 75 limbs (600 bytes)
+- **HQC-5**: 76 limbs (608 bytes)
 
 ### PointResponse (tag = `0x80 | idx | (if V { 0x40 })`)
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
 | 0 | 1 B | Tag | Tag byte (s→c, encodes point type and index) |
-| 1 | 1128 B | eval | Evaluation result in Gf2_8984 (LE, 141 u64 limbs) |
+| 1 | 1128 B | eval | Evaluation result in Gf2_9009 (LE, 141 u64 limbs) |
 
 ## Packet Sizes
 
@@ -168,8 +168,8 @@ This yields:
 |-------------|-----------------|-----------------|-----------------|---------------------------|
 | **HandshakeRequest** | 65 B | 65 B | 65 B | `1 + 32 (hash_ek_kem) + 32 (merkle_root)` |
 | **HandshakeResponse** | 105 B | 113 B | 121 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + 16 (salt)` |
-| **PointRequest** (Max) | 817 B | 865 B | 929 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + (limbs * 8) (public_eval) + 32 (merkle_root) + Witness` |
-| **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_8984)` |
+| **PointRequest** (Max) | 817 B | 865 B | 937 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + (limbs * 8) (public_eval) + 32 (merkle_root) + Witness` |
+| **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_9009)` |
 
 **Size key:**
 - `SecParam` = `PARAM_SECURITY_BYTES`: 16 B for HQC-1, 24 B for HQC-3, 32 B for HQC-5
@@ -183,16 +183,23 @@ The table below shows the total number of round trips (request-response pairs) a
 |---------|-------------------|---------------------|-------------------------|
 | **HQC-1** | 15 | 11,439 B (~11.4 KB) | 15,911 B (~15.9 KB) |
 | **HQC-3** | 31 | 25,951 B (~26.0 KB) | 33,983 B (~34.0 KB) |
-| **HQC-5** | 51 | 46,323 B (~46.3 KB) | 56,571 B (~56.6 KB) |
+| **HQC-5** | 51 | 46,675 B (~46.7 KB) | 56,571 B (~56.6 KB) |
 
 *Note: Since the point-on-demand stream is asynchronous and stateless, the client can stream all point requests concurrently once it receives the handshake cookie. Under parallel execution, the entire protocol (handshake + streaming) completes in exactly **2 network round-trip times (RTT)**.*
 
-## Gf2_8984 Encoding
+## Gf2_9009 Encoding
 
-Each `Gf2_8984` element (a polynomial in $F_2[z] / (z^{8984} + z^9 + z^8 + z^6 + 1$)) is serialized as 141 consecutive `u64` limbs (1128 bytes) in little‑endian byte order.
+Each `Gf2_9009` element (a polynomial in $F_2[z] / (z^{9009} + z^{29} + 1)$) is serialized as 141 consecutive `u64` limbs (1128 bytes) in little‑endian byte order.
 
 ### Design Rationale
 
-1. **MTU Alignment**: Assuming a standard internet/IPv6 minimum MTU of **1280 bytes**, all `PointRequest` packets fit entirely within a single MTU. Bigger field degrees are of no benefit because they do not reduce the number of evaluation points that must be sent for the three HQC security parameters
+1. **MTU Alignment**: Assuming a standard internet/IPv6 minimum MTU of **1280
+bytes**, all `PointRequest` packets fit entirely within a single MTU. Bigger
+field degrees are of no benefit because they do not reduce the number of
+evaluation points that must be sent for the three HQC security parameters
 without going above the MTU limit.
-2. **Computational Efficiency**: We could pick other field degrees with other irreducible polynomials (for example trinomials, which would've needed fewer loops in the reduction step), but to minimize the number of packets sent and also to fit under the MTU limit, while picking an irreducible polynomial friendly to computers, this is seemingly the best candidate. The middle exponents (9, 8, 6, 0) are very small and under machine word sizes, so polynomial modular reduction can be implemented extremely quickly using simple shifts and XOR operations. 8984 is also divisble by 8 which makes the field elements nice to repesent with machine words, and by Swan's theorem if the field degree is divisble by 8 we must settle with pentaomials because irreducible trinomals would not exist.
+2. **Computational Efficiency**: We use the irreducible trinomial $x^{9009} +
+x^{29} + 1$. Reducing modulo a low-weight polynomial especially a trinomial
+avoids extra XOR operations, and the small exponent (29) allows modular
+reduction to be implemented extremely quickly using simple shifts and XOR
+operations on machine words.

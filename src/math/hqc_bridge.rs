@@ -9,7 +9,7 @@
 /// Returns a subslice of `out` with the reduced polynomial.
 pub fn reduce_mod_xn_minus_1<'o>(poly: &[u64], n: usize, out: &'o mut [u64]) -> &'o mut [u64] {
     let n_words = n.div_ceil(64);
-    assert!(
+    debug_assert!(
         out.len() >= n_words,
         "reduce_mod_xn_minus_1 output buffer too small"
     );
@@ -58,7 +58,7 @@ pub fn generate_mask<'o>(
     out: &'o mut [u64],
 ) -> &'o mut [u64] {
     let n_words = n.div_ceil(64);
-    assert!(
+    debug_assert!(
         out.len() >= n_words,
         "generate_mask output buffer too small"
     );
