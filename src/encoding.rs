@@ -29,22 +29,6 @@ const GF2_8984_BYTES: usize = GF28984_NUM_U64 * 8; // 1128
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-fn put_u16_into(buf: &mut [u8], pos: &mut usize, v: u16) {
-    buf[*pos..*pos + 2].copy_from_slice(&v.to_le_bytes());
-    *pos += 2;
-}
-
-fn get_u16(data: &[u8], pos: &mut usize) -> Result<u16> {
-    if *pos + 2 > data.len() {
-        return Err(Error::SerializationError);
-    }
-    let bytes: [u8; 2] = data[*pos..*pos + 2]
-        .try_into()
-        .map_err(|_| Error::SerializationError)?;
-    *pos += 2;
-    Ok(u16::from_le_bytes(bytes))
-}
-
 fn get_array<const N: usize>(data: &[u8], pos: &mut usize) -> Result<[u8; N]> {
     if *pos + N > data.len() {
         return Err(Error::SerializationError);
@@ -101,12 +85,19 @@ pub fn decode_handshake_request(data: &[u8]) -> Result<HandshakeRequest> {
     })
 }
 
-pub fn encode_handshake_response<'o>(
+pub fn cookie_size(param_security_bytes: usize) -> usize {
+    24 + 32 + param_security_bytes + 16
+}
+
+pub fn encode_handshake_response<'o, T: HqcScheme>(
     res: &HandshakeResponse,
     out: &'o mut [u8],
 ) -> Result<&'o mut [u8]> {
-    let cookie_len = res.cookie.len();
-    let total = 1 + 2 + cookie_len + 16;
+    let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
+    if res.cookie.len() != cookie_len {
+        return Err(Error::SerializationError);
+    }
+    let total = 1 + cookie_len + 16;
     if out.len() < total {
         return Err(Error::SerializationError);
     }
@@ -117,7 +108,6 @@ pub fn encode_handshake_response<'o>(
     }
     out[pos] = tag;
     pos += 1;
-    put_u16_into(out, &mut pos, cookie_len as u16);
     out[pos..pos + cookie_len].copy_from_slice(&res.cookie);
     pos += cookie_len;
     out[pos..pos + 16].copy_from_slice(&res.salt);
@@ -125,8 +115,10 @@ pub fn encode_handshake_response<'o>(
     Ok(&mut out[..pos])
 }
 
-pub fn decode_handshake_response(data: &[u8]) -> Result<HandshakeResponse> {
-    if data.len() < 19 {
+pub fn decode_handshake_response<T: HqcScheme>(data: &[u8]) -> Result<HandshakeResponse> {
+    let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
+    let total = 1 + cookie_len + 16;
+    if data.len() < total {
         return Err(Error::SerializationError);
     }
     let header = data[0];
@@ -135,10 +127,6 @@ pub fn decode_handshake_response(data: &[u8]) -> Result<HandshakeResponse> {
     }
     let key_index = if header & KEY_BIT != 0 { 1 } else { 0 };
     let mut pos = 1;
-    let cookie_len = get_u16(data, &mut pos)? as usize;
-    if pos + cookie_len + 16 > data.len() {
-        return Err(Error::SerializationError);
-    }
     let mut cookie = vec![0u8; cookie_len];
     cookie.copy_from_slice(&data[pos..pos + cookie_len]);
     pos += cookie_len;
@@ -150,10 +138,10 @@ pub fn decode_handshake_response(data: &[u8]) -> Result<HandshakeResponse> {
     })
 }
 
-pub fn public_eval_limbs(point_index: u8, vec_n_size_64: usize) -> usize {
+pub fn public_eval_limbs<T: HqcScheme>() -> usize {
     let w = 4492;
-    let num_blocks = (vec_n_size_64 * 64).div_ceil(w).max(1);
-    let max_bits = w + (point_index as usize) * (num_blocks - 1);
+    let num_blocks = (T::VEC_N_SIZE_64 * 64).div_ceil(w).max(1);
+    let max_bits = w + T::POINTS_NUM * (num_blocks - 1);
     max_bits.div_ceil(64)
 }
 
@@ -161,11 +149,14 @@ pub fn encode_point_request<'o, T: HqcScheme>(
     req: &PointRequest,
     out: &'o mut [u8],
 ) -> Result<&'o mut [u8]> {
-    let cookie_len = req.cookie.len();
-    let limbs = public_eval_limbs(req.point_index, T::VEC_N_SIZE_64);
+    let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
+    if req.cookie.len() != cookie_len {
+        return Err(Error::SerializationError);
+    }
+    let limbs = public_eval_limbs::<T>();
     let eval_bytes = limbs * 8;
     let witness_len = req.witness.len();
-    let total = 1 + 2 + cookie_len + eval_bytes + 32 + 2 + witness_len;
+    let total = 1 + cookie_len + eval_bytes + 32 + witness_len;
     if out.len() < total {
         return Err(Error::SerializationError);
     }
@@ -180,7 +171,7 @@ pub fn encode_point_request<'o, T: HqcScheme>(
     }
     out[pos] = tag;
     pos += 1;
-    put_u16_into(out, &mut pos, cookie_len as u16);
+
     out[pos..pos + cookie_len].copy_from_slice(&req.cookie);
     pos += cookie_len;
 
@@ -192,7 +183,6 @@ pub fn encode_point_request<'o, T: HqcScheme>(
     out[pos..pos + 32].copy_from_slice(&req.merkle_root);
     pos += 32;
 
-    put_u16_into(out, &mut pos, witness_len as u16);
     out[pos..pos + witness_len].copy_from_slice(&req.witness);
     pos += witness_len;
 
@@ -200,7 +190,7 @@ pub fn encode_point_request<'o, T: HqcScheme>(
 }
 
 pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
-    if data.len() < 1 + 2 {
+    if data.is_empty() {
         return Err(Error::SerializationError);
     }
     let header = data[0];
@@ -219,13 +209,14 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
     };
     let point_index = kind;
     let mut pos = 1;
-    let cookie_len = get_u16(data, &mut pos)? as usize;
 
-    let limbs = public_eval_limbs(point_index, T::VEC_N_SIZE_64);
+    let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
+    let limbs = public_eval_limbs::<T>();
     let eval_bytes = limbs * 8;
-    if pos + cookie_len + eval_bytes + 32 + 2 > data.len() {
+    if pos + cookie_len + eval_bytes + 32 > data.len() {
         return Err(Error::SerializationError);
     }
+
     let mut cookie = vec![0u8; cookie_len];
     cookie.copy_from_slice(&data[pos..pos + cookie_len]);
     pos += cookie_len;
@@ -245,12 +236,9 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
     merkle_root.copy_from_slice(&data[pos..pos + 32]);
     pos += 32;
 
-    let witness_len = get_u16(data, &mut pos)? as usize;
-    if pos + witness_len > data.len() {
-        return Err(Error::SerializationError);
-    }
+    let witness_len = data.len() - pos;
     let mut witness = vec![0u8; witness_len];
-    witness.copy_from_slice(&data[pos..pos + witness_len]);
+    witness.copy_from_slice(&data[pos..]);
 
     Ok(PointRequest {
         cookie,
@@ -311,7 +299,7 @@ pub fn decode_point_response(data: &[u8]) -> Result<PointResponse> {
 pub fn encode_packet<'o, T: HqcScheme>(pkt: &Packet, out: &'o mut [u8]) -> Result<&'o mut [u8]> {
     match pkt {
         Packet::HandshakeRequest(req) => encode_handshake_request(req, out),
-        Packet::HandshakeResponse(res) => encode_handshake_response(res, out),
+        Packet::HandshakeResponse(res) => encode_handshake_response::<T>(res, out),
         Packet::PointRequest(req) => encode_point_request::<T>(req, out),
         Packet::PointResponse(res) => encode_point_response(res, out),
     }
@@ -327,7 +315,7 @@ pub fn decode_packet<T: HqcScheme>(data: &[u8]) -> Result<Packet> {
 
     if kind == KIND_HANDSHAKE {
         if is_server {
-            let res = decode_handshake_response(data)?;
+            let res = decode_handshake_response::<T>(data)?;
             Ok(Packet::HandshakeResponse(res))
         } else {
             let req = decode_handshake_request(data)?;
@@ -364,14 +352,15 @@ mod tests {
 
     #[test]
     fn test_handshake_response_roundtrip() {
+        use crate::hqc::Hqc1;
         let res = HandshakeResponse {
-            cookie: vec![1, 2, 3, 4, 5],
+            cookie: vec![0xaa; 88],
             salt: [9; 16],
             key_index: 1,
         };
-        let mut buf = [0u8; 100];
-        let enc = encode_handshake_response(&res, &mut buf).unwrap();
-        let dec = decode_handshake_response(enc).unwrap();
+        let mut buf = [0u8; 200];
+        let enc = encode_handshake_response::<Hqc1>(&res, &mut buf).unwrap();
+        let dec = decode_handshake_response::<Hqc1>(enc).unwrap();
         assert_eq!(dec.cookie, res.cookie);
         assert_eq!(dec.salt, res.salt);
         assert_eq!(dec.key_index, res.key_index);
@@ -381,7 +370,7 @@ mod tests {
     fn test_point_request_roundtrip() {
         use crate::hqc::Hqc1;
         let req = PointRequest {
-            cookie: vec![1, 2, 3],
+            cookie: vec![0xaa; 88],
             key_index: 0,
             point_index: 1,
             point_type: PointType::U,
@@ -395,8 +384,8 @@ mod tests {
         // W = 4492, num_blocks = (277 * 64).div_ceil(4492) = 4
         // max_bits = 4492 + 1 * 3 = 4505
         // limbs = 4505.div_ceil(64) = 71
-        // size = 574 + 32 (merkle_root) + 2 (witness_len) + 4 (witness) = 612 bytes
-        assert_eq!(enc.len(), 612);
+        // size = 1 + 88 (cookie) + 568 (eval) + 32 (merkle_root) + 4 (witness) = 693 bytes
+        assert_eq!(enc.len(), 693);
         let dec = decode_point_request::<Hqc1>(enc).unwrap();
         assert_eq!(dec.cookie, req.cookie);
         assert_eq!(dec.key_index, req.key_index);

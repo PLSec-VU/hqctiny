@@ -33,7 +33,7 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
 
      [Packet 2: Handshake Response] 
      <--------------------------------------------------------------------
-      | Tag | cookie_len (2 B LE) | Cookie | Salt (16 B)
+      | Tag | Cookie | Salt (16 B)
       
       Tag encodes direction (s→c), handshake kind, and the key_index bit (0x80 or 0xA0).
 
@@ -56,7 +56,7 @@ Merkle tree root directly as the `hash_ek_kem`.
 
      [Packet 3: Point Request] 
      -------------------------------------------------------------------->
-      | Tag | cookie_len (2 B LE) | Cookie | h(x_i) or s(x_i) (limbs*8) | merkle_root (32 B) | witness_len (2 B LE) | Witness |
+      | Tag | Cookie | h(x_i) or s(x_i) (limbs*8) | merkle_root (32 B) | Witness |
       
       Tag encodes direction (c→s), point_type (U/V), key_index, and point_index.
 
@@ -130,32 +130,38 @@ Fixed size: **65 bytes**.
 #### HandshakeResponse (tag `0x80` or `0xA0`)
 
 ```
-┌───────┬────────────────┬──────────┬────────┐
-│ 1 B   │ 2 B            │ Var B    │ 16 B   │
-│ Tag   │ cookie_len LE  │ cookie   │ salt   │
-└───────┴────────────────┴──────────┴────────┘
+┌───────┬─────────────────────┬────────┐
+│ 1 B   │ 72+Sec B            │ 16 B   │
+│ Tag   │ cookie              │ salt   │
+└───────┴─────────────────────┴────────┘
 ```
 
-Size: **19 + cookie_len bytes**.
+Size: **89 + PARAM_SECURITY_BYTES bytes** (constant: 1 B tag + 16 B salt + cookie size `72 + PARAM_SECURITY_BYTES`).
 
 #### PointRequest (tag = `idx | (if V { 0x40 }) | (if key_index == 1 { 0x20 })`)
 
 ```
-┌───────┬────────────────┬──────────┬─────────────┬─────────────┬────────────────┬───────────┐
-│ 1 B   │ 2 B            │ Var B    │ Var B       │ 32 B        │ 2 B            │ Var B     │
-│ Tag   │ cookie_len LE  │ cookie   │ public_eval │ merkle_root │ witness_len LE │ witness   │
-│ (c→s) │                │          │ (segmented) │             │                │           │
-└───────┴────────────────┴──────────┴─────────────┴─────────────┴────────────────┴───────────┘
+┌───────┬─────────────────────┬─────────────┬─────────────┬───────────┐
+│ 1 B   │ 72+Sec B            │ limbs*8 B   │ 32 B        │ Var B     │
+│ Tag   │ cookie              │ public_eval │ merkle_root │ witness   │
+│ (c→s) │                     │ (segmented) │             │           │
+└───────┴─────────────────────┴─────────────┴─────────────┴───────────┘
 ```
 
-Size: **5 + cookie_len + (limbs * 8) + 32 + witness_len bytes**.
+Size: **105 + PARAM_SECURITY_BYTES + (limbs * 8) + witness_len bytes** (1 B tag + cookie size `72 + PARAM_SECURITY_BYTES` + 32 B merkle_root + active limbs + witness length). The witness length is inferred from the remaining bytes of the packet.
 
-Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `public_eval` evaluated segmented polynomial has degree `< n/2 + epsilon` and most of its high-order coefficients are empty (zeros). It is only in the response, where the server multiplies two points, that the degree adds up to around `8984`. To optimize network bandwidth, only the active (non-zero) little-endian `u64` limbs of `public_eval` are serialized in the request.
+Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `public_eval` evaluated segmented polynomial has degree `< n/2 + epsilon` and most of its high-order coefficients are empty (zeros). It is only in the response, where the server multiplies two points, that the degree adds up to around `8984`. To optimize network bandwidth and ensure packet sizes remain constant for a given security variant, we transmit a constant number of limbs representing the maximum bound across all evaluation points:
 
-The number of limbs transmitted is calculated as:
-`limbs = ceil((4492 + point_index * (num_blocks - 1)) / 64)`
+`limbs = ceil((4492 + POINTS_NUM * (num_blocks - 1)) / 64)`
 
-where `num_blocks` is the number of segmented blocks for the HQC variant (4 for HQC-1, 8 for HQC-3, and 13 for HQC-5).
+where:
+- `POINTS_NUM` is the number of evaluation points (15 for HQC-1, 25 for HQC-3, and 25 for HQC-5).
+- `num_blocks` is the number of segmented blocks for the HQC variant (4 for HQC-1, 8 for HQC-3, and 13 for HQC-5).
+
+This yields a constant limb count for each variant:
+- **HQC-1**: 71 limbs (568 bytes)
+- **HQC-3**: 73 limbs (584 bytes)
+- **HQC-5**: 75 limbs (600 bytes)
 
 #### PointResponse (tag = `0x80 | idx | (if V { 0x40 })`)
 
@@ -168,6 +174,21 @@ where `num_blocks` is the number of segmented blocks for the HQC variant (4 for 
 ```
 
 Fixed size: **1129 bytes**.
+
+### Packet Size Summary
+
+The table below summarizes the exact maximum sizes (in bytes) of each packet type for each security parameter variant:
+
+| Packet Type | HQC-1 (128-bit) | HQC-3 (192-bit) | HQC-5 (256-bit) | Size Formula / Components |
+|-------------|-----------------|-----------------|-----------------|---------------------------|
+| **HandshakeRequest** | 65 B | 65 B | 65 B | `1 + 32 (hash_ek_kem) + 32 (merkle_root)` |
+| **HandshakeResponse** | 105 B | 113 B | 121 B | `19 + Cookie Size` (Cookie is `72 + SecParam`) |
+| **PointRequest** (Max) | 849 B | 905 B | 929 B | `33 + Cookie Size + (limbs * 8) + Witness Size` |
+| **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_8984)` |
+
+*Note: For the `PointRequest` maximum size calculation:*
+* *The witness proof size is at most 160 bytes for HQC-1 (depth 5) and 192 bytes for HQC-3/5 (depth 6).*
+* *The `public_eval` limb count is 71 limbs (568 B) for HQC-1, 73 limbs (584 B) for HQC-3, and 75 limbs (600 B) for HQC-5.*
 
 ### Gf2_8984 Encoding
 
