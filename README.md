@@ -11,7 +11,7 @@ We use the following primitives:
 ```
 [CLIENT]                                                                   [SERVER]
 Generates: Ephemeral HQC Keypair (h, s)                                    Holds: Bounded RAM Table (table[hash_ek_kem])
-                                                                           Holds: Windowed Symmetric Cookie Key Pool (2 keys)
+                                                                            Holds: Windowed Symmetric Cookie Key Pool (2 keys)
 
   1. ephem_pk, ephem_sk <- keypair()
   2. hash_ek_kem <- hash(ephem_pk)
@@ -57,7 +57,7 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       Tag encodes direction (c→s), point_type (U/V), key_index, and point_index.
 
                                                     1. Parse key_index from Tag.
-                                                    2. Decrypt Cookie using key at key_index and AAD = merkle_root → extract theta and m. If key was rotated/overwritten or decryption fails, DROP.
+                                                    2. Decrypt Cookie using key at key_index and AAD = merkle_root → extract theta and m. If key was rotated/overwritten or decryption fails, DROP[...]
                                                     3. Verify that h(x_i) or s(x_i) belongs to the Merkle tree with root merkle_root using Witness. If verification fails, DROP.
                                                     4. Gen random quotient-blinding mask.
                                                     For Type u:
@@ -88,7 +88,7 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
 ## Cookie Key Rotation
 Time validation is handled implicitly through **Windowed Symmetric Cookie Key Rotation**:
 - **Symmetric Cookie Pool:** The server keeps a local pool of exactly 2 symmetric keys ($s_0, s_1$).
-- **Implicit Expiry:** A background process rotates the keys every 90 seconds (1.5 minute). It generates a new active key and overwrites the older slot, yielding an effective session lifetime of 2 to [...]
+- **Implicit Expiry:** A background process rotates the keys every 90 seconds (1.5 minute). It generates a new active key and overwrites the older slot, yielding an effective session lifetime of 2[...]
 - **Validation Check:** Every `PointRequest` transmits the `key_index` (0 or 1) in its tag byte. The server attempts to decrypt the cookie using the corresponding key. If that slot was already ove[...]
 
 ## Wire Format
@@ -106,65 +106,64 @@ Every packet starts with a single **tag byte** that encodes direction, point typ
 
 All fields are packed sequentially after the tag byte. 
 
-#### HandshakeRequest (tag `0x00`)
+### HandshakeRequest (tag `0x00`)
 
-```
-┌───────┬──────────────────────┬──────────────────────┐
-│ 1 B   │ 32 B                 │ 32 B                 │
-│ 0x00  │ hash_ek_kem          │ merkle_root          │
-└───────┴──────────────────────┴──────────────────────┘
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 B | 0x00 | Tag byte |
+| 1 | 32 B | hash_ek_kem | Hash of ephemeral public key |
+| 33 | 32 B | merkle_root | Merkle tree root of evaluation points |
 
-#### HandshakeResponse (tag `0x80` or `0xA0`)
+### HandshakeResponse (tag `0x80` or `0xA0`)
 
-```
-┌───────┬────────────────────────────────┬────────┐
-│ 1 B   │ 24+32+Sec+16 B                 │ 16 B   │
-│ Tag   │ cookie (nonce + ciphertext)    │ salt   │
-└───────┴────────────────────────────────┴────────┘
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 B | Tag | Tag byte (encodes key_index: 0x80 or 0xA0) |
+| 1 | 24 B | nonce | XChaCha20 nonce |
+| 25 | 32 + SecParam B | ciphertext | AEAD ciphertext (encrypts `theta \|\| m`) |
+| 57 + SecParam | 16 B | auth_tag | Poly1305 authentication tag |
+| 73 + SecParam | 16 B | salt | Random salt for key derivation |
 
-**Cookie structure:**
-- 24 B: XChaCha20 nonce
-- 32 + PARAM_SECURITY_BYTES B: AEAD ciphertext (encrypts `theta || m`)
-- 16 B: Poly1305 authentication tag
+**Where SecParam = PARAM_SECURITY_BYTES:**
+- 16 B for HQC-1
+- 24 B for HQC-3
+- 32 B for HQC-5
 
-#### PointRequest (tag = `idx | (if V { 0x40 }) | (if key_index == 1 { 0x20 })`)
+### PointRequest
 
-```
-┌───────┬────────────────────────────────┬──────────────┬──────────────┬───────┐
-│ 1 B   │ 24+32+Sec+16 B                 │ limbs*8 B    │ 32 B         │ Var B │
-│ Tag   │ cookie (nonce + ciphertext)    │ public_eval  │ merkle_root  │witness│
-│ (c→s) │                                │ (segmented)  │              │       │
-└───────┴────────────────────────────────┴──────────────┴──────────────┴───────┘
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 B | Tag | Tag byte (c→s, encodes point type and key_index) |
+| 1 | 24 B | nonce | XChaCha20 nonce |
+| 25 | 32 + SecParam B | ciphertext | AEAD ciphertext (encrypts `theta \|\| m`) |
+| 57 + SecParam | 16 B | auth_tag | Poly1305 authentication tag |
+| 73 + SecParam | limbs * 8 B | public_eval | Segmented public key evaluation result |
+| 73 + SecParam + limbs*8 | 32 B | merkle_root | Merkle tree root for verification |
+| 105 + SecParam + limbs*8 | Variable | witness | Merkle proof (at most 160-192 B) |
 
-Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `[...]
+**Limbs calculation:**
+
+Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). The limb count is:
 
 `limbs = ceil((4492 + POINTS_NUM * (num_blocks - 1)) / 64)`
 
-where:
-- `POINTS_NUM` is the number of evaluation points (15 for HQC-1, 25 for HQC-3, and 25 for HQC-5).
-- `num_blocks` is the number of segmented blocks for the HQC variant (4 for HQC-1, 8 for HQC-3, and 13 for HQC-5).
+Where:
+- `POINTS_NUM` is the number of evaluation points (15 for HQC-1, 25 for HQC-3/5)
+- `num_blocks` is the number of segmented blocks (4 for HQC-1, 8 for HQC-3, 13 for HQC-5)
 
-This yields a constant limb count for each variant:
+This yields:
 - **HQC-1**: 71 limbs (568 bytes)
 - **HQC-3**: 73 limbs (584 bytes)
 - **HQC-5**: 75 limbs (600 bytes)
 
-#### PointResponse (tag = `0x80 | idx | (if V { 0x40 })`)
+### PointResponse (tag = `0x80 | idx | (if V { 0x40 })`)
 
-```
-┌──────────────┬────────────────┐
-│ 1 B          │ 1128 B         │
-│ Tag          │ eval           │
-│ (s→c)        │ (Gf2_8984 LE)  │
-└──────────────┴────────────────┘
-```
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 B | Tag | Tag byte (s→c, encodes point type and index) |
+| 1 | 1128 B | eval | Evaluation result in Gf2_8984 (LE, 141 u64 limbs) |
 
-### Packet Sizes
-
-The table below summarizes the maximum sizes of each packet type for each security parameter:
+## Packet Sizes
 
 | Packet Type | HQC-1 (128-bit) | HQC-3 (192-bit) | HQC-5 (256-bit) | Size Formula / Components |
 |-------------|-----------------|-----------------|-----------------|---------------------------|
@@ -177,7 +176,6 @@ The table below summarizes the maximum sizes of each packet type for each securi
 - `SecParam` = `PARAM_SECURITY_BYTES`: 16 B for HQC-1, 24 B for HQC-3, 32 B for HQC-5
 - **Witness** (Merkle proof): at most 160 bytes for HQC-1 (tree depth 5) and 192 bytes for HQC-3/5 (tree depth 6)
 
+## Gf2_8984 Encoding
 
-### Gf2_8984 Encoding
-
-Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs (1128 bytes), each in little‑endian byte order. For `Po[...]
+Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs (1128 bytes), each in little‑endian byte order.
