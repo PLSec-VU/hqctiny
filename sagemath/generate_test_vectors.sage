@@ -1,15 +1,15 @@
-load("hqctiny.sage")
+load("sagemath/hqctiny.sage")
 import json
 import binascii
 
 def to_hex(elem):
     # K elements can be converted to integers using to_integer()
-    # We want a fixed length hex string (8984 bits = 1123 bytes = 2246 hex chars)
+    # We want a fixed length hex string (9009 bits = 1127 bytes = 2254 hex chars)
     if hasattr(elem, 'parent') and elem.parent() == K:
         val = int(elem.to_integer())
         h = hex(val)[2:]
         if h.endswith('L'): h = h[:-1]
-        return h.zfill(2246)
+        return h.zfill(2254)
 
     # For F2x elements or others
     try:
@@ -74,9 +74,9 @@ def generate_vectors():
         "split_combine": split_combine
     }
 
-    with open("test_vectors.json", "w") as f:
+    with open("src/math/test_vectors.json", "w") as f:
         json.dump(vectors, f, indent=2)
-    print("Generated test_vectors.json")
+    print("Generated src/math/test_vectors.json")
 
 if __name__ == "__main__":
     set_random_seed(0)

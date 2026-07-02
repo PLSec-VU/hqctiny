@@ -1,9 +1,8 @@
 F2x.<x> = PolynomialRing(GF(2), 'x')
 
 # We are assuming a 1280 MTU, so the maximum degree is ~ 1200 * 8 = 9600
-# But 8984 is smaller and still has the same RTT as 9600, and it has a
-# irreducible polynomial: x^8984 + x^9 + x^8 + x^6 + 1
-K.<a> = GF((2, 8984), name='a', modulus=x^8984 + x^9 + x^8 + x^6 + 1)
+# But 9009 has a trinomial: x^9009 + x^29 + 1
+K.<a> = GF((2, 9009), name='a', modulus=x^9009 + x^29 + 1)
 W = K.degree() // 2
 Kx.<z> = PolynomialRing(K, 'z')
 

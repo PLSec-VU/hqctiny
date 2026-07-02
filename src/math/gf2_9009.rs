@@ -382,28 +382,82 @@ impl Gf2_9009 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+    use std::fs;
+
+    #[derive(Deserialize)]
+    struct TestVectors {
+        info: TestInfo,
+        arithmetic: Vec<ArithmeticCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct TestInfo {
+        degree: u32,
+        modulus: String,
+    }
+
+    #[derive(Deserialize)]
+    struct ArithmeticCase {
+        a: String,
+        b: String,
+        sum: String,
+        prod: String,
+    }
+
+    fn load_test_vectors() -> TestVectors {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/math/test_vectors.json");
+        let content = fs::read_to_string(path).expect("Failed to read test_vectors.json");
+        serde_json::from_str(&content).expect("Failed to parse test_vectors.json")
+    }
+
+    #[test]
+    fn test_info() {
+        let tv = load_test_vectors();
+        assert_eq!(tv.info.degree, 9009);
+        assert_eq!(tv.info.modulus, "x^9009 + x^29 + 1");
+    }
 
     #[test]
     fn test_from_hex_roundtrip() {
-        let mut data = [0u64; GF29009_NUM_U64];
-        data[0] = 0x123456789abcdef0;
-        data[140] = 0x1ffffffffff;
-        let a = Gf2_9009::new(data);
-        let hex = a.to_hex();
-        let b = Gf2_9009::from_hex(&hex);
-        assert_eq!(a, b);
+        let tv = load_test_vectors();
+        for case in &tv.arithmetic {
+            let a = Gf2_9009::from_hex(&case.a);
+            assert_eq!(a.to_hex(), case.a, "roundtrip failed for a");
+
+            let b = Gf2_9009::from_hex(&case.b);
+            assert_eq!(b.to_hex(), case.b, "roundtrip failed for b");
+        }
     }
 
     #[test]
     fn test_addition() {
-        let mut data1 = [0u64; GF29009_NUM_U64];
-        let mut data2 = [0u64; GF29009_NUM_U64];
-        data1[0] = 1;
-        data2[0] = 3;
-        let mut a = Gf2_9009::new(data1);
-        let b = Gf2_9009::new(data2);
-        a.add(&b);
-        assert_eq!(a.data[0], 2);
+        let tv = load_test_vectors();
+        for case in &tv.arithmetic {
+            let a = Gf2_9009::from_hex(&case.a);
+            let b = Gf2_9009::from_hex(&case.b);
+            let expected_sum = Gf2_9009::from_hex(&case.sum);
+            let mut computed_sum = a;
+            computed_sum.add(&b);
+            assert_eq!(computed_sum, expected_sum, "addition failed for test case");
+        }
+    }
+
+    #[test]
+    fn test_multiplication() {
+        let tv = load_test_vectors();
+        for (i, case) in tv.arithmetic.iter().enumerate() {
+            let a = Gf2_9009::from_hex(&case.a);
+            let b = Gf2_9009::from_hex(&case.b);
+            let expected_prod = Gf2_9009::from_hex(&case.prod);
+            let mut computed_prod = a;
+            computed_prod.mul(&b);
+            assert_eq!(
+                computed_prod, expected_prod,
+                "multiplication failed for test case {}",
+                i
+            );
+        }
     }
 
     #[test]
@@ -421,6 +475,36 @@ mod tests {
     }
 
     #[test]
+    fn test_mul_identity() {
+        let tv = load_test_vectors();
+        let one = Gf2_9009::one();
+        for case in &tv.arithmetic {
+            let a = Gf2_9009::from_hex(&case.a);
+            let mut a_copy = a;
+            a_copy.mul(&one);
+            assert_eq!(a_copy, a, "a * 1 != a");
+            let mut one_copy = one;
+            one_copy.mul(&a);
+            assert_eq!(one_copy, a, "1 * a != a");
+        }
+    }
+
+    #[test]
+    fn test_mul_zero() {
+        let tv = load_test_vectors();
+        let zero = Gf2_9009::zero();
+        for case in &tv.arithmetic {
+            let a = Gf2_9009::from_hex(&case.a);
+            let mut a_copy = a;
+            a_copy.mul(&zero);
+            assert_eq!(a_copy, zero, "a * 0 != 0");
+            let mut zero_copy = zero;
+            zero_copy.mul(&a);
+            assert_eq!(zero_copy, zero, "0 * a != 0");
+        }
+    }
+
+    #[test]
     fn test_mul_by_x_pow_reduction() {
         let mut data = [0u64; GF29009_NUM_U64];
         data[9008 / 64] = 1u64 << (9008 % 64);
@@ -428,5 +512,16 @@ mod tests {
         let mut result = Gf2_9009::zero();
         elem.mul_by_x_pow(1, &mut result);
         assert_eq!(result.data[0], (1 << 29) | 1);
+    }
+
+    #[test]
+    fn test_bytes_roundtrip() {
+        let tv = load_test_vectors();
+        for case in &tv.arithmetic {
+            let a = Gf2_9009::from_hex(&case.a);
+            let bytes = a.to_bytes();
+            let back = Gf2_9009::from_bytes(&bytes);
+            assert_eq!(a, back, "bytes roundtrip failed");
+        }
     }
 }
