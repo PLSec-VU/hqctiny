@@ -1,20 +1,17 @@
 # HQC-Tiny Protocol
 
-A stateless, non-interactive post-quantum key-exchange protocol built on
-**Hamming Quasi-Cyclic (HQC)** encryption.
+A server-stateless post-quantum key-exchange protocol built on the
+**Hamming Quasi-Cyclic (HQC)** KEM.
 
 We use the following primitives:
-- MAC / KDF: BLAKE3
+- Hash / MAC / KDF: BLAKE3
 - AEAD: XChaCha20-Poly1305
 
+# Phase 1: Entropy establishment (Handshake)
 ```
 [CLIENT]                                                                   [SERVER]
 Generates: Ephemeral HQC Keypair (h, s)                                    Holds: Bounded RAM Table (table[hash_ek_kem])
                                                                            Holds: Windowed Symmetric Cookie Key Pool (2 keys)
-
-========================================================================================================
-                          PHASE 1: ENTROPY ESTABLISHMENT (HANDSHAKE)
-========================================================================================================
 
   1. ephem_pk, ephem_sk <- keypair()
   2. hash_ek_kem <- hash(ephem_pk)
@@ -48,10 +45,8 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
 > where modifying the reference code is permitted, one can opt to just use the
 > Merkle tree root directly as the `hash_ek_kem`.
 
+# Phase 2: Stateless point-on-demand stream
 ```
-========================================================================================================
-                          PHASE 2: STATELESS POINT-ON-DEMAND STREAM
-========================================================================================================
   (Client loops this process for all evaluation points x_i asynchronously, no
   waiting is required between requests, and the server can respond in any order.)
 
@@ -80,11 +75,10 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       Tag encodes direction (s→c), point_type, and point_index.
 
   1. Save (x_i, u_eval) or (x_i, v_eval) for later interpolation.
+```
 
-========================================================================================================
-                          PHASE 3: DEFERRED DECRYPTION
-========================================================================================================
-
+# Phase 3: Client-side decapsulation
+```
   1. Interpolate the collected 'u' and 'v' evaluations.
   2. Reduce modulo (x^n - 1) to vanish the blinding mask polynomials.
   3. Truncate the resulting v(x) modulo x^n1n2 (discarding the randomized truncate mask coefficients).
@@ -126,8 +120,6 @@ All fields are packed sequentially after the tag byte.
 └───────┴──────────────────────┴──────────────────────┘
 ```
 
-Fixed size: **65 bytes**.
-
 #### HandshakeResponse (tag `0x80` or `0xA0`)
 
 ```
@@ -136,8 +128,6 @@ Fixed size: **65 bytes**.
 │ Tag   │ cookie              │ salt   │
 └───────┴─────────────────────┴────────┘
 ```
-
-Size: **89 + PARAM_SECURITY_BYTES bytes** (constant: 1 B tag + 16 B salt + cookie size `72 + PARAM_SECURITY_BYTES`).
 
 #### PointRequest (tag = `idx | (if V { 0x40 }) | (if key_index == 1 { 0x20 })`)
 
@@ -149,9 +139,7 @@ Size: **89 + PARAM_SECURITY_BYTES bytes** (constant: 1 B tag + 16 B salt + cooki
 └───────┴─────────────────────┴─────────────┴─────────────┴───────────┘
 ```
 
-Size: **105 + PARAM_SECURITY_BYTES + (limbs * 8) + witness_len bytes** (1 B tag + cookie size `72 + PARAM_SECURITY_BYTES` + 32 B merkle_root + active limbs + witness length). The witness length is inferred from the remaining bytes of the packet.
-
-Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `public_eval` evaluated segmented polynomial has degree `< n/2 + epsilon` and most of its high-order coefficients are empty (zeros). It is only in the response, where the server multiplies two points, that the degree adds up to around `8984`. To optimize network bandwidth and ensure packet sizes remain constant for a given security variant, we transmit a constant number of limbs representing the maximum bound across all evaluation points:
+Because the public key is segmented using Kronecker segmentation, the segment coefficients by design cannot exceed degree `W = n/2 = 4492` (where `n = 8984` is the field degree). Thus, the resulting `public_eval` evaluated segmented polynomial has degree `< n/2 + epsilon` and most of its high-order coefficients are empty (zeros). It is only in the response, where the server multiplies two points, that the degree adds up to around `8984`. To optimize network bandwidth, we transmit a constant number of limbs representing the maximum bound across all evaluation points:
 
 `limbs = ceil((4492 + POINTS_NUM * (num_blocks - 1)) / 64)`
 
@@ -174,11 +162,9 @@ This yields a constant limb count for each variant:
 └──────────────┴────────────────┘
 ```
 
-Fixed size: **1129 bytes**.
+### Packet Sizes
 
-### Packet Size Summary
-
-The table below summarizes the exact maximum sizes (in bytes) of each packet type for each security parameter variant:
+The table below summarizes the maximum sizes of each packet type for each security parameters:
 
 | Packet Type | HQC-1 (128-bit) | HQC-3 (192-bit) | HQC-5 (256-bit) | Size Formula / Components |
 |-------------|-----------------|-----------------|-----------------|---------------------------|
@@ -187,18 +173,8 @@ The table below summarizes the exact maximum sizes (in bytes) of each packet typ
 | **PointRequest** (Max) | 849 B | 905 B | 929 B | `33 + Cookie Size + (limbs * 8) + Witness Size` |
 | **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_8984)` |
 
-*Note: For the `PointRequest` maximum size calculation:*
-* *The witness proof size is at most 160 bytes for HQC-1 (depth 5) and 192 bytes for HQC-3/5 (depth 6).*
-* *The `public_eval` limb count is 71 limbs (568 B) for HQC-1, 73 limbs (584 B) for HQC-3, and 75 limbs (600 B) for HQC-5.*
+*The witness proof size is at most 160 bytes for HQC-1 (depth 5) and 192 bytes for HQC-3/5 (depth 6).*
 
 ### Gf2_8984 Encoding
 
 Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs, each in little‑endian byte order. For `PointRequest` packets, this is optimized to transmit only the active limbs as described above.
-
-### Security Warning
-
-This implementation is for educational and research purposes only. It is not suitable for production or secure communication.
-
-## Requirements
-
-- [Rust](https://www.rust-lang.org/) (nightly)
