@@ -52,16 +52,15 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       Tag encodes direction (c→s), point_type (U/V), key_index, and point_index.
 
                                                    1. Parse key_index from Tag.
-                                                   2. Retrieve decryption key from Pool. If key has rotated out/erased, DROP.
-                                                   3. Decrypt Cookie using retrieved key → extract theta and m.
-                                                   4. Gen random quotient-blinding mask.
+                                                   2. Decrypt Cookie using key at key_index → extract theta and m. If key was rotated/overwritten or decryption fails, DROP.
+                                                   3. Gen random quotient-blinding mask.
                                                    For Type u:
-                                                    5. Load r1(x_i), r2(x_i) from theta, m.
-                                                    6. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1).
+                                                    4. Load r1(x_i), r2(x_i) from theta, m.
+                                                    5. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1).
                                                    For Type v:
-                                                    5. Load e(x_i), r2(x_i) from theta, m.
-                                                    6. Gen random truncate-blinding mask T(x) over [n1n2, n-1] from theta.
-                                                    7. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1).
+                                                    4. Load e(x_i), r2(x_i) from theta, m.
+                                                    5. Gen random truncate-blinding mask T(x) over [n1n2, n-1] from theta.
+                                                    6. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1).
 
      [Packet 4: Point Response] 
      <--------------------------------------------------------------------
