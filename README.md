@@ -38,16 +38,17 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       Tag encodes direction (s→c), handshake kind, and the key_index bit (0x80 or 0xA0).
 
   1. Store cookie, salt, and key_index.
+```
 
 > [!NOTE]
 > To avoid invading the HQC reference implementation (which internally computes
-`hash_ek_kem = hash(ek_pke)`) and prevent code duplication of the decapsulation
-math, this implementation sends `hash_ek_kem` and the Merkle tree root
-(`merkle_root`) as separate things instead. In a real/production implementation
-where modifying the reference code is permitted, one can opt to just use the
-Merkle tree root directly as the `hash_ek_kem`.
+> `hash_ek_kem = hash(ek_pke)`) and prevent code duplication of the decapsulation
+> math, this implementation sends `hash_ek_kem` and the Merkle tree root
+> (`merkle_root`) as separate things instead. In a real/production implementation
+> where modifying the reference code is permitted, one can opt to just use the
+> Merkle tree root directly as the `hash_ek_kem`.
 
-
+```
 ========================================================================================================
                           PHASE 2: STATELESS POINT-ON-DEMAND STREAM
 ========================================================================================================
