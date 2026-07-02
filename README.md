@@ -169,13 +169,31 @@ This yields:
 |-------------|-----------------|-----------------|-----------------|---------------------------|
 | **HandshakeRequest** | 65 B | 65 B | 65 B | `1 + 32 (hash_ek_kem) + 32 (merkle_root)` |
 | **HandshakeResponse** | 105 B | 113 B | 121 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + 16 (salt)` |
-| **PointRequest** (Max) | 849 B | 905 B | 929 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + (limbs * 8) (public_eval) + 32 (merkle_root) + Witness` |
+| **PointRequest** (Max) | 817 B | 865 B | 929 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + (limbs * 8) (public_eval) + 32 (merkle_root) + Witness` |
 | **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_8984)` |
 
 **Size key:**
 - `SecParam` = `PARAM_SECURITY_BYTES`: 16 B for HQC-1, 24 B for HQC-3, 32 B for HQC-5
-- **Witness** (Merkle proof): at most 160 bytes for HQC-1 (tree depth 5) and 192 bytes for HQC-3/5 (tree depth 6)
+- **Witness** (Merkle proof): at most 128 bytes for HQC-1 (tree depth 4), 160 bytes for HQC-3 (tree depth 5), and 192 bytes for HQC-5 (tree depth 6)
+
+## Protocol Statistics
+
+The table below shows the total number of round trips (request-response pairs) and the total data exchanged by the client during a complete protocol flow execution:
+
+| Variant | Total Round Trips | Total Sent (Client) | Total Received (Client) |
+|---------|-------------------|---------------------|-------------------------|
+| **HQC-1** | 15 | 11,439 B (~11.4 KB) | 15,911 B (~15.9 KB) |
+| **HQC-3** | 31 | 25,951 B (~26.0 KB) | 33,983 B (~34.0 KB) |
+| **HQC-5** | 51 | 46,323 B (~46.3 KB) | 56,571 B (~56.6 KB) |
+
+*Note: Since the point-on-demand stream is asynchronous and stateless, the client can stream all point requests concurrently once it receives the handshake cookie. Under parallel execution, the entire protocol (handshake + streaming) completes in exactly **2 network round-trip times (RTT)**.*
 
 ## Gf2_8984 Encoding
 
-Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs (1128 bytes), each in little‑endian byte order.
+Each `Gf2_8984` element (a polynomial in $\text{GF}(2)[z] / (z^{8984} + z^9 + z^8 + z^6 + 1)$) is serialized as 141 consecutive `u64` limbs (1128 bytes) in little‑endian byte order.
+
+### Design Rationale
+
+1. **MTU Alignment**: Assuming a standard internet/IPv6 minimum MTU of **1280 bytes**, all `PointRequest` packets fit entirely within a single MTU. Bigger field degrees are of no benefit because they do not reduce the number of evaluation points that must be sent for the three HQC security parameters
+without going above the MTU limit.
+2. **Computational Efficiency**: The finite field is defined modulo the pentanomial $z^{8984} + z^9 + z^8 + z^6 + 1$. Because the middle exponents (9, 8, 6, 0) are very small, polynomial modular reduction can be implemented extremely quickly using simple shifts and XOR operations.
