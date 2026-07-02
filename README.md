@@ -190,10 +190,10 @@ The table below shows the total number of round trips (request-response pairs) a
 
 ## Gf2_8984 Encoding
 
-Each `Gf2_8984` element (a polynomial in $\text{GF}(2)[z] / (z^{8984} + z^9 + z^8 + z^6 + 1)$) is serialized as 141 consecutive `u64` limbs (1128 bytes) in little‑endian byte order.
+Each `Gf2_8984` element (a polynomial in $F_2[z] / (z^{8984} + z^9 + z^8 + z^6 + 1$)) is serialized as 141 consecutive `u64` limbs (1128 bytes) in little‑endian byte order.
 
 ### Design Rationale
 
 1. **MTU Alignment**: Assuming a standard internet/IPv6 minimum MTU of **1280 bytes**, all `PointRequest` packets fit entirely within a single MTU. Bigger field degrees are of no benefit because they do not reduce the number of evaluation points that must be sent for the three HQC security parameters
 without going above the MTU limit.
-2. **Computational Efficiency**: The finite field is defined modulo the pentanomial $z^{8984} + z^9 + z^8 + z^6 + 1$. Because the middle exponents (9, 8, 6, 0) are very small, polynomial modular reduction can be implemented extremely quickly using simple shifts and XOR operations.
+2. **Computational Efficiency**: We could pick other field degrees with other irreducible polynomials (for example trinomials, which would've needed fewer loops in the reduction step), but to minimize the number of packets sent and also to fit under the MTU limit, while picking an irreducible polynomial friendly to computers, this is seemingly the best candidate. The middle exponents (9, 8, 6, 0) are very small and under machine word sizes, so polynomial modular reduction can be implemented extremely quickly using simple shifts and XOR operations. 8294 is also divisble by 8 which makes the field elements nice to repesent with machine words, and by Swan's theorem if the field degree is divisble by 8 we must settle with pentaomials because irreducible trinomals would not exist. 
