@@ -7,7 +7,6 @@ pub mod hqc;
 pub mod math;
 pub mod protocol;
 pub mod server;
-pub mod test_utils;
 pub mod traits;
 
 pub use hqc::{Hqc1, Hqc3, Hqc5, HqcScheme, hqc1, hqc3, hqc5};

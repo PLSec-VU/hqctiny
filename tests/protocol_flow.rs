@@ -2,10 +2,11 @@ use HQCTiny::client::{Client, PointResult};
 use HQCTiny::error::Error;
 use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
 use HQCTiny::server::Server;
-use HQCTiny::test_utils::{InMemoryKeyProvider, MockEntropy, SharedSessionStore};
+mod test_utils;
 use HQCTiny::traits::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use test_utils::{InMemoryKeyProvider, MockEntropy, SharedSessionStore};
 
 fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
     let sessions = Arc::new(Mutex::new(HashMap::new()));

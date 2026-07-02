@@ -1,17 +1,18 @@
-use crate::traits::*;
+#![allow(dead_code)]
+
+use HQCTiny::traits::*;
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+#[derive(Default)]
 pub struct SharedSessionStore {
     pub sessions: Arc<Mutex<HashMap<[u8; 32], [u8; 32]>>>,
 }
 
 impl SharedSessionStore {
     pub fn new() -> Self {
-        Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self::default()
     }
 }
 
