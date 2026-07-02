@@ -13,23 +13,24 @@ pub use hqc::{Hqc1, Hqc3, Hqc5, HqcScheme, hqc1, hqc3, hqc5};
 mod tests {
     use super::*;
     use crate::client::{Client, PointResult};
+    use crate::error::Error;
     use crate::server::Server;
     use crate::traits::*;
     use rand::Rng;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, RwLock};
 
     struct SharedSessionStore {
-        sessions: Arc<Mutex<HashMap<[u8; 32], (u64, [u8; 32])>>>,
+        sessions: Arc<Mutex<HashMap<[u8; 32], [u8; 32]>>>,
     }
     impl SessionStore for SharedSessionStore {
-        fn save_session(&self, hash_ek_kem: &[u8; 32], timestamp: u64, k_session: [u8; 32]) {
+        fn save_session(&self, hash_ek_kem: &[u8; 32], k_session: [u8; 32]) {
             self.sessions
                 .lock()
                 .unwrap()
-                .insert(*hash_ek_kem, (timestamp, k_session));
+                .insert(*hash_ek_kem, k_session);
         }
-        fn get_session(&self, hash_ek_kem: &[u8; 32]) -> Option<(u64, [u8; 32])> {
+        fn get_session(&self, hash_ek_kem: &[u8; 32]) -> Option<[u8; 32]> {
             self.sessions.lock().unwrap().get(hash_ek_kem).cloned()
         }
     }
@@ -41,12 +42,34 @@ mod tests {
         }
     }
 
-    struct MockTime {
-        time: u64,
+    struct InMemoryKeyProvider {
+        current_idx: RwLock<u8>,
+        keys: [RwLock<Option<[u8; 32]>>; 2],
     }
-    impl TimeProvider for MockTime {
-        fn current_time(&self) -> u64 {
-            self.time
+
+    impl InMemoryKeyProvider {
+        fn new(entropy: &impl EntropyProvider) -> Self {
+            let mut k0 = [0u8; 32];
+            let mut k1 = [0u8; 32];
+            entropy.random_bytes(&mut k0);
+            entropy.random_bytes(&mut k1);
+            Self {
+                current_idx: RwLock::new(0),
+                keys: [RwLock::new(Some(k0)), RwLock::new(Some(k1))],
+            }
+        }
+    }
+
+    impl CookieKeyProvider for InMemoryKeyProvider {
+        fn current_key_index(&self) -> u8 {
+            *self.current_idx.read().unwrap()
+        }
+
+        fn get_key(&self, index: u8) -> Option<[u8; 32]> {
+            if index > 1 {
+                return None;
+            }
+            *self.keys[index as usize].read().unwrap()
         }
     }
 
@@ -56,20 +79,16 @@ mod tests {
             sessions: sessions.clone(),
         };
 
-        let server = Server::<SCHEME, _, _, _>::new(
-            store,
-            MockEntropy,
-            MockTime { time: 1000 },
-            [0x42; 32], // server key
-            3600,       // timeout
-        );
+        let entropy = MockEntropy;
+        let key_provider = InMemoryKeyProvider::new(&entropy);
 
-        let client = Client::<SCHEME, _, _, _, _>::new(
+        let server = Server::<SCHEME, _, _, _>::new(store, MockEntropy, key_provider);
+
+        let client = Client::<SCHEME, _, _, _>::new(
             SharedSessionStore {
                 sessions: Arc::new(Mutex::new(HashMap::new())),
             },
             MockEntropy,
-            MockTime { time: 1000 },
         );
 
         let mut packets_sent = 0;
@@ -198,7 +217,7 @@ mod tests {
         // 5. Verify server has saved the identical session key
         let saved = sessions.lock().unwrap();
         assert_eq!(saved.len(), 1);
-        let (_, (_, server_key)) = saved.iter().next().unwrap();
+        let (_, server_key) = saved.iter().next().unwrap();
 
         assert_eq!(client_key.as_slice(), &server_key[..client_key.len()]);
 
@@ -221,5 +240,47 @@ mod tests {
     #[test]
     fn test_protocol_flow_hqc5() {
         test_protocol_flow_generic::<Hqc5>("HQC-5");
+    }
+
+    #[test]
+    fn test_cookie_key_rotation() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let store = SharedSessionStore {
+            sessions: sessions.clone(),
+        };
+
+        let entropy = MockEntropy;
+        let key_provider = InMemoryKeyProvider::new(&entropy);
+
+        let server = Server::<Hqc1, _, _, _>::new(store, MockEntropy, key_provider);
+
+        let client = Client::<Hqc1, _, _, _>::new(
+            SharedSessionStore {
+                sessions: Arc::new(Mutex::new(HashMap::new())),
+            },
+            MockEntropy,
+        );
+
+        // 1. Handshake
+        let (client, req) = client.initialize();
+        let res = server.handle_handshake(req).unwrap();
+
+        // 2. Rotate keys in server twice (overwriting both keys so the old key is erased)
+        let mut new_k = [0u8; 32];
+        entropy.random_bytes(&mut new_k);
+        *server.key_provider.keys[0].write().unwrap() = Some(new_k);
+        entropy.random_bytes(&mut new_k);
+        *server.key_provider.keys[1].write().unwrap() = Some(new_k);
+
+        // 3. Client attempts to process response and send point request
+        let (_client, point_reqs) = client.handle_handshake_response(res).unwrap();
+        let req = point_reqs[0].clone();
+
+        // 4. Server should fail to decrypt cookie (returns SessionExpired because key was overwritten/erased)
+        let res = server.handle_point_request(req);
+        assert!(matches!(
+            res,
+            Err(Error::SessionExpired) | Err(Error::DecryptionError)
+        ));
     }
 }

@@ -19,6 +19,7 @@ pub struct CollectingPoints {
     pub request: HandshakeRequest,
     pub cookie: Vec<u8>,
     pub salt: [u8; 16],
+    pub key_index: u8,
     pub points_u: HashMap<u8, Gf2_8984>,
     pub points_v: HashMap<u8, Gf2_8984>,
     pub sk: Vec<u8>,
@@ -28,32 +29,28 @@ pub struct Completed {
     pub session_key: Vec<u8>,
 }
 
-pub struct Client<SCHEME, SStore, E, Time, State>
+pub struct Client<SCHEME, SStore, E, State>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    Time: TimeProvider,
 {
     pub session_store: SStore,
     pub entropy_provider: E,
-    pub time_provider: Time,
     pub state: State,
     _phantom: std::marker::PhantomData<SCHEME>,
 }
 
-impl<SCHEME, SStore, E, Time> Client<SCHEME, SStore, E, Time, Initial>
+impl<SCHEME, SStore, E> Client<SCHEME, SStore, E, Initial>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    Time: TimeProvider,
 {
-    pub fn new(session_store: SStore, entropy_provider: E, time_provider: Time) -> Self {
+    pub fn new(session_store: SStore, entropy_provider: E) -> Self {
         Self {
             session_store,
             entropy_provider,
-            time_provider,
             state: Initial,
             _phantom: std::marker::PhantomData,
         }
@@ -63,7 +60,7 @@ where
     pub fn initialize(
         self,
     ) -> (
-        Client<SCHEME, SStore, E, Time, AwaitingHandshake>,
+        Client<SCHEME, SStore, E, AwaitingHandshake>,
         HandshakeRequest,
     ) {
         let mut entropy = [0u8; 48];
@@ -77,17 +74,12 @@ where
 
         let pk_params = SCHEME::partial_public_key_encaps(&pk);
         let hash_ek_kem = *pk_params.hash_ek_kem();
-        let timestamp = self.time_provider.current_time();
 
-        let request = HandshakeRequest {
-            hash_ek_kem,
-            timestamp,
-        };
+        let request = HandshakeRequest { hash_ek_kem };
 
         let next_state = Client {
             session_store: self.session_store,
             entropy_provider: self.entropy_provider,
-            time_provider: self.time_provider,
             state: AwaitingHandshake {
                 request: request.clone(),
                 pk,
@@ -100,12 +92,11 @@ where
     }
 }
 
-impl<SCHEME, SStore, E, Time> Client<SCHEME, SStore, E, Time, AwaitingHandshake>
+impl<SCHEME, SStore, E> Client<SCHEME, SStore, E, AwaitingHandshake>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    Time: TimeProvider,
 {
     /// Process the server's handshake response and prepare point requests.
     #[allow(clippy::type_complexity)]
@@ -113,7 +104,7 @@ where
         self,
         res: HandshakeResponse,
     ) -> Result<(
-        Client<SCHEME, SStore, E, Time, CollectingPoints>,
+        Client<SCHEME, SStore, E, CollectingPoints>,
         Vec<PointRequest>,
     )> {
         let pk_params = SCHEME::partial_public_key_encaps(&self.state.pk);
@@ -131,7 +122,7 @@ where
             evaluate_at_generator(&h_blocks, i + 1, &mut h_xi);
             point_requests.push(PointRequest {
                 cookie: res.cookie.clone(),
-                handshake_timestamp: self.state.request.timestamp,
+                key_index: res.key_index,
                 point_index: i + 1,
                 point_type: PointType::U,
                 public_eval: h_xi,
@@ -142,7 +133,7 @@ where
             evaluate_at_generator(&s_blocks, i + 1, &mut s_xi);
             point_requests.push(PointRequest {
                 cookie: res.cookie.clone(),
-                handshake_timestamp: self.state.request.timestamp,
+                key_index: res.key_index,
                 point_index: i + 1,
                 point_type: PointType::V,
                 public_eval: s_xi,
@@ -152,11 +143,11 @@ where
         let next_state = Client {
             session_store: self.session_store,
             entropy_provider: self.entropy_provider,
-            time_provider: self.time_provider,
             state: CollectingPoints {
                 request: self.state.request.clone(),
                 cookie: res.cookie,
                 salt: res.salt,
+                key_index: res.key_index,
                 points_u: HashMap::new(),
                 points_v: HashMap::new(),
                 sk: self.state.sk,
@@ -169,39 +160,33 @@ where
 }
 
 #[allow(clippy::type_complexity)]
-pub enum PointResult<SCHEME, SStore, E, Time>
+pub enum PointResult<SCHEME, SStore, E>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    Time: TimeProvider,
 {
-    Collecting(Box<Client<SCHEME, SStore, E, Time, CollectingPoints>>),
+    Collecting(Box<Client<SCHEME, SStore, E, CollectingPoints>>),
     Completed(
-        Client<SCHEME, SStore, E, Time, Completed>,
+        Client<SCHEME, SStore, E, Completed>,
         Vec<u8>, // K_session
     ),
 }
 
-impl<SCHEME, SStore, E, Time> Client<SCHEME, SStore, E, Time, CollectingPoints>
+impl<SCHEME, SStore, E> Client<SCHEME, SStore, E, CollectingPoints>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    Time: TimeProvider,
 {
     /// Collect point response and check if all points have been collected.
     pub fn handle_point_response(
         mut self,
         res: PointResponse,
-    ) -> Result<PointResult<SCHEME, SStore, E, Time>> {
+    ) -> Result<PointResult<SCHEME, SStore, E>> {
         let points_num = SCHEME::POINTS_NUM;
         if res.point_index < 1 || res.point_index as usize > points_num {
             return Err(Error::InvalidPointIndex);
-        }
-
-        if res.handshake_timestamp != self.state.request.timestamp {
-            return Err(Error::UnexpectedResponse);
         }
 
         match res.point_type {
@@ -270,7 +255,6 @@ where
             let next_state = Client {
                 session_store: self.session_store,
                 entropy_provider: self.entropy_provider,
-                time_provider: self.time_provider,
                 state: Completed {
                     session_key: ss.clone(),
                 },

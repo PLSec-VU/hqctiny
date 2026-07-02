@@ -6,96 +6,78 @@ use crate::math::segmentation::{evaluate_at_generator, split};
 use crate::traits::*;
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit, Payload},
+    aead::{Aead, KeyInit},
 };
 
-pub struct Server<SCHEME, SStore, E, Time>
+pub struct Server<SCHEME, SStore, E, KProvider>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    Time: TimeProvider,
+    KProvider: CookieKeyProvider,
 {
     pub session_store: SStore,
     pub entropy_provider: E,
-    pub time_provider: Time,
-    pub server_key: [u8; 32],
-    pub timeout: u64,
+    pub key_provider: KProvider,
     _phantom: std::marker::PhantomData<SCHEME>,
 }
 
-impl<SCHEME, SStore, E, Time> Server<SCHEME, SStore, E, Time>
+impl<SCHEME, SStore, E, KProvider> Server<SCHEME, SStore, E, KProvider>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    Time: TimeProvider,
+    KProvider: CookieKeyProvider,
 {
-    pub fn new(
-        session_store: SStore,
-        entropy_provider: E,
-        time_provider: Time,
-        server_key: [u8; 32],
-        timeout: u64,
-    ) -> Self {
+    pub fn new(session_store: SStore, entropy_provider: E, key_provider: KProvider) -> Self {
         Self {
             session_store,
             entropy_provider,
-            time_provider,
-            server_key,
-            timeout,
+            key_provider,
             _phantom: std::marker::PhantomData,
         }
     }
 
-    fn encrypt_cookie(&self, plaintext: &[u8], timestamp: u64) -> Result<Vec<u8>> {
+    fn encrypt_cookie(&self, plaintext: &[u8]) -> Result<(Vec<u8>, u8)> {
+        let key_index = self.key_provider.current_key_index();
+        let key = self
+            .key_provider
+            .get_key(key_index)
+            .ok_or(Error::EncryptionError)?;
+
         let mut nonce = [0u8; 24];
         self.entropy_provider.random_bytes(&mut nonce);
 
-        let cipher = XChaCha20Poly1305::new(&self.server_key.into());
-        let aad = timestamp.to_le_bytes();
-        let payload = Payload {
-            msg: plaintext,
-            aad: &aad,
-        };
+        let cipher = XChaCha20Poly1305::new(&key.into());
         let ct = cipher
-            .encrypt(XNonce::from_slice(&nonce), payload)
+            .encrypt(XNonce::from_slice(&nonce), plaintext)
             .map_err(|_| Error::EncryptionError)?;
 
         let mut cookie = vec![0u8; 24 + ct.len()];
         cookie[..24].copy_from_slice(&nonce);
         cookie[24..].copy_from_slice(&ct);
-        Ok(cookie)
+        Ok((cookie, key_index))
     }
 
-    fn decrypt_cookie(&self, cookie: &[u8], timestamp: u64) -> Result<Vec<u8>> {
+    fn decrypt_cookie(&self, cookie: &[u8], key_index: u8) -> Result<Vec<u8>> {
         if cookie.len() < 24 {
             return Err(Error::InvalidCookieLength);
         }
 
+        let key = self
+            .key_provider
+            .get_key(key_index)
+            .ok_or(Error::SessionExpired)?;
         let (nonce_bytes, ct_bytes) = cookie.split_at(24);
-        let cipher = XChaCha20Poly1305::new(&self.server_key.into());
-        let aad = timestamp.to_le_bytes();
-        let payload = Payload {
-            msg: ct_bytes,
-            aad: &aad,
-        };
+        let cipher = XChaCha20Poly1305::new(&key.into());
         let pt = cipher
-            .decrypt(XNonce::from_slice(nonce_bytes), payload)
+            .decrypt(XNonce::from_slice(nonce_bytes), ct_bytes)
             .map_err(|_| Error::DecryptionError)?;
         Ok(pt)
     }
 
     pub fn handle_handshake(&self, req: HandshakeRequest) -> Result<HandshakeResponse> {
-        let now = self.time_provider.current_time();
-
-        let ts = req.timestamp;
-        if ts < now.saturating_sub(self.timeout) {
-            return Err(Error::TimestampTooOld);
-        }
-        if let Some((stored_ts, _)) = self.session_store.get_session(&req.hash_ek_kem)
-            && ts <= stored_ts
-        {
+        if self.session_store.get_session(&req.hash_ek_kem).is_some() {
             return Err(Error::TimestampNotIncreasing);
         }
 
@@ -114,30 +96,29 @@ where
         k_session_32[..copy_len].copy_from_slice(&k_session[..copy_len]);
 
         self.session_store
-            .save_session(&req.hash_ek_kem, ts, k_session_32);
+            .save_session(&req.hash_ek_kem, k_session_32);
 
         let mut plaintext = vec![0u8; 32 + SCHEME::PARAM_SECURITY_BYTES];
         plaintext[..32].copy_from_slice(theta);
         plaintext[32..].copy_from_slice(&m);
 
-        let cookie = self.encrypt_cookie(&plaintext, ts)?;
+        let (cookie, key_index) = self.encrypt_cookie(&plaintext)?;
 
-        Ok(HandshakeResponse { cookie, salt })
+        Ok(HandshakeResponse {
+            cookie,
+            salt,
+            key_index,
+        })
     }
 
     pub fn handle_point_request(&self, req: PointRequest) -> Result<PointResponse> {
-        let now = self.time_provider.current_time();
         let points_num = SCHEME::POINTS_NUM;
 
         if req.point_index == 0 || req.point_index as usize > points_num {
             return Err(Error::InvalidPointIndex);
         }
 
-        if now.saturating_sub(req.handshake_timestamp) > self.timeout {
-            return Err(Error::SessionExpired);
-        }
-
-        let plaintext = self.decrypt_cookie(&req.cookie, req.handshake_timestamp)?;
+        let plaintext = self.decrypt_cookie(&req.cookie, req.key_index)?;
         if plaintext.len() != 32 + SCHEME::PARAM_SECURITY_BYTES {
             return Err(Error::InvalidCookie);
         }
@@ -231,7 +212,6 @@ where
         };
 
         Ok(PointResponse {
-            handshake_timestamp: req.handshake_timestamp,
             point_index: req.point_index,
             point_type: req.point_type,
             eval,
