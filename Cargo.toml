@@ -1,3 +1,6 @@
+[workspace]
+members = ["hqctiny-cli"]
+
 [package]
 name = "HQCTiny"
 version = "0.1.0"
