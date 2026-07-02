@@ -106,11 +106,6 @@ Every packet starts with a single **tag byte** that encodes direction, point typ
 
 All fields are packed sequentially after the tag byte. 
 
-### Packet Layouts
-
-> `LE` = little‑endian. `Gf2_8984` = 141 × 8 = **1128 bytes**.
-> `Cookie` = 24‑byte nonce + (32‑byte `theta` + `PARAM_SECURITY_BYTES` `m` + 16‑byte tag) = **72 + PARAM_SECURITY_BYTES** bytes.
-
 #### HandshakeRequest (tag `0x00`)
 
 ```
@@ -173,8 +168,10 @@ The table below summarizes the maximum sizes of each packet type for each securi
 | **PointRequest** (Max) | 849 B | 905 B | 929 B | `33 + Cookie Size + (limbs * 8) + Witness Size` |
 | **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_8984)` |
 
-*The witness proof size is at most 160 bytes for HQC-1 (depth 5) and 192 bytes for HQC-3/5 (depth 6).*
+- The witness proof size is at most 160 bytes for HQC-1 (depth 5) and 192 bytes for HQC-3/5 (depth 6).
+- The cookie is 24‑byte nonce + 32+`PARAM_SECURITY_BYTES`‑byte ciphertext of `theta` and `m` + 16‑byte tag.
+
 
 ### Gf2_8984 Encoding
 
-Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs, each in little‑endian byte order. For `PointRequest` packets, this is optimized to transmit only the active limbs as described above.
+Each `Gf2_8984` element (a polynomial in GF(2)[x] / (x^8984 + x^9 + x^8 + x^6 + 1)) is normally serialized as 141 consecutive `u64` limbs (1128 bytes), each in little‑endian byte order. For `PointRequest` packets, this is optimized to transmit only the active limbs as described above.
