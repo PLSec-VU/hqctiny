@@ -21,11 +21,10 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
      -------------------------------------------------------------------->
       | 0x00 | hash_ek_kem (32 B) | merkle_root (32 B) |
 
-                                                 1. REPLAY CHECK: If table[hash_ek_kem] already exists, DROP.
-                                                 2. Generate random m (PARAM_SECURITY_BYTES) and salt (16 B).
-                                                 3. K_session, theta <- derive_shared_secret(m, salt, hash_ek_kem).
-                                                 4. OVERWRITE RAM: table[hash_ek_kem] = {K_session}.
-                                                 5. Fetch current key_index (0 or 1) and active key from pool.
+                                                 1. Generate random m (PARAM_SECURITY_BYTES) and salt (16 B).
+                                                 2. K_session, theta <- derive_shared_secret(m, salt, hash_ek_kem).
+                                                 3. K_session is ready for future use.
+                                                 4. Fetch current key_index (0 or 1) and active key from pool.
                                                     Encrypt Cookie = AEAD_{ActiveKey}(theta || m) with AAD = merkle_root and a random 24‑byte nonce.
 
      [Packet 2: Handshake Response] 
