@@ -3,6 +3,7 @@ use crate::hqc::{HqcPublicKeyParameters, HqcScheme};
 use crate::math::gf2_8984::Gf2_8984;
 use crate::math::hqc_bridge;
 use crate::math::segmentation::{combine, evaluate_at_generator, split};
+use crate::protocol::*;
 use crate::traits::*;
 use std::collections::HashMap;
 

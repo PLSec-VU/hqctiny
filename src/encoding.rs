@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::math::gf2_8984::{GF28984_NUM_U64, Gf2_8984};
-use crate::traits::*;
+use crate::protocol::*;
 
 // ── Packet type enum ───────────────────────────────────────────────
 
@@ -37,7 +37,9 @@ fn get_u16(data: &[u8], pos: &mut usize) -> Result<u16> {
     if *pos + 2 > data.len() {
         return Err(Error::SerializationError);
     }
-    let bytes: [u8; 2] = data[*pos..*pos + 2].try_into().unwrap();
+    let bytes: [u8; 2] = data[*pos..*pos + 2]
+        .try_into()
+        .map_err(|_| Error::SerializationError)?;
     *pos += 2;
     Ok(u16::from_le_bytes(bytes))
 }
@@ -64,18 +66,20 @@ fn put_gf2_into(buf: &mut [u8], pos: &mut usize, val: &Gf2_8984) {
 
 // ── Public API ─────────────────────────────────────────────────────
 
-pub fn encode_handshake_request<'o>(req: &HandshakeRequest, out: &'o mut [u8]) -> &'o mut [u8] {
+pub fn encode_handshake_request<'o>(
+    req: &HandshakeRequest,
+    out: &'o mut [u8],
+) -> Result<&'o mut [u8]> {
     let total = 33;
-    assert!(
-        out.len() >= total,
-        "encode_handshake_request buffer too small"
-    );
+    if out.len() < total {
+        return Err(Error::SerializationError);
+    }
     let mut pos = 0;
     out[pos] = 0x00; // c→s, handshake (all bits 0)
     pos += 1;
     out[pos..pos + 32].copy_from_slice(&req.hash_ek_kem);
     pos += 32;
-    &mut out[..pos]
+    Ok(&mut out[..pos])
 }
 
 pub fn decode_handshake_request(data: &[u8]) -> Result<HandshakeRequest> {
@@ -90,13 +94,15 @@ pub fn decode_handshake_request(data: &[u8]) -> Result<HandshakeRequest> {
     Ok(HandshakeRequest { hash_ek_kem })
 }
 
-pub fn encode_handshake_response<'o>(res: &HandshakeResponse, out: &'o mut [u8]) -> &'o mut [u8] {
+pub fn encode_handshake_response<'o>(
+    res: &HandshakeResponse,
+    out: &'o mut [u8],
+) -> Result<&'o mut [u8]> {
     let cookie_len = res.cookie.len();
     let total = 1 + 2 + cookie_len + 16;
-    assert!(
-        out.len() >= total,
-        "encode_handshake_response buffer too small"
-    );
+    if out.len() < total {
+        return Err(Error::SerializationError);
+    }
     let mut pos = 0;
     let mut tag = DIR_BIT; // s→c, handshake
     if res.key_index == 1 {
@@ -109,7 +115,7 @@ pub fn encode_handshake_response<'o>(res: &HandshakeResponse, out: &'o mut [u8])
     pos += cookie_len;
     out[pos..pos + 16].copy_from_slice(&res.salt);
     pos += 16;
-    &mut out[..pos]
+    Ok(&mut out[..pos])
 }
 
 pub fn decode_handshake_response(data: &[u8]) -> Result<HandshakeResponse> {
@@ -137,10 +143,12 @@ pub fn decode_handshake_response(data: &[u8]) -> Result<HandshakeResponse> {
     })
 }
 
-pub fn encode_point_request<'o>(req: &PointRequest, out: &'o mut [u8]) -> &'o mut [u8] {
+pub fn encode_point_request<'o>(req: &PointRequest, out: &'o mut [u8]) -> Result<&'o mut [u8]> {
     let cookie_len = req.cookie.len();
     let total = 1 + 2 + cookie_len + GF2_8984_BYTES;
-    assert!(out.len() >= total, "encode_point_request buffer too small");
+    if out.len() < total {
+        return Err(Error::SerializationError);
+    }
     let mut pos = 0;
     let idx = req.point_index.max(1);
     let mut tag = idx & KIND_MASK;
@@ -156,7 +164,7 @@ pub fn encode_point_request<'o>(req: &PointRequest, out: &'o mut [u8]) -> &'o mu
     out[pos..pos + cookie_len].copy_from_slice(&req.cookie);
     pos += cookie_len;
     put_gf2_into(out, &mut pos, &req.public_eval);
-    &mut out[..pos]
+    Ok(&mut out[..pos])
 }
 
 pub fn decode_point_request(data: &[u8]) -> Result<PointRequest> {
@@ -196,9 +204,11 @@ pub fn decode_point_request(data: &[u8]) -> Result<PointRequest> {
     })
 }
 
-pub fn encode_point_response<'o>(res: &PointResponse, out: &'o mut [u8]) -> &'o mut [u8] {
+pub fn encode_point_response<'o>(res: &PointResponse, out: &'o mut [u8]) -> Result<&'o mut [u8]> {
     let total = 1 + GF2_8984_BYTES;
-    assert!(out.len() >= total, "encode_point_response buffer too small");
+    if out.len() < total {
+        return Err(Error::SerializationError);
+    }
     let mut pos = 0;
     let idx = res.point_index.max(1);
     let mut tag = DIR_BIT | (idx & KIND_MASK);
@@ -208,7 +218,7 @@ pub fn encode_point_response<'o>(res: &PointResponse, out: &'o mut [u8]) -> &'o 
     out[pos] = tag;
     pos += 1;
     put_gf2_into(out, &mut pos, &res.eval);
-    &mut out[..pos]
+    Ok(&mut out[..pos])
 }
 
 pub fn decode_point_response(data: &[u8]) -> Result<PointResponse> {
@@ -239,7 +249,7 @@ pub fn decode_point_response(data: &[u8]) -> Result<PointResponse> {
     })
 }
 
-pub fn encode_packet<'o>(pkt: &Packet, out: &'o mut [u8]) -> &'o mut [u8] {
+pub fn encode_packet<'o>(pkt: &Packet, out: &'o mut [u8]) -> Result<&'o mut [u8]> {
     match pkt {
         Packet::HandshakeRequest(req) => encode_handshake_request(req, out),
         Packet::HandshakeResponse(res) => encode_handshake_response(res, out),
@@ -285,7 +295,7 @@ mod tests {
             hash_ek_kem: [0x42; 32],
         };
         let mut buf = [0u8; 100];
-        let enc = encode_handshake_request(&req, &mut buf);
+        let enc = encode_handshake_request(&req, &mut buf).unwrap();
         assert_eq!(enc.len(), 33);
         let dec = decode_handshake_request(enc).unwrap();
         assert_eq!(dec.hash_ek_kem, req.hash_ek_kem);
@@ -299,7 +309,7 @@ mod tests {
             key_index: 1,
         };
         let mut buf = [0u8; 100];
-        let enc = encode_handshake_response(&res, &mut buf);
+        let enc = encode_handshake_response(&res, &mut buf).unwrap();
         let dec = decode_handshake_response(enc).unwrap();
         assert_eq!(dec.cookie, res.cookie);
         assert_eq!(dec.salt, res.salt);

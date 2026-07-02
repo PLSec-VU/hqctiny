@@ -3,6 +3,7 @@ use crate::hqc::{HqcMessageParameters, HqcScheme, HqcSharedSecretParameters};
 use crate::math::gf2_8984::Gf2_8984;
 use crate::math::hqc_bridge;
 use crate::math::segmentation::{evaluate_at_generator, split};
+use crate::protocol::*;
 use crate::traits::*;
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,

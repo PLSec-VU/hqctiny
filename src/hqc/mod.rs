@@ -1,6 +1,4 @@
-lazy_static::lazy_static! {
-    static ref FFI_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-}
+pub mod ffi;
 
 pub trait HqcScheme {
     const PUBLIC_KEY_BYTES: usize;
@@ -140,12 +138,6 @@ pub trait HqcMessageParameters {
     fn e(&self) -> &[u64];
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct shake256_xof_ctx {
-    pub ctx: [u64; 26],
-}
-
 macro_rules! define_hqc_variant {
     (
         $mod_name:ident,
@@ -157,8 +149,8 @@ macro_rules! define_hqc_variant {
         $ct_bytes:expr,
         $vec_n_size_64:expr,
         $vec_n1n2_size_64:expr,
-        $vec_n_size_bytes:expr,
-        $vec_n1n2_size_bytes:expr,
+        $vec_n_size_BYTES:expr,
+        $vec_n1n2_size_BYTES:expr,
         $param_security_bytes:expr,
         $param_omega_r:expr,
         $param_omega_e:expr,
@@ -170,6 +162,7 @@ macro_rules! define_hqc_variant {
         pub mod $mod_name {
             #[cfg(test)]
             use crate::hqc::{HqcPublicKeyParameters, HqcMessageParameters};
+            use crate::hqc::ffi::hqc_ffi_decls;
 
             lazy_static::lazy_static! {
                 static ref MATRIX: Box<[[crate::math::gf2_8984::Gf2_8984; $points_num]; $points_num]> =
@@ -182,8 +175,8 @@ macro_rules! define_hqc_variant {
             pub const CIPHERTEXT_BYTES: usize = $ct_bytes;
             pub const VEC_N_SIZE_64: usize = $vec_n_size_64;
             pub const VEC_N1N2_SIZE_64: usize = $vec_n1n2_size_64;
-            pub const VEC_N_SIZE_BYTES: usize = $vec_n_size_bytes;
-            pub const VEC_N1N2_SIZE_BYTES: usize = $vec_n1n2_size_bytes;
+            pub const VEC_N_SIZE_BYTES: usize = $vec_n_size_BYTES;
+            pub const VEC_N1N2_SIZE_BYTES: usize = $vec_n1n2_size_BYTES;
             pub const PARAM_SECURITY_BYTES: usize = $param_security_bytes;
             pub const PARAM_OMEGA_R: u16 = $param_omega_r;
             pub const PARAM_OMEGA_E: u16 = $param_omega_e;
@@ -246,72 +239,7 @@ macro_rules! define_hqc_variant {
 
             pub struct $struct_name;
 
-            unsafe extern "C" {
-                #[link_name = concat!($prefix, "prng_init")]
-                pub(crate) fn c_prng_init(
-                    entropy_input: *mut u8,
-                    personalization_string: *mut u8,
-                    enlen: u32,
-                    perlen: u32,
-                );
-
-                #[link_name = concat!($prefix, "crypto_kem_keypair")]
-                pub(crate) fn c_crypto_kem_keypair(pk: *mut u8, sk: *mut u8) -> i32;
-
-                #[cfg(test)]
-                #[link_name = concat!($prefix, "crypto_kem_enc")]
-                pub(crate) fn c_crypto_kem_enc(ct: *mut u8, ss: *mut u8, pk: *const u8) -> i32;
-
-                #[link_name = concat!($prefix, "crypto_kem_dec")]
-                pub(crate) fn c_crypto_kem_dec(ss: *mut u8, ct: *const u8, sk: *const u8) -> i32;
-
-                #[link_name = concat!($prefix, "hash_h")]
-                pub(crate) fn c_hash_h(output: *mut u8, ek_kem: *const u8);
-
-                #[link_name = concat!($prefix, "hash_g")]
-                pub(crate) fn c_hash_g(
-                    output: *mut u8,
-                    hash_ek_kem: *const u8,
-                    m: *const u8,
-                    salt: *const u8,
-                );
-
-                #[link_name = concat!($prefix, "hqc_ek_pke_from_string")]
-                pub(crate) fn c_hqc_ek_pke_from_string(
-                    h: *mut u64,
-                    s: *mut u64,
-                    ek_pke: *const u8,
-                );
-
-                #[link_name = concat!($prefix, "xof_init")]
-                pub(crate) fn c_xof_init(
-                    xof_ctx: *mut crate::hqc::shake256_xof_ctx,
-                    seed: *const u8,
-                    seed_size: u32,
-                );
-
-                #[link_name = concat!($prefix, "vect_sample_fixed_weight2")]
-                pub(crate) fn c_vect_sample_fixed_weight2(
-                    xof_ctx: *mut crate::hqc::shake256_xof_ctx,
-                    v: *mut u64,
-                    weight: u16,
-                );
-
-                #[cfg(test)]
-                #[link_name = concat!($prefix, "vect_mul")]
-                pub(crate) fn c_vect_mul(o: *mut u64, v1: *const u64, v2: *const u64);
-
-                #[cfg(test)]
-                #[link_name = concat!($prefix, "vect_add")]
-                pub(crate) fn c_vect_add(o: *mut u64, v1: *const u64, v2: *const u64, size: u32);
-
-                #[link_name = concat!($prefix, "code_encode")]
-                pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
-
-                #[cfg(test)]
-                #[link_name = concat!($prefix, "vect_truncate")]
-                pub(crate) fn c_vect_truncate(v: *mut u64);
-            }
+            hqc_ffi_decls!($prefix);
 
             impl crate::hqc::HqcScheme for $struct_name {
                 const PUBLIC_KEY_BYTES: usize = PUBLIC_KEY_BYTES;
@@ -367,7 +295,7 @@ macro_rules! define_hqc_variant {
                 unsafe fn keypair(entropy: &[u8], pk: &mut [u8], sk: &mut [u8]) -> i32 {
                     assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
                     assert_eq!(sk.len(), SECRET_KEY_BYTES);
-                    let _guard = crate::hqc::FFI_LOCK.lock().unwrap();
+                    let _guard = crate::hqc::ffi::FFI_LOCK.lock().unwrap();
                     let mut personal = [0u8; 0];
                     unsafe {
                         c_prng_init(
@@ -385,7 +313,7 @@ macro_rules! define_hqc_variant {
                     assert_eq!(ct.len(), CIPHERTEXT_BYTES);
                     assert_eq!(ss.len(), SHARED_SECRET_BYTES);
                     assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
-                    let _guard = crate::hqc::FFI_LOCK.lock().unwrap();
+                    let _guard = crate::hqc::ffi::FFI_LOCK.lock().unwrap();
                     let mut personal = [0u8; 0];
                     unsafe {
                         c_prng_init(
@@ -453,7 +381,7 @@ macro_rules! define_hqc_variant {
                 fn partial_message_encaps(m: &[u8], theta: &[u8]) -> Self::MessageParameters {
                     assert_eq!(m.len(), PARAM_SECURITY_BYTES);
                     assert_eq!(theta.len(), SEED_BYTES);
-                    let mut theta_xof_ctx = crate::hqc::shake256_xof_ctx { ctx: [0; 26] };
+                    let mut theta_xof_ctx = crate::hqc::ffi::shake256_xof_ctx { ctx: [0; 26] };
                     unsafe {
                         c_xof_init(&mut theta_xof_ctx, theta.as_ptr(), SEED_BYTES as u32);
                     }
@@ -582,7 +510,6 @@ macro_rules! define_hqc_variant {
     };
 }
 
-// Instantiate variants with respective parameters:
 define_hqc_variant!(
     hqc1,
     Hqc1,
@@ -600,7 +527,7 @@ define_hqc_variant!(
     75,
     17669,
     7,
-    "math/interpolate_matrix_17669.bin",
+    "../math/interpolate_matrix_17669.bin",
     [4196, 4199, 4202, 4205, 4208, 4211, 4214]
 );
 define_hqc_variant!(
@@ -620,7 +547,7 @@ define_hqc_variant!(
     114,
     35851,
     15,
-    "math/interpolate_matrix_35851.bin",
+    "../math/interpolate_matrix_35851.bin",
     [
         4414, 4421, 4428, 4435, 4442, 4449, 4456, 4463, 4470, 4477, 4484, 4491, 4498, 4505, 4512
     ]
@@ -642,7 +569,7 @@ define_hqc_variant!(
     149,
     57637,
     25,
-    "math/interpolate_matrix_57637.bin",
+    "../math/interpolate_matrix_57637.bin",
     [
         3745, 3757, 3769, 3781, 3793, 3805, 3817, 3829, 3841, 3853, 3865, 3877, 3889, 3901, 3913,
         3925, 3937, 3949, 3961, 3973, 3985, 3997, 4009, 4021, 4033
