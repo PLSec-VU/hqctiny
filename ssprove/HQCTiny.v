@@ -523,51 +523,6 @@ Module HQCTiny (P : HQCTinyParams).
   Lemma poly_to_points_size p : size (poly_to_points p) = npoints.
   Proof. exact: size_eval_pts_n. Qed.
 
-  Lemma pack_points_inj_len (s1 s2 : seq K) :
-    size s1 = npoints -> size s2 = npoints ->
-    pack_points s1 = pack_points s2 -> s1 = s2.
-  Proof.
-  Admitted.
-
-  (** TODO: The core algebraic lemma bridging the point-value and polynomial
-      representations. Proved by applying u_eq/v_eq and the fact that
-      poly_to_points distributes over addition.
-      Currently admitted — the proof requires showing that the difference
-      between point_seq_mul(poly_to_points a)(poly_to_points b) and
-      poly_to_points(a * b) vanishes under the blinding. *)
-  Lemma u_eq_points : forall (r1 r2 h : {poly F2}) (k : 'I_(2^n)),
-    (size r1 <= n)%N -> (size r2 <= n)%N -> (size h <= n)%N ->
-    point_seq_add
-      (point_seq_add (poly_to_points r1)
-         (point_seq_mul (poly_to_points h) (poly_to_points r2)))
-      (poly_to_points (fin_to_poly n k * Ring.gen))
-    =
-    point_seq_add
-      (poly_to_points (fin_to_poly n (rq_to_fin (in_qpoly Ring.gen (r1 + h * r2)))))
-      (poly_to_points (fin_to_poly n (f_u (r1 + h * r2) k) * Ring.gen)).
-  Proof.
-    intros r1 r2 h k Hr1 Hr2 Hh.
-  Admitted.
-
-  Lemma v_eq_points : forall (r2 e s m : {poly F2}) (k : 'I_(2^n)) (t : 'I_(2^(n-n1n2))),
-    (size r2 <= n)%N -> (size e <= n)%N -> (size s <= n)%N -> (size m <= n)%N ->
-    point_seq_add
-      (point_seq_add (poly_to_points m)
-         (point_seq_add (point_seq_mul (poly_to_points s) (poly_to_points r2))
-            (poly_to_points e)))
-      (point_seq_add
-         (poly_to_points (fin_to_poly n k * Ring.gen))
-         (poly_to_points ('X^n1n2 * fin_to_poly (n-n1n2) t)))
-    =
-    point_seq_add
-      (point_seq_add
-         (poly_to_points
-            (fin_to_poly n (rq_to_fin (HQC_Sec.truncate (in_qpoly Ring.gen (m + s * r2 + e))))))
-         (poly_to_points (fin_to_poly n (f_v (m + s * r2 + e) k) * Ring.gen)))
-      (poly_to_points ('X^n1n2 * fin_to_poly (n-n1n2) (f_t (m + s * r2 + e) t))).
-  Proof.
-  Admitted.
-
   (** Main theorem *)
   Theorem hqctiny_indistinguishable :
     hqctiny_encrypt ≈₀ (Sim ∘ HQC_Sec.hqc_encrypt)%pack.
@@ -576,6 +531,43 @@ Module HQCTiny (P : HQCTinyParams).
     simplify_eq_rel m.
     destruct m as [[pk1 pk2] msg].
     simplify_linking.
+    rewrite code_link_if.
+    case: (andb (size (interpolate_n (unpack_points pk1)) <= nblocks)%N (size (interpolate_n (unpack_points pk2)) <= nblocks)%N).
+    - (* true branch *)
+      simplify_linking.
+      eapply r_uniform_bij.
+      Unshelve. 3: exact (fun x => x).
+      { exact: (@Bijective _ _ id id (fun x => erefl) (fun x => erefl)). }
+      intro t_fin. simpl.
+      pose r1 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 0))).
+      pose r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 1))).
+      pose h_poly := combine_poly (interpolate_n (unpack_points pk1)).
+      pose h_rq := fin_to_rq (poly_to_fin n h_poly).
+      pose p_u : {poly F2} := (r1 + h_rq * r2 : {poly F2}).
+      eapply r_uniform_bij.
+      Unshelve. 3: exact (f_u p_u).
+      { apply: f_u_bij. }
+      intro k_u_val. simpl.
+      pose s_poly := combine_poly (interpolate_n (unpack_points pk2)).
+      pose s_rq := fin_to_rq (poly_to_fin n s_poly).
+      pose e := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 2))).
+      pose m_poly := P.encode msg.
+      pose p_v : {poly F2} := (m_poly + s_rq * r2 + e : {poly F2}).
+      eapply r_uniform_bij.
+      Unshelve. 3: exact (f_v p_v).
+      { apply: f_v_bij. }
+      intro k_v_val. simpl.
+      eapply r_uniform_bij.
+      Unshelve. 3: exact (f_t p_v).
+      { apply: f_t_bij. }
+      intro t_val. simpl.
+      eapply r_ret.
+      move=> s0 s1 ->. split; [ | done ].
+      f_equal.
+      + admit.
+      + admit.
+    - (* false branch *)
+      by eapply r_fail.
   Admitted.
 
 End HQCTiny.
