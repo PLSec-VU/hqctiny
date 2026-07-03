@@ -3,3 +3,4 @@ RandomOracle.v
 Tuple.v
 Interpolate.v
 HQC.v
+HQCTiny.v
