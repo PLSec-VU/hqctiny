@@ -618,21 +618,15 @@ Module HQCTiny (P : HQCTinyParams).
         have Hsz_h : (size h_rq <= n)%N by exact: size_Rq_val.
         have -> := eval_mul_bridge (unpack_points pk1) r2 Hsz_pts1 Hsz_r2 Hpk1.
         rewrite -!eval_points_add -!split_poly_add.
-        f_equal. f_equal.
-        rewrite addrA.
-        rewrite (@u_eq r1 r2 (h_rq : {poly 'F_2}) k_u_val Hsz_r1 Hsz_r2 Hsz_h) /=.
-        rewrite !fin_to_poly_rq_to_fin.
-        rewrite /p_u.
-        f_equal; [symmetry; apply: in_qpoly_rq_eq|].
-        rewrite /h_rq /p_u.
-        apply/val_inj => /=.
-        set d := mk_monic Ring.gen.
-        have Hd_monic: d \is monic by rewrite /d; apply: monic_mk_monic.
-        have sz_lt_d: forall (x : Ring.Rq), (size (x : {poly 'F_2}) < size d)%N.
-        { move=> x. apply: (leq_ltn_trans (size_Rq_val x)).
-          rewrite /d Ring.size_mk_monic_gen. exact: ltnSn. }
-        rewrite -!(Pdiv.IdomainMonic.modpE (q := d) Hd_monic) //.
-        admit. }
+        congr (eval_points npoints (split_poly _ nblocks)).
+        rewrite GRing.addrA.
+        have Hu := @u_eq r1 r2 (h_rq : {poly F2}) k_u_val Hsz_r1 Hsz_r2 Hsz_h.
+        etransitivity.
+        { exact: Hu. }
+        { congr (_ + _ * Ring.gen).
+          - congr (fin_to_poly n (rq_to_fin _)).
+            apply: val_inj.
+            symmetry. exact: in_qpoly_rq_eq. } }
       (* --- v component --- *)
       { f_equal.
         have Hsz_pts2 : size (unpack_points pk2) = npoints.
@@ -646,9 +640,24 @@ Module HQCTiny (P : HQCTinyParams).
         have Hsz_m : (size (P.encode msg) <= n)%N by exact: size_Rq_val.
         have -> := eval_mul_bridge (unpack_points pk2) r2 Hsz_pts2 Hsz_r2 Hpk2.
         rewrite -!eval_points_add -!split_poly_add.
-        f_equal. f_equal. f_equal.
-        + admit. 
-        + admit. } }
-  Admitted.
+        congr (eval_points npoints (split_poly _ nblocks)).
+        rewrite !GRing.addrA.
+        have Hv := @v_eq r2 e (s_rq : {poly F2}) (m_poly : {poly F2}) k_v_val t_val
+                     Hsz_r2 Hsz_e Hsz_s Hsz_m.
+        etransitivity.
+        { exact: Hv. }
+        { congr (_ + _ * Ring.gen + _ * _).
+          - congr (fin_to_poly n (rq_to_fin (HQC_Sec.truncate _))).
+            apply: val_inj => /=.
+            set d := mk_monic Ring.gen.
+            have Hd_monic : d \is monic by rewrite /d; apply: monic_mk_monic.
+            have sz_lt_d : forall (x : Ring.Rq),
+              (size (x : {poly 'F_2}) < size d)%N.
+            { move=> x. apply: (leq_ltn_trans (size_Rq_val x)).
+              rewrite /d Ring.size_mk_monic_gen. exact: ltnSn. }
+            rewrite -!(Pdiv.IdomainMonic.modpE (q := d) Hd_monic) //.
+            rewrite !modpD !(modp_small (sz_lt_d _)).
+            reflexivity. } } }
+  Qed.
 
 End HQCTiny.
