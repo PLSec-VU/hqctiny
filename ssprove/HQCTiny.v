@@ -222,8 +222,36 @@ Module HQCTiny (P : HQCTinyParams).
       }
     ].
 
-  (* Define this! *)
-  Parameter Sim : package HQC_Sec.I_hqc_encrypt I_hqctiny_encrypt.
+  Definition Sim : package HQC_Sec.I_hqc_encrypt I_hqctiny_encrypt :=
+    [package emptym ;
+      #def #[ HQCTINY_ENC ] (args : 'ch(chProd PublicKey_t Message_t)) : 'ch(Ciphertext_t) {
+        #import {sig #[ HQC_Sec.HQC_ENC ] : 'ch(chProd HQC_Sec.PublicKey_t HQC_Sec.Message_t) → 'ch(HQC_Sec.Ciphertext_t)} as HQC_enc_oracle ;;
+        let '(pk, msg) := args in
+        let h_pts := unpack_points pk.1 in
+        let s_pts := unpack_points pk.2 in
+        let h_poly := combine_poly (interpolate_n h_pts) in
+        let s_poly := combine_poly (interpolate_n s_pts) in
+        let h_fin := poly_to_fin n h_poly in
+        let s_fin := poly_to_fin n s_poly in
+        c_poly ← HQC_enc_oracle ((h_fin, s_fin), msg) ;;
+        k_u_fin ← sample (uniform (2^n)) ;;
+        k_v_fin ← sample (uniform (2^n)) ;;
+        t_fin' ← sample (uniform (2^(n - n1n2))) ;;
+        let u := fin_to_poly n c_poly.1 in
+        let v := fin_to_poly n c_poly.2 in
+        let k_u := fin_to_poly n k_u_fin in
+        let k_v := fin_to_poly n k_v_fin in
+        let t   := fin_to_poly (n - n1n2) t_fin' in
+        let u_pts := poly_to_points u in
+        let v_pts := poly_to_points v in
+        let ku_pts := poly_to_points (k_u * Ring.gen) in
+        let kv_pts := poly_to_points (k_v * Ring.gen) in
+        let t_pts  := poly_to_points ('X ^+ n1n2 * t) in
+        let u_pts_blinded := point_seq_add u_pts ku_pts in
+        let v_pts_blinded := point_seq_add v_pts (point_seq_add kv_pts t_pts) in
+        ret (pack_points u_pts_blinded, pack_points v_pts_blinded)
+      }
+    ].
 
   Theorem hqctiny_indistinguishable :
     hqctiny_encrypt ≈₀ (Sim ∘ HQC_Sec.hqc_encrypt)%pack.
