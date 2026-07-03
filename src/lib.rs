@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+pub mod blinding;
 pub mod client;
 pub mod encoding;
 pub mod error;

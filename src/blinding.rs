@@ -1,7 +1,8 @@
-//! Bridge between HQC primitives and the protocol's K[z] polynomial representation.
+//! Blinding mask generation and stripping operations.
 //!
-//! - Mask generation (non-CT; only polynomial degree matters).
-//! - Reduction modulo x^n - 1 for mask stripping.
+//! This module provides functions to:
+//! - Generate quotient and truncate blinding masks using BLAKE3 XOF (non-constant time).
+//! - Strip blinding masks by reducing polynomials modulo x^n - 1.
 
 /// Reduce a polynomial modulo x^n - 1 (constant-time for fixed `n`).
 ///
@@ -51,7 +52,7 @@ pub fn reduce_mod_xn_minus_1<'o>(poly: &[u64], n: usize, out: &'o mut [u64]) -> 
 ///
 /// Writes into `out`, which must be at least `n.div_ceil(64)` words.
 /// Returns a subslice of `out` with the mask.
-pub fn generate_mask<'o>(
+pub fn generate_quotient_mask<'o>(
     theta: &[u8],
     context: &[u8],
     n: usize,
@@ -94,9 +95,72 @@ pub fn generate_mask<'o>(
     &mut out[..n_words]
 }
 
+/// Generate a truncate blinding mask polynomial t of degree < n-1,
+/// with the first `n1n2` coefficients set to zero.
+///
+/// Writes into `out`, which must be at least `n.div_ceil(64)` words.
+/// Returns a subslice of `out` with the mask.
+pub fn generate_truncate_mask<'o>(
+    theta: &[u8],
+    context: &[u8],
+    n: usize,
+    n1n2: usize,
+    out: &'o mut [u64],
+) -> &'o mut [u64] {
+    let n_words = n.div_ceil(64);
+    debug_assert!(
+        out.len() >= n_words,
+        "generate_truncate_mask output buffer too small"
+    );
+
+    // Generate the baseline quotient mask (which satisfies degree < n-1)
+    generate_quotient_mask(theta, context, n, out);
+
+    // Clear the first n1n2 coefficients
+    let full_words = n1n2 / 64;
+    let rem_bits = n1n2 % 64;
+
+    let clear_len = full_words.min(n_words);
+    out[..clear_len].fill(0);
+    if rem_bits > 0 && full_words < n_words {
+        out[full_words] &= !((1u64 << rem_bits) - 1);
+    }
+
+    &mut out[..n_words]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_truncate_mask() {
+        let theta = b"mask theta test _______________";
+        let n: usize = 17669;
+        let n1n2: usize = 100;
+        let n_words = n.div_ceil(64);
+        let mut buf = [0u64; 512];
+        let mask = generate_truncate_mask(theta, b"truncate mask", n, n1n2, &mut buf);
+
+        // Check first n1n2 bits are zero
+        for i in 0..n1n2 {
+            let word = i / 64;
+            let bit = i % 64;
+            assert_eq!((mask[word] >> bit) & 1, 0, "bit {} should be zero", i);
+        }
+
+        // Check degree is < n-1
+        let last_bit = (n - 1) % 64;
+        let last_word = (n - 1) / 64;
+        if last_word < mask.len() {
+            assert_eq!(
+                (mask[last_word] >> last_bit) & 1,
+                0,
+                "bit n-1 should be zero (degree < n-1)"
+            );
+        }
+        assert_eq!(mask.len(), n_words);
+    }
 
     #[test]
     fn test_mask_degree() {
@@ -104,7 +168,7 @@ mod tests {
         let n: usize = 17669;
         let n_words = n.div_ceil(64);
         let mut buf = [0u64; 512];
-        let mask = generate_mask(theta, b"mask", n, &mut buf);
+        let mask = generate_quotient_mask(theta, b"mask", n, &mut buf);
 
         let last_bit = (n - 1) % 64;
         let last_word = (n - 1) / 64;

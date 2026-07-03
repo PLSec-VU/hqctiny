@@ -1,7 +1,7 @@
+use crate::blinding;
 use crate::error::{Error, Result};
 use crate::hqc::{HqcMessageParameters, HqcScheme, HqcSharedSecretParameters};
 use crate::math::gf2_9009::Gf2_9009;
-use crate::math::hqc_bridge;
 use crate::math::segmentation::{evaluate_at_generator, split};
 use crate::protocol::*;
 use crate::traits::*;
@@ -165,7 +165,7 @@ where
         let n = SCHEME::PARAM_N;
         let n_words = n.div_ceil(64);
         let mut mask_poly = vec![0u64; n_words];
-        hqc_bridge::generate_mask(&theta, b"quotient mask", n, &mut mask_poly);
+        blinding::generate_quotient_mask(&theta, b"quotient mask", n, &mut mask_poly);
 
         let r2_blocks = split(r2_poly);
         let e_blocks = split(e_poly);
@@ -210,16 +210,13 @@ where
 
                 // Generate truncate mask polynomial
                 let mut t_poly = vec![0u64; n_words];
-                hqc_bridge::generate_mask(&theta, b"truncate mask", n, &mut t_poly);
-
-                // Clear the first PARAM_N1N2 bits of t_poly
-                let n1n2 = SCHEME::PARAM_N1N2;
-                let full_words = n1n2 / 64;
-                let rem_bits = n1n2 % 64;
-                t_poly[..full_words].fill(0);
-                if rem_bits > 0 && full_words < t_poly.len() {
-                    t_poly[full_words] &= !((1u64 << rem_bits) - 1);
-                }
+                blinding::generate_truncate_mask(
+                    &theta,
+                    b"truncate mask",
+                    n,
+                    SCHEME::PARAM_N1N2,
+                    &mut t_poly,
+                );
 
                 let t_blocks = split(&t_poly);
                 let mut t_xi = Gf2_9009::zero();

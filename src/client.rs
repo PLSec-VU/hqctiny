@@ -1,7 +1,7 @@
+use crate::blinding;
 use crate::error::{Error, Result};
 use crate::hqc::{HqcPublicKeyParameters, HqcScheme};
 use crate::math::gf2_9009::Gf2_9009;
-use crate::math::hqc_bridge;
 use crate::math::segmentation::{combine, evaluate_at_generator, split};
 use crate::protocol::*;
 use crate::traits::*;
@@ -257,10 +257,10 @@ where
             let n = SCHEME::PARAM_N;
             let n_words = n.div_ceil(64);
             let mut u_poly_buf = vec![0u64; n_words];
-            let u_poly = hqc_bridge::reduce_mod_xn_minus_1(&u_masked_poly, n, &mut u_poly_buf);
+            let u_poly = blinding::reduce_mod_xn_minus_1(&u_masked_poly, n, &mut u_poly_buf);
 
             let mut v_poly_buf = vec![0u64; n_words];
-            let v_poly = hqc_bridge::reduce_mod_xn_minus_1(&v_masked_poly, n, &mut v_poly_buf);
+            let v_poly = blinding::reduce_mod_xn_minus_1(&v_masked_poly, n, &mut v_poly_buf);
 
             // Pack u and v into the expected word arrays
             let mut u_words = vec![0u64; SCHEME::VEC_N_SIZE_64];
