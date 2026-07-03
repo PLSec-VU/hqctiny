@@ -222,4 +222,13 @@ Module HQCTiny (P : HQCTinyParams).
       }
     ].
 
+  (* Define this! *)
+  Parameter Sim : package HQC_Sec.I_hqc_encrypt I_hqctiny_encrypt.
+
+  Theorem hqctiny_indistinguishable :
+    hqctiny_encrypt ≈₀ (Sim ∘ HQC_Sec.hqc_encrypt)%pack.
+  Proof.
+    admit.
+  Admitted.
+
 End HQCTiny.
