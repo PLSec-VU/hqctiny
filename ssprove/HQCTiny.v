@@ -530,10 +530,39 @@ Module HQCTiny (P : HQCTinyParams).
 
   (** Bridges the HQCBig u_eq/v_eq lemmas to the point-value representation *)
 
-  (** Helper lemmas *)
+  (** The key bridge lemma: point-value multiplication equals split_poly
+      of the truncated F2 product. This is the central gap in the proof.
+      The equality holds because the excess K-polynomial terms evaluate
+      to zero at all npoints evaluation points. *)
+  Lemma eval_mul_bridge (h_pts : seq K) (r2 : {poly 'F_2}) :
+    size h_pts = npoints ->
+    (size r2 <= n)%N ->
+    (size (interpolate_n h_pts) <= nblocks)%N ->
+    let h := (fin_to_rq (poly_to_fin n (combine_poly (interpolate_n h_pts))) : {poly 'F_2}) in
+    eval_points npoints (interpolate_n h_pts * split_poly r2 nblocks)
+    = eval_points npoints (split_poly (h * r2) nblocks).
+  Proof.
+  Admitted.
 
-  Lemma poly_to_points_size p : size (poly_to_points p) = npoints.
-  Proof. exact: size_eval_pts_n. Qed.
+  (** Equality between the in_qpoly representation and the Rq coercion.
+      For any Rq elements a, b, h, their Rq sum+product coerced to polyF2
+      equals in_qpoly gen applied to the polyF2 sum+product. *)
+  Lemma in_qpoly_rq_eq (a b : Ring.Rq) (h : Ring.Rq) :
+    ((a + h * b) : {poly 'F_2})
+    = (in_qpoly Ring.gen ((a : {poly 'F_2}) + (h : {poly 'F_2}) * (b : {poly 'F_2})) : {poly 'F_2}).
+  Proof.
+    apply/val_inj => /=.
+    set d := mk_monic Ring.gen.
+    have Hd_monic : d \is monic by rewrite /d; apply: monic_mk_monic.
+    have sz_lt_d : forall (x : Ring.Rq), (size (x : {poly 'F_2}) < size d)%N.
+    { move=> x. apply: (leq_ltn_trans (size_Rq_val x)).
+      rewrite /d Ring.size_mk_monic_gen. exact: ltnSn. }
+    rewrite -!(Pdiv.IdomainMonic.modpE (q := d) Hd_monic) //.
+    (* The remaining equality: a + (h*b)%%d = a%%d + (h*b)%%d, where
+       a, h, b are Rq elements so their polyF2 representatives are small.
+       Both sides reduce to rmodp(a_poly + h_poly*b_poly, gen)
+       using modpD and modp_small. *)
+  Admitted.
 
   (** Main theorem *)
   Theorem hqctiny_indistinguishable :
@@ -544,8 +573,9 @@ Module HQCTiny (P : HQCTinyParams).
     destruct m as [[pk1 pk2] msg].
     simplify_linking.
     rewrite code_link_if.
-    case E: (andb (size (interpolate_n (unpack_points pk1)) <= nblocks)%N (size (interpolate_n (unpack_points pk2)) <= nblocks)%N).
-    - (* true branch *)
+    case E: (andb (size (interpolate_n (unpack_points pk1)) <= nblocks)%N
+              (size (interpolate_n (unpack_points pk2)) <= nblocks)%N).
+    { (* true branch *)
       move/andP: E => [Hpk1 Hpk2].
       simplify_linking.
       eapply r_uniform_bij.
@@ -554,6 +584,7 @@ Module HQCTiny (P : HQCTinyParams).
       intro t_fin. simpl.
       pose r1 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 0))).
       pose r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 1))).
+      pose e  := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 2))).
       pose h_poly := combine_poly (interpolate_n (unpack_points pk1)).
       pose h_rq := fin_to_rq (poly_to_fin n h_poly).
       pose p_u : {poly F2} := (r1 + h_rq * r2 : {poly F2}).
@@ -563,7 +594,6 @@ Module HQCTiny (P : HQCTinyParams).
       intro k_u_val. simpl.
       pose s_poly := combine_poly (interpolate_n (unpack_points pk2)).
       pose s_rq := fin_to_rq (poly_to_fin n s_poly).
-      pose e := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 2))).
       pose m_poly := P.encode msg.
       pose p_v : {poly F2} := (m_poly + s_rq * r2 + e : {poly F2}).
       eapply r_uniform_bij.
@@ -577,48 +607,49 @@ Module HQCTiny (P : HQCTinyParams).
       eapply r_ret.
       move=> s0 s1 ->. split; [ | done ].
       f_equal.
-      + f_equal.
-        rewrite -{1}(eval_interpolate_id (unpack_points pk1)).
-        * exact: size_tuple.
-        * rewrite /eval_pts_n -!eval_points_add -!eval_points_mul -!eval_points_add.
-          f_equal.
-          have Hacs_h : all_coeffs_small (interpolate_n (unpack_points pk1)) by admit.
-          rewrite -(split_poly_combine_poly (interpolate_n (unpack_points pk1)) nblocks Hpk1 Hacs_h).
-          fold h_poly.
-          have Hsz_h : (size h_poly <= nblocks * W)%N by admit.
-          rewrite (combine_poly_split h_poly nblocks Hsz_h).
-          have Hmul : split_poly h_poly nblocks * split_poly r2 nblocks = split_poly (h_poly * r2) nblocks by admit.
-          rewrite Hmul.
-          rewrite -!split_poly_add.
-          f_equal.
-          change (sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(P.n, P.we) 3 t_fin) (inord 0)))) with r1.
-          change (sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(P.n, P.we) 3 t_fin) (inord 1)))) with r2.
-          rewrite addrA.
-          have Hh_eq : h_poly = h_rq by admit.
-          rewrite Hh_eq.
-          have Hhrq_eq : fin_to_rq (poly_to_fin n h_rq) = h_rq by admit.
-          rewrite Hhrq_eq.
-          have Hsize_r1 : (size r1 <= n)%N by admit.
-          have Hsize_r2 : (size r2 <= n)%N by admit.
-          have Hsize_h : (size h_rq <= n)%N by admit.
-          admit.
-      + f_equal.
-        rewrite -{1}(eval_interpolate_id (unpack_points pk2)).
-        * exact: size_tuple.
-        * rewrite /eval_pts_n -!eval_points_add -!eval_points_mul -!eval_points_add.
-          f_equal.
-          have Hacs_s : all_coeffs_small (interpolate_n (unpack_points pk2)) by admit.
-          rewrite -(split_poly_combine_poly (interpolate_n (unpack_points pk2)) nblocks Hpk2 Hacs_s).
-          fold s_poly.
-          have Hsz_s : (size s_poly <= nblocks * W)%N by admit.
-          rewrite (combine_poly_split s_poly nblocks Hsz_s).
-          have Hmul2 : split_poly s_poly nblocks * split_poly r2 nblocks = split_poly (s_poly * r2) nblocks by admit.
-          rewrite Hmul2.
-          rewrite -!split_poly_add.
-          f_equal.
-          admit.
-    - (* false branch *)
-      by eapply r_fail.
+      (* --- u component --- *)
+      { f_equal.
+        have Hsz_pts1 : size (unpack_points pk1) = npoints.
+        { rewrite /unpack_points /points_tuple_to_seq. exact: size_tuple. }
+        rewrite -{1}(eval_interpolate_id (unpack_points pk1) Hsz_pts1).
+        rewrite /eval_pts_n -!eval_points_add -!eval_points_mul -!eval_points_add.
+        rewrite !eval_points_add.
+        have Hsz_r2 : (size r2 <= n)%N by exact: size_Rq_val.
+        have Hsz_r1 : (size r1 <= n)%N by exact: size_Rq_val.
+        have Hsz_h : (size h_rq <= n)%N by exact: size_Rq_val.
+        have -> := eval_mul_bridge (unpack_points pk1) r2 Hsz_pts1 Hsz_r2 Hpk1.
+        rewrite -!eval_points_add -!split_poly_add.
+        f_equal. f_equal.
+        rewrite addrA.
+        rewrite (@u_eq r1 r2 (h_rq : {poly 'F_2}) k_u_val Hsz_r1 Hsz_r2 Hsz_h) /=.
+        rewrite !fin_to_poly_rq_to_fin.
+        rewrite /p_u.
+        f_equal; [symmetry; apply: in_qpoly_rq_eq|].
+        rewrite /h_rq /p_u.
+        apply/val_inj => /=.
+        set d := mk_monic Ring.gen.
+        have Hd_monic: d \is monic by rewrite /d; apply: monic_mk_monic.
+        have sz_lt_d: forall (x : Ring.Rq), (size (x : {poly 'F_2}) < size d)%N.
+        { move=> x. apply: (leq_ltn_trans (size_Rq_val x)).
+          rewrite /d Ring.size_mk_monic_gen. exact: ltnSn. }
+        rewrite -!(Pdiv.IdomainMonic.modpE (q := d) Hd_monic) //.
+        admit. }
+      (* --- v component --- *)
+      { f_equal.
+        have Hsz_pts2 : size (unpack_points pk2) = npoints.
+        { rewrite /unpack_points /points_tuple_to_seq. exact: size_tuple. }
+        rewrite -{1}(eval_interpolate_id (unpack_points pk2) Hsz_pts2).
+        rewrite /eval_pts_n -!eval_points_add -!eval_points_mul -!eval_points_add.
+        rewrite !eval_points_add.
+        have Hsz_r2 : (size r2 <= n)%N by exact: size_Rq_val.
+        have Hsz_e : (size e <= n)%N by exact: size_Rq_val.
+        have Hsz_s : (size s_rq <= n)%N by exact: size_Rq_val.
+        have Hsz_m : (size (P.encode msg) <= n)%N by exact: size_Rq_val.
+        have -> := eval_mul_bridge (unpack_points pk2) r2 Hsz_pts2 Hsz_r2 Hpk2.
+        rewrite -!eval_points_add -!split_poly_add.
+        f_equal. f_equal. f_equal.
+        + admit. 
+        + admit. } }
   Admitted.
 
 End HQCTiny.
