@@ -164,6 +164,18 @@ Module HQCTiny (P : HQCTinyParams).
   Lemma size_eval_points_q (q : {poly K}) : size (eval_pts_n q) = npoints.
   Proof. exact: size_eval_pts_n. Qed.
 
+  Lemma eval_interpolate_id (pts : seq K) :
+    size pts = npoints ->
+    eval_pts_n (interpolate_n pts) = pts.
+  Proof.
+    move=> Hsz.
+    rewrite /eval_pts_n /interpolate_n.
+    apply: (@eq_from_nth _ 0).
+    - by rewrite size_eval_pts_n Hsz.
+    - move=> i. rewrite size_eval_pts_n => Hi.
+      exact: (eval_interpolate npoints npoints_le_card_K pts (Ordinal Hi)).
+  Qed.
+
   Definition fin_to_poly (d : nat) (i : 'fin (expn 2 d)) : {poly F2} :=
     polyF2_of_nat (nat_of_ord i) 0 d.
 
@@ -532,8 +544,9 @@ Module HQCTiny (P : HQCTinyParams).
     destruct m as [[pk1 pk2] msg].
     simplify_linking.
     rewrite code_link_if.
-    case: (andb (size (interpolate_n (unpack_points pk1)) <= nblocks)%N (size (interpolate_n (unpack_points pk2)) <= nblocks)%N).
+    case E: (andb (size (interpolate_n (unpack_points pk1)) <= nblocks)%N (size (interpolate_n (unpack_points pk2)) <= nblocks)%N).
     - (* true branch *)
+      move/andP: E => [Hpk1 Hpk2].
       simplify_linking.
       eapply r_uniform_bij.
       Unshelve. 3: exact (fun x => x).
@@ -564,8 +577,46 @@ Module HQCTiny (P : HQCTinyParams).
       eapply r_ret.
       move=> s0 s1 ->. split; [ | done ].
       f_equal.
-      + admit.
-      + admit.
+      + f_equal.
+        rewrite -{1}(eval_interpolate_id (unpack_points pk1)).
+        * exact: size_tuple.
+        * rewrite /eval_pts_n -!eval_points_add -!eval_points_mul -!eval_points_add.
+          f_equal.
+          have Hacs_h : all_coeffs_small (interpolate_n (unpack_points pk1)) by admit.
+          rewrite -(split_poly_combine_poly (interpolate_n (unpack_points pk1)) nblocks Hpk1 Hacs_h).
+          fold h_poly.
+          have Hsz_h : (size h_poly <= nblocks * W)%N by admit.
+          rewrite (combine_poly_split h_poly nblocks Hsz_h).
+          have Hmul : split_poly h_poly nblocks * split_poly r2 nblocks = split_poly (h_poly * r2) nblocks by admit.
+          rewrite Hmul.
+          rewrite -!split_poly_add.
+          f_equal.
+          change (sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(P.n, P.we) 3 t_fin) (inord 0)))) with r1.
+          change (sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(P.n, P.we) 3 t_fin) (inord 1)))) with r2.
+          rewrite addrA.
+          have Hh_eq : h_poly = h_rq by admit.
+          rewrite Hh_eq.
+          have Hhrq_eq : fin_to_rq (poly_to_fin n h_rq) = h_rq by admit.
+          rewrite Hhrq_eq.
+          have Hsize_r1 : (size r1 <= n)%N by admit.
+          have Hsize_r2 : (size r2 <= n)%N by admit.
+          have Hsize_h : (size h_rq <= n)%N by admit.
+          admit.
+      + f_equal.
+        rewrite -{1}(eval_interpolate_id (unpack_points pk2)).
+        * exact: size_tuple.
+        * rewrite /eval_pts_n -!eval_points_add -!eval_points_mul -!eval_points_add.
+          f_equal.
+          have Hacs_s : all_coeffs_small (interpolate_n (unpack_points pk2)) by admit.
+          rewrite -(split_poly_combine_poly (interpolate_n (unpack_points pk2)) nblocks Hpk2 Hacs_s).
+          fold s_poly.
+          have Hsz_s : (size s_poly <= nblocks * W)%N by admit.
+          rewrite (combine_poly_split s_poly nblocks Hsz_s).
+          have Hmul2 : split_poly s_poly nblocks * split_poly r2 nblocks = split_poly (s_poly * r2) nblocks by admit.
+          rewrite Hmul2.
+          rewrite -!split_poly_add.
+          f_equal.
+          admit.
     - (* false branch *)
       by eapply r_fail.
   Admitted.
