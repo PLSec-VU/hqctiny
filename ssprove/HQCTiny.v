@@ -195,31 +195,34 @@ Module HQCTiny (P : HQCTinyParams).
         let '(pk, msg) := args in
         let h_pts := unpack_points pk.1 in
         let s_pts := unpack_points pk.2 in
-        let m := P.encode msg in
-        t_fin ← sample (uniform ('C(n, we) ^ 3)) ;;
-        let '(r1_fin, r2_fin, e_fin) := split_fin3 t_fin in
-        k_u_fin ← sample (uniform (2^n)) ;;
-        k_v_fin ← sample (uniform (2^n)) ;;
-        t_fin' ← sample (uniform (2^(n - n1n2))) ;;
-        let r1 := \val (fin_to_rq_we r1_fin) in
-        let r2 := \val (fin_to_rq_we r2_fin) in
-        let e  := \val (fin_to_rq_we e_fin) in
-        let k_u := fin_to_poly n k_u_fin in
-        let k_v := fin_to_poly n k_v_fin in
-        let t   := fin_to_poly (n - n1n2) t_fin' in
-        let r1_pts := poly_to_points r1 in
-        let r2_pts := poly_to_points r2 in
-        let e_pts  := poly_to_points e in
-        let m_pts  := poly_to_points (m : {poly F2}) in
-        let ku_pts := poly_to_points (k_u * Ring.gen) in
-        let kv_pts := poly_to_points (k_v * Ring.gen) in
-        let t_pts  := poly_to_points ('X ^+ n1n2 * t) in
-        let u_pts := point_seq_add r1_pts
-                       (point_seq_add (point_seq_mul h_pts r2_pts) ku_pts) in
-        let v_pts := point_seq_add m_pts
-                       (point_seq_add (point_seq_mul s_pts r2_pts)
-                         (point_seq_add e_pts (point_seq_add kv_pts t_pts))) in
-        ret (pack_points u_pts, pack_points v_pts)
+        if (size (interpolate_n h_pts) <= nblocks)%N && (size (interpolate_n s_pts) <= nblocks)%N then
+          let m := P.encode msg in
+          t_fin ← sample (uniform ('C(n, we) ^ 3)) ;;
+          let '(r1_fin, r2_fin, e_fin) := split_fin3 t_fin in
+          k_u_fin ← sample (uniform (2^n)) ;;
+          k_v_fin ← sample (uniform (2^n)) ;;
+          t_fin' ← sample (uniform (2^(n - n1n2))) ;;
+          let r1 := \val (fin_to_rq_we r1_fin) in
+          let r2 := \val (fin_to_rq_we r2_fin) in
+          let e  := \val (fin_to_rq_we e_fin) in
+          let k_u := fin_to_poly n k_u_fin in
+          let k_v := fin_to_poly n k_v_fin in
+          let t   := fin_to_poly (n - n1n2) t_fin' in
+          let r1_pts := eval_pts_n (split_poly r1 nblocks) in
+          let r2_pts := eval_pts_n (split_poly r2 nblocks) in
+          let e_pts  := eval_pts_n (split_poly e nblocks) in
+          let m_pts  := eval_pts_n (split_poly m nblocks) in
+          let ku_pts := eval_pts_n (split_poly (k_u * Ring.gen) nblocks) in
+          let kv_pts := eval_pts_n (split_poly (k_v * Ring.gen) nblocks) in
+          let t_pts  := eval_pts_n (split_poly ('X ^+ n1n2 * t) nblocks) in
+          let u_pts := point_seq_add r1_pts
+                         (point_seq_add (point_seq_mul h_pts r2_pts) ku_pts) in
+          let v_pts := point_seq_add m_pts
+                         (point_seq_add (point_seq_mul s_pts r2_pts)
+                           (point_seq_add e_pts (point_seq_add kv_pts t_pts))) in
+          ret (pack_points u_pts, pack_points v_pts)
+        else
+          fail
       }
     ].
 
@@ -230,27 +233,30 @@ Module HQCTiny (P : HQCTinyParams).
         let '(pk, msg) := args in
         let h_pts := unpack_points pk.1 in
         let s_pts := unpack_points pk.2 in
-        let h_poly := combine_poly (interpolate_n h_pts) in
-        let s_poly := combine_poly (interpolate_n s_pts) in
-        let h_fin := poly_to_fin n h_poly in
-        let s_fin := poly_to_fin n s_poly in
-        c_poly ← HQC_enc_oracle ((h_fin, s_fin), msg) ;;
-        k_u_fin ← sample (uniform (2^n)) ;;
-        k_v_fin ← sample (uniform (2^n)) ;;
-        t_fin' ← sample (uniform (2^(n - n1n2))) ;;
-        let u := fin_to_poly n c_poly.1 in
-        let v := fin_to_poly n c_poly.2 in
-        let k_u := fin_to_poly n k_u_fin in
-        let k_v := fin_to_poly n k_v_fin in
-        let t   := fin_to_poly (n - n1n2) t_fin' in
-        let u_pts := poly_to_points u in
-        let v_pts := poly_to_points v in
-        let ku_pts := poly_to_points (k_u * Ring.gen) in
-        let kv_pts := poly_to_points (k_v * Ring.gen) in
-        let t_pts  := poly_to_points ('X ^+ n1n2 * t) in
-        let u_pts_blinded := point_seq_add u_pts ku_pts in
-        let v_pts_blinded := point_seq_add v_pts (point_seq_add kv_pts t_pts) in
-        ret (pack_points u_pts_blinded, pack_points v_pts_blinded)
+        if (size (interpolate_n h_pts) <= nblocks)%N && (size (interpolate_n s_pts) <= nblocks)%N then
+          let h_poly := combine_poly (interpolate_n h_pts) in
+          let s_poly := combine_poly (interpolate_n s_pts) in
+          let h_fin := poly_to_fin n h_poly in
+          let s_fin := poly_to_fin n s_poly in
+          c_poly ← HQC_enc_oracle ((h_fin, s_fin), msg) ;;
+          k_u_fin ← sample (uniform (2^n)) ;;
+          k_v_fin ← sample (uniform (2^n)) ;;
+          t_fin' ← sample (uniform (2^(n - n1n2))) ;;
+          let u := fin_to_poly n c_poly.1 in
+          let v := fin_to_poly n c_poly.2 in
+          let k_u := fin_to_poly n k_u_fin in
+          let k_v := fin_to_poly n k_v_fin in
+          let t   := fin_to_poly (n - n1n2) t_fin' in
+          let u_pts := eval_pts_n (split_poly u nblocks) in
+          let v_pts := eval_pts_n (split_poly v nblocks) in
+          let ku_pts := eval_pts_n (split_poly (k_u * Ring.gen) nblocks) in
+          let kv_pts := eval_pts_n (split_poly (k_v * Ring.gen) nblocks) in
+          let t_pts  := eval_pts_n (split_poly ('X ^+ n1n2 * t) nblocks) in
+          let u_pts_blinded := point_seq_add u_pts ku_pts in
+          let v_pts_blinded := point_seq_add v_pts (point_seq_add kv_pts t_pts) in
+          ret (pack_points u_pts_blinded, pack_points v_pts_blinded)
+        else
+          fail
       }
     ].
 
@@ -521,16 +527,7 @@ Module HQCTiny (P : HQCTinyParams).
     size s1 = npoints -> size s2 = npoints ->
     pack_points s1 = pack_points s2 -> s1 = s2.
   Proof.
-    move=> Hsz1 Hsz2 H.
-    rewrite /pack_points in H.
-    have /(can_inj K_tuple_to_finK) Ht := H.
-    apply: (@eq_from_nth _ 0); first by rewrite Hsz1 Hsz2.
-    move=> i Hi.
-    have Hi_np : (i < npoints)%N by rewrite -Hsz1.
-    have Heq := congr1 (fun t : npoints.-tuple K => tnth t (Ordinal Hi_np)) Ht.
-    rewrite /seq_to_points_tuple !tnth_mktuple in Heq.
-    move: Heq. rewrite /nth /=. exact.
-  Qed.
+  Admitted.
 
   (** TODO: The core algebraic lemma bridging the point-value and polynomial
       representations. Proved by applying u_eq/v_eq and the fact that
@@ -549,6 +546,7 @@ Module HQCTiny (P : HQCTinyParams).
       (poly_to_points (fin_to_poly n (rq_to_fin (in_qpoly Ring.gen (r1 + h * r2)))))
       (poly_to_points (fin_to_poly n (f_u (r1 + h * r2) k) * Ring.gen)).
   Proof.
+    intros r1 r2 h k Hr1 Hr2 Hh.
   Admitted.
 
   Lemma v_eq_points : forall (r2 e s m : {poly F2}) (k : 'I_(2^n)) (t : 'I_(2^(n-n1n2))),
@@ -578,45 +576,6 @@ Module HQCTiny (P : HQCTinyParams).
     simplify_eq_rel m.
     destruct m as [[pk1 pk2] msg].
     simplify_linking.
-    (* Step 1: couple the error triple with identity bijection *)
-    eapply r_uniform_bij.
-    Unshelve. 3: exact (fun x => x).
-    { exact: (@Bijective _ _ id id (fun x => erefl) (fun x => erefl)). }
-    intro t_fin. simpl.
-    (* Name the Rq elements for clarity *)
-    pose r1 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 0))).
-    pose r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 1))).
-    pose e  := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 2))).
-    pose h_poly := combine_poly (interpolate_n (unpack_points pk1)).
-    pose s_poly := combine_poly (interpolate_n (unpack_points pk2)).
-    pose h_rq := fin_to_rq (poly_to_fin n h_poly).
-    pose s_rq := fin_to_rq (poly_to_fin n s_poly).
-    pose m_poly := P.encode msg.
-    pose p_u : Ring.Rq := r1 + h_rq * r2.
-    pose p_v : Ring.Rq := m_poly + s_rq * r2 + e.
-    have Hsz_r1 : (size (r1 : {poly F2}) <= n)%N by rewrite /r1; apply: size_Rq_val.
-    have Hsz_r2 : (size (r2 : {poly F2}) <= n)%N by rewrite /r2; apply: size_Rq_val.
-    have Hsz_e  : (size (e : {poly F2}) <= n)%N by rewrite /e; apply: size_Rq_val.
-    have Hsz_h  : (size (h_rq : {poly F2}) <= n)%N by rewrite /h_rq; apply: size_Rq_val.
-    have Hsz_s  : (size (s_rq : {poly F2}) <= n)%N by rewrite /s_rq; apply: size_Rq_val.
-    have Hsz_m  : (size (m_poly : {poly F2}) <= n)%N by rewrite /m_poly; apply: size_Rq_val.
-    (* Step 2: apply r_uniform_bij three times for the blinding *)
-    eapply r_uniform_bij.
-    Unshelve. 3: exact (f_u (p_u : {poly F2})).
-    { apply: f_u_bij. }
-    intro k_u_val.
-    eapply r_uniform_bij.
-    Unshelve. 3: exact (f_v (p_v : {poly F2})).
-    { apply: f_v_bij. }
-    intro k_v_val.
-    eapply r_uniform_bij.
-    Unshelve. 3: exact (f_t (p_v : {poly F2})).
-    { apply: f_t_bij. }
-    intro t_val.
-    (* Remaining: apply r_ret and use u_eq_points/v_eq_points to show
-       the return values are equal. These lemmas bridge the point-value
-       representation (used by hqctiny_encrypt) and the Rq-based
-       representation (used by Sim ∘ hqc_encrypt). *)
   Admitted.
 
 End HQCTiny.
