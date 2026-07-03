@@ -586,7 +586,7 @@ Module HQCTiny (P : HQCTinyParams).
       pose e  := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n,we) 3 t_fin) (inord 2))).
       pose h_poly := combine_poly (interpolate_n (unpack_points pk1)).
       pose h_rq := fin_to_rq (poly_to_fin n h_poly).
-      pose p_u : {poly F2} := (r1 + h_rq * r2 : {poly F2}).
+      pose p_u : {poly F2} := ((r1 : {poly F2}) + (h_rq : {poly F2}) * (r2 : {poly F2})).
       eapply r_uniform_bij.
       Unshelve. 3: exact (f_u p_u).
       { apply: f_u_bij. }
@@ -594,7 +594,7 @@ Module HQCTiny (P : HQCTinyParams).
       pose s_poly := combine_poly (interpolate_n (unpack_points pk2)).
       pose s_rq := fin_to_rq (poly_to_fin n s_poly).
       pose m_poly := P.encode msg.
-      pose p_v : {poly F2} := (m_poly + s_rq * r2 + e : {poly F2}).
+      pose p_v : {poly F2} := ((m_poly : {poly F2}) + (s_rq : {poly F2}) * (r2 : {poly F2}) + (e : {poly F2})).
       eapply r_uniform_bij.
       Unshelve. 3: exact (f_v p_v).
       { apply: f_v_bij. }
@@ -621,12 +621,11 @@ Module HQCTiny (P : HQCTinyParams).
         congr (eval_points npoints (split_poly _ nblocks)).
         rewrite GRing.addrA.
         have Hu := @u_eq r1 r2 (h_rq : {poly F2}) k_u_val Hsz_r1 Hsz_r2 Hsz_h.
-        etransitivity.
-        { exact: Hu. }
-        { congr (_ + _ * Ring.gen).
-          - congr (fin_to_poly n (rq_to_fin _)).
-            apply: val_inj.
-            symmetry. exact: in_qpoly_rq_eq. } }
+        rewrite Hu.
+        congr (_ + _ * Ring.gen).
+        congr (fin_to_poly n (rq_to_fin _)).
+        apply: val_inj.
+        symmetry. exact: in_qpoly_rq_eq. }
       (* --- v component --- *)
       { f_equal.
         have Hsz_pts2 : size (unpack_points pk2) = npoints.
@@ -644,20 +643,22 @@ Module HQCTiny (P : HQCTinyParams).
         rewrite !GRing.addrA.
         have Hv := @v_eq r2 e (s_rq : {poly F2}) (m_poly : {poly F2}) k_v_val t_val
                      Hsz_r2 Hsz_e Hsz_s Hsz_m.
-        etransitivity.
-        { exact: Hv. }
-        { congr (_ + _ * Ring.gen + _ * _).
-          - congr (fin_to_poly n (rq_to_fin (HQC_Sec.truncate _))).
-            apply: val_inj => /=.
-            set d := mk_monic Ring.gen.
-            have Hd_monic : d \is monic by rewrite /d; apply: monic_mk_monic.
-            have sz_lt_d : forall (x : Ring.Rq),
-              (size (x : {poly 'F_2}) < size d)%N.
-            { move=> x. apply: (leq_ltn_trans (size_Rq_val x)).
-              rewrite /d Ring.size_mk_monic_gen. exact: ltnSn. }
-            rewrite -!(Pdiv.IdomainMonic.modpE (q := d) Hd_monic) //.
-            rewrite !modpD !(modp_small (sz_lt_d _)).
-            reflexivity. } } }
+        rewrite Hv.
+        congr (_ + _ * Ring.gen + _ * _).
+        congr (fin_to_poly n (rq_to_fin (HQC_Sec.truncate _))).
+        apply: val_inj => /=.
+        set d := mk_monic Ring.gen.
+        have Hd_monic : d \is monic by rewrite /d; apply: monic_mk_monic.
+        have sz_lt_d : forall (x : Ring.Rq),
+          (size (x : {poly 'F_2}) < size d)%N.
+        { move=> x. apply: (leq_ltn_trans (size_Rq_val x)).
+          rewrite /d Ring.size_mk_monic_gen. exact: ltnSn. }
+        rewrite -!(Pdiv.IdomainMonic.modpE (q := d) Hd_monic) //.
+        rewrite !modpD !(modp_small (sz_lt_d _)).
+        reflexivity. } }
+    { (* false branch *)
+      simplify_linking.
+      apply: r_fail. }
   Qed.
 
 End HQCTiny.
