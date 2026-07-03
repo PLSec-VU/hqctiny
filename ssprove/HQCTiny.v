@@ -558,11 +558,10 @@ Module HQCTiny (P : HQCTinyParams).
     { move=> x. apply: (leq_ltn_trans (size_Rq_val x)).
       rewrite /d Ring.size_mk_monic_gen. exact: ltnSn. }
     rewrite -!(Pdiv.IdomainMonic.modpE (q := d) Hd_monic) //.
-    (* The remaining equality: a + (h*b)%%d = a%%d + (h*b)%%d, where
-       a, h, b are Rq elements so their polyF2 representatives are small.
-       Both sides reduce to rmodp(a_poly + h_poly*b_poly, gen)
-       using modpD and modp_small. *)
-  Admitted.
+    rewrite modpD.
+    rewrite (modp_small (sz_lt_d a)).
+    reflexivity.
+  Qed.
 
   (** Main theorem *)
   Theorem hqctiny_indistinguishable :
