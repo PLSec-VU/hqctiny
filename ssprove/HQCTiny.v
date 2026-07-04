@@ -89,6 +89,44 @@ Module HQCTiny (P : HQCTinyParams).
   Lemma size_eval_pts_n (q : {poly K}) : size (eval_pts_n q) = npoints.
   Proof. apply: size_eval_points; exact: npoints_le_card_K. Qed.
 
+  (** Boolean version of all_coeffs_small for use in guards *)
+  Definition all_coeffs_smallb (q : {poly K}) : bool :=
+    all (fun k : nat => (size ((q`_k)%R : {poly 'F_2}) <= W)%N) (iota 0 (size q)).
+
+  Lemma all_coeffs_smallbP (q : {poly K}) :
+    reflect (all_coeffs_small q) (all_coeffs_smallb q).
+  Proof.
+    rewrite /all_coeffs_smallb /all_coeffs_small.
+    apply: (iffP allP) => H k Hk.
+    - by apply: H; rewrite mem_iota.
+    - by apply: H; rewrite mem_iota in Hk.
+  Qed.
+
+  Lemma all_coeffs_small_split_poly (p : {poly 'F_2}) nblks :
+    all_coeffs_small (split_poly p nblks).
+  Proof.
+    rewrite /all_coeffs_small => k Hk.
+    have Hk_lt : (k < nblks)%N.
+    { have Hsz := size_split_poly p nblks.
+      exact: (leq_trans Hk Hsz). }
+    rewrite coef_split_poly Hk_lt /split_block.
+    have -> : (in_qpoly gen (take_poly W (drop_poly (k * W) p)) : {poly 'F_2}) =
+              take_poly W (drop_poly (k * W) p).
+    { apply: in_qpoly_small.
+      apply: (leq_ltn_trans (size_take_poly W _)).
+      rewrite size_mk_monic_gen.
+      exact: W_le_d. }
+    exact: size_take_poly.
+  Qed.
+
+  (** Guard predicate for valid point sequences *)
+  Definition valid_pk_b (pts : seq K) : bool :=
+    let iph := interpolate_n pts in
+    (size iph <= nblocks)%N && all_coeffs_smallb iph && (size (combine_poly iph) <= n)%N.
+
+  Definition valid_pk (pts : seq K) : Prop :=
+    exists h : Ring.Rq, eval_pts_n (split_poly (h : {poly F2}) nblocks) = pts.
+
   Definition K_to_fin (x : K) : 'I_(2 ^ d) :=
     cast_ord card_K (enum_rank x).
 
@@ -207,7 +245,7 @@ Module HQCTiny (P : HQCTinyParams).
         let '(pk, msg) := args in
         let h_pts := unpack_points pk.1 in
         let s_pts := unpack_points pk.2 in
-        if (size (interpolate_n h_pts) <= nblocks)%N && (size (interpolate_n s_pts) <= nblocks)%N then
+        if valid_pk_b h_pts && valid_pk_b s_pts then
           let m := P.encode msg in
           t_fin ← sample (uniform ('C(n, we) ^ 3)) ;;
           let '(r1_fin, r2_fin, e_fin) := split_fin3 t_fin in
@@ -245,7 +283,7 @@ Module HQCTiny (P : HQCTinyParams).
         let '(pk, msg) := args in
         let h_pts := unpack_points pk.1 in
         let s_pts := unpack_points pk.2 in
-        if (size (interpolate_n h_pts) <= nblocks)%N && (size (interpolate_n s_pts) <= nblocks)%N then
+        if valid_pk_b h_pts && valid_pk_b s_pts then
           let h_poly := combine_poly (interpolate_n h_pts) in
           let s_poly := combine_poly (interpolate_n s_pts) in
           let h_fin := poly_to_fin n h_poly in
@@ -531,13 +569,13 @@ Module HQCTiny (P : HQCTinyParams).
   (** Bridges the HQCBig u_eq/v_eq lemmas to the point-value representation *)
 
   (** The key bridge lemma: point-value multiplication equals split_poly
-      of the truncated F2 product. This is the central gap in the proof.
-      The equality holds because the excess K-polynomial terms evaluate
-      to zero at all npoints evaluation points. *)
+      of the truncated F2 product. Uses the valid_pk_b guard to ensure
+      the interpolated polynomial is in the image of split_poly and
+      no gen-reduction occurs. *)
   Lemma eval_mul_bridge (h_pts : seq K) (r2 : {poly 'F_2}) :
     size h_pts = npoints ->
     (size r2 <= n)%N ->
-    (size (interpolate_n h_pts) <= nblocks)%N ->
+    valid_pk_b h_pts ->
     let h := (fin_to_rq (poly_to_fin n (combine_poly (interpolate_n h_pts))) : {poly 'F_2}) in
     eval_points npoints (interpolate_n h_pts * split_poly r2 nblocks)
     = eval_points npoints (split_poly (h * r2) nblocks).
@@ -572,8 +610,7 @@ Module HQCTiny (P : HQCTinyParams).
     destruct m as [[pk1 pk2] msg].
     simplify_linking.
     rewrite code_link_if.
-    case E: (andb (size (interpolate_n (unpack_points pk1)) <= nblocks)%N
-              (size (interpolate_n (unpack_points pk2)) <= nblocks)%N).
+    case E: (valid_pk_b (unpack_points pk1) && valid_pk_b (unpack_points pk2)).
     { (* true branch *)
       move/andP: E => [Hpk1 Hpk2].
       simplify_linking.
