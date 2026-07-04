@@ -568,17 +568,31 @@ Module HQCTiny (P : HQCTinyParams).
 
   (** Bridges the HQCBig u_eq/v_eq lemmas to the point-value representation *)
 
-  (** The key bridge lemma: point-value multiplication equals split_poly
-      of the truncated F2 product. Uses the valid_pk_b guard to ensure
-      the interpolated polynomial is in the image of split_poly and
-      no gen-reduction occurs. *)
-  Lemma eval_mul_bridge (h_pts : seq K) (r2 : {poly 'F_2}) :
-    size h_pts = npoints ->
-    (size r2 <= n)%N ->
-    valid_pk_b h_pts ->
-    let h := (fin_to_rq (poly_to_fin n (combine_poly (interpolate_n h_pts))) : {poly 'F_2}) in
-    eval_points npoints (interpolate_n h_pts * split_poly r2 nblocks)
-    = eval_points npoints (split_poly (h * r2) nblocks).
+  Lemma u_eval_bridge (pts : seq K) (r1 r2 : {poly 'F_2}) (k : 'I_(2^n)) :
+    size pts = npoints ->
+    valid_pk_b pts ->
+    let h := (fin_to_rq (poly_to_fin n (combine_poly (interpolate_n pts))) : {poly 'F_2}) in
+    point_seq_add (eval_points npoints (split_poly r1 nblocks))
+      (point_seq_add (eval_points npoints (interpolate_n pts * split_poly r2 nblocks))
+         (eval_points npoints (split_poly (fin_to_poly n k * Ring.gen) nblocks)))
+    = eval_points npoints (split_poly (r1 + h * r2 + fin_to_poly n k * Ring.gen) nblocks).
+  Proof.
+  Admitted.
+
+  Lemma v_eval_bridge (pts : seq K) (r2 e : {poly 'F_2}) (m : {poly 'F_2}) (k : 'I_(2^n)) (t : 'I_(2^(n - n1n2))) :
+    size pts = npoints ->
+    valid_pk_b pts ->
+    let s := (fin_to_rq (poly_to_fin n (combine_poly (interpolate_n pts))) : {poly 'F_2}) in
+    point_seq_add (eval_points npoints (split_poly m nblocks))
+      (point_seq_add (eval_points npoints (interpolate_n pts * split_poly r2 nblocks))
+         (point_seq_add (eval_points npoints (split_poly e nblocks))
+            (point_seq_add (eval_points npoints (split_poly (fin_to_poly n k * Ring.gen) nblocks))
+               (eval_points npoints (split_poly ('X^n1n2 * fin_to_poly (n - n1n2) t) nblocks)))))
+    = eval_points npoints (split_poly (
+        fin_to_poly n (rq_to_fin (truncate (in_qpoly Ring.gen (m + s * r2 + e)))) +
+        (fin_to_poly n (f_v (m + s * r2 + e) k) * Ring.gen +
+         'X^n1n2 * fin_to_poly (n - n1n2) (f_t (m + s * r2 + e) t))
+      ) nblocks).
   Proof.
   Admitted.
 
@@ -653,10 +667,14 @@ Module HQCTiny (P : HQCTinyParams).
         have Hsz_r2 : (size r2 <= n)%N by exact: size_Rq_val.
         have Hsz_r1 : (size r1 <= n)%N by exact: size_Rq_val.
         have Hsz_h : (size h_rq <= n)%N by exact: size_Rq_val.
-        have -> := eval_mul_bridge (unpack_points pk1) r2 Hsz_pts1 Hsz_r2 Hpk1.
-        rewrite -!eval_points_add -!split_poly_add.
+        have -> := u_eval_bridge (unpack_points pk1) r1 r2 k_u_val Hsz_pts1 Hpk1.
+        rewrite -eval_points_add.
+        rewrite -split_poly_add.
         congr (eval_points npoints (split_poly _ nblocks)).
-        rewrite GRing.addrA.
+        fold h_poly.
+        fold h_rq.
+        change (sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(P.n, P.we) 3 t_fin) (inord 0)))) with r1.
+        change (sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(P.n, P.we) 3 t_fin) (inord 1)))) with r2.
         have Hu := @u_eq r1 r2 (h_rq : {poly F2}) k_u_val Hsz_r1 Hsz_r2 Hsz_h.
         rewrite Hu.
         congr (_ + _ * Ring.gen).
@@ -674,15 +692,18 @@ Module HQCTiny (P : HQCTinyParams).
         have Hsz_e : (size e <= n)%N by exact: size_Rq_val.
         have Hsz_s : (size s_rq <= n)%N by exact: size_Rq_val.
         have Hsz_m : (size (P.encode msg) <= n)%N by exact: size_Rq_val.
-        have -> := eval_mul_bridge (unpack_points pk2) r2 Hsz_pts2 Hsz_r2 Hpk2.
-        rewrite -!eval_points_add -!split_poly_add.
+        have -> := v_eval_bridge (unpack_points pk2) r2 e (m_poly : {poly F2}) k_v_val t_val Hsz_pts2 Hpk2.
+        rewrite -eval_points_add.
+        rewrite -eval_points_add.
+        rewrite -(@split_poly_add (fin_to_poly n (f_v p_v k_v_val) * Ring.gen) ('X^n1n2 * fin_to_poly (n - n1n2) (f_t p_v t_val)) nblocks).
+        rewrite -(@split_poly_add (fin_to_poly n (rq_to_fin (truncate (P.encode msg + s_rq * r2 + e)))) (fin_to_poly n (f_v p_v k_v_val) * Ring.gen + 'X^n1n2 * fin_to_poly (n - n1n2) (f_t p_v t_val)) nblocks).
         congr (eval_points npoints (split_poly _ nblocks)).
-        rewrite !GRing.addrA.
-        have Hv := @v_eq r2 e (s_rq : {poly F2}) (m_poly : {poly F2}) k_v_val t_val
-                     Hsz_r2 Hsz_e Hsz_s Hsz_m.
-        rewrite Hv.
-        congr (_ + _ * Ring.gen + _ * _).
-        congr (fin_to_poly n (rq_to_fin (HQC_Sec.truncate _))).
+        congr (_ + _).
+        congr (fin_to_poly n (rq_to_fin (truncate _))).
+        fold s_poly.
+        fold s_rq.
+        change (sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(P.n, P.we) 3 t_fin) (inord 1)))) with r2.
+        change (sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(P.n, P.we) 3 t_fin) (inord 2)))) with e.
         apply: val_inj => /=.
         set d := mk_monic Ring.gen.
         have Hd_monic : d \is monic by rewrite /d; apply: monic_mk_monic.
