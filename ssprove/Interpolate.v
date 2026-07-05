@@ -18,6 +18,7 @@ Open Scope ring_scope.
 Import GRing.Theory.
 
 From Stdlib Require Import Utf8.
+From Stdlib Require Import Program.Equality.
 From HB Require Import structures.
 
 Module Type PointFieldParams.
@@ -837,6 +838,68 @@ Module SplitCombine (S : SplitParams).
       | addSplit l1 l2 e1 e2 => 
           (evalKx l1 e1) + (evalKx l2 e2)
       end.
+
+    (** Homomorphism: evalKx factors through split_poly on false-indexed expressions *)
+    Lemma evalKx_split_poly (e : local_ring_expr false) :
+      evalKx false e = split_poly (evalF2x false e) nblocks.
+    Proof.
+      dependent induction e.
+      - (* valF2 *) done.
+      - (* addSplit *)
+        destruct l1; destruct l2; simpl in x0; try discriminate x0.
+        apply JMeq_eq in x.
+        subst e0.
+        simpl.
+        specialize (IHe1 e1 (erefl false) (@JMeq_refl _ e1)).
+        specialize (IHe2 e2 (erefl false) (@JMeq_refl _ e2)).
+        rewrite IHe1 IHe2.
+        rewrite split_poly_add.
+        reflexivity.
+    Qed.
+
+    (** Size bound preserved by evalF2x on false-indexed expressions *)
+    Lemma evalF2x_false_size (e : local_ring_expr false) :
+      (size (evalF2x false e) <= nblocks * W)%N.
+    Proof.
+      dependent induction e.
+      - (* valF2 *) done.
+      - (* addSplit *)
+        destruct l1; destruct l2; simpl in x0; try discriminate x0.
+        apply JMeq_eq in x.
+        subst e0.
+        simpl.
+        specialize (IHe1 e1 (erefl false) (@JMeq_refl _ e1)).
+        specialize (IHe2 e2 (erefl false) (@JMeq_refl _ e2)).
+        apply: leq_trans (size_polyD _ _) _.
+        rewrite geq_max.
+        apply/andP; split; assumption.
+    Qed.
+
+    (** combine_poly undoes evalKx: combine_poly (evalKx b e) = evalF2x b e *)
+    Lemma eval_combine b (e : local_ring_expr b) :
+      combine_poly (evalKx b e) = evalF2x b e.
+    Proof.
+      dependent induction e.
+      - (* valF2 *) simpl. apply/combine_poly_split. exact: i.
+      - (* multSplit *) simpl.
+        rewrite (evalKx_split_poly e1) (evalKx_split_poly e2).
+        apply: combine_poly_mul_split_poly.
+        + exact: evalF2x_false_size.
+        + exact: evalF2x_false_size.
+      - (* addSplit *) simpl.
+        rewrite combine_poly_add.
+        by rewrite IHe1 IHe2.
+    Qed.
+
+    Theorem evalK_inj_evalF2 b (e e' : local_ring_expr b) :
+      evalKx b e = evalKx b e' -> evalF2x b e = evalF2x b e'.
+    Proof.
+      move=> Heq.
+      have Hleft := eval_combine b e.
+      have Hright := eval_combine b e'.
+      rewrite Heq in Hleft.
+      rewrite -Hleft Hright //.
+    Qed.
 
   End Homomrphism.
 
