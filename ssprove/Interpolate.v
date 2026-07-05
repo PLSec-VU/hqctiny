@@ -1393,20 +1393,59 @@ Module SplitCombine (S : SplitParams).
       ((x`_0 : polyF2))`_(r + W) = ((x`_1 : polyF2))`_r.
   Proof.
     move=> Hc0 Hsz2 r Hr.
+    have Hcoef0 : (combine_poly x)`_(r + W) = 0 by rewrite Hc0 coef0.
+    rewrite /combine_poly /combine in Hcoef0.
     Transparent combine_aux.
-    have Hcoef_Wr : (combine_poly x)`_(r + W) = 0 by rewrite Hc0 coef0.
-    rewrite /combine_poly /combine in Hcoef_Wr.
-    have aux2: forall (blocks : seq K),
-      (size blocks >= 2)%N ->
-      (combine_aux blocks 0)`_(r + W) =
-      ((nth 0%R blocks 0 : polyF2))`_(r + W) +
-      ((nth 0%R blocks 1 : polyF2))`_r.
-    - elim=> [|b bs IH] //= Hszb.
-      + (* base: [], size >= 2 impossible *)
-        admit.
-      + (* b :: bs, check if bs is non-empty *)
-        admit.
-  Admitted.
+    have Hsz_coef: (2 <= size (coef_list x (size x)))%N.
+      by rewrite size_coef_list.
+    have coef_combine_aux_2: forall (blocks : seq K) (idx : nat),
+      (idx < W)%N -> (2 <= size blocks)%N ->
+      (combine_aux blocks 0)`_(idx + W) =
+      ((nth 0%R blocks 0 : polyF2))`_(idx + W) +
+      ((nth 0%R blocks 1 : polyF2))`_idx.
+      move=> blocks idx Hidx Hsz_blocks.
+      case: blocks Hsz_blocks => [//|b0 blocks'].
+      case: blocks' => [|b1 blocks''] => //.
+      move=> _.
+      rewrite /=.
+      rewrite mul0n expr0 mulr1 mul1n.
+      rewrite coefD coefD coefMXn.
+      case: ifPn => [Hcase|_].
+      - exfalso.
+        have: (W <= idx + W)%N by rewrite addnC; exact: leq_addr.
+        by rewrite leqNgt Hcase.
+      - rewrite addnK.
+        have ->: (combine_aux blocks'' 2)`_(idx + W) = 0.
+          rewrite (combine_aux_shift blocks'' 0 2) coefMXn.
+          case: ifPn => [//|Hnlt].
+          exfalso.
+          move: Hnlt.
+          rewrite mul2n -addnn.
+          rewrite ltn_add2r Hidx //.
+        by rewrite !addr0.
+    move: Hcoef0.
+    rewrite (coef_combine_aux_2 (coef_list x (size x)) r Hr Hsz_coef).
+    have H0_lt: (0 < size x)%N by exact: ltn_trans (ltn0Sn 0) Hsz2.
+    rewrite (coef_list_nth x (size x) 0 H0_lt).
+    rewrite (coef_list_nth x (size x) 1 Hsz2).
+    move=> Hsum.
+    pose a := (x`_0 : polyF2)`_(r + W).
+    pose b := (x`_1 : polyF2)`_r.
+    have Hab: a + b = 0 := Hsum.
+    have Hchar2_p : 2 \in [char 'F_2]
+      by exact: pchar_Fp 2 PointFieldHelpers.prime2.
+    have Hchar2_0 : 2%:R = 0 :> 'F_2 := pcharf0 Hchar2_p.
+    have char2: forall c : F2, c + c = 0.
+      move=> c.
+      rewrite -[c+c]/(c *+ 2).
+      by rewrite -mulr_natr Hchar2_0 mulr0.
+    have Haa0: a + a = 0 := char2 a.
+    have Hb_eq_a: b = a.
+      apply: (@addIr _ a).
+      rewrite [b + a]addrC.
+      by rewrite Hab Haa0.
+    by exact: esym Hb_eq_a.
+  Qed.
   Opaque combine_aux.
 
   (** combine_poly applied to ker_elem delta is zero
@@ -1433,9 +1472,26 @@ Module SplitCombine (S : SplitParams).
     rewrite ker_elem_coef0 ker_elem_coef1.
     have Hsz_delta : (size delta < size (mk_monic gen))%N.
     { rewrite size_mk_monic_gen.
-      admit. }
+      have Hle: (size delta <= d)%N.
+      { exact: leq_trans (leq_addr W (size delta)) Hsz. }
+      apply: (leq_ltn_trans Hle).
+      exact: ltnSn d. }
+    have Hsz_shift : ltn (size (delta * 'X^W)) (size (mk_monic gen)).
+    { rewrite size_mk_monic_gen.
+      apply: leq_ltn_trans (@size_polyMleq F2 delta ('X^W)) _.
+      rewrite size_polyXn addnS.
+      exact: leq_ltn_trans Hsz (ltnSn d). }
     rewrite (val_in_qpoly_eq delta Hsz_delta).
-  Admitted.
+    rewrite (val_in_qpoly_eq (delta * 'X^W) Hsz_shift).
+    rewrite -mulrDl.
+    have char2_poly: forall p : polyF2, p + p = 0.
+    { move=> p; apply/polyP => i.
+      rewrite !coefD coef0.
+      rewrite -[p`_i + p`_i]/(p`_i *+ 2).
+      by rewrite -mulr_natr
+        (pcharf0 (pchar_Fp (p := 2%N) PointFieldHelpers.prime2)) mulr0. }
+    by rewrite char2_poly mul0r.
+  Qed.
   Opaque combine_aux.
 
   (** combine_poly shifts by X^W when the argument shifts by X *)
