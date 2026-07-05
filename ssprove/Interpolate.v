@@ -777,38 +777,68 @@ Module SplitCombine (S : SplitParams).
     - by rewrite exprS -IHj -exprD mulSn.
   Qed.
 
-  Theorem split_combine_ring_iso (nblocks : nat) :
-    (forall (p : polyF2), (size p <= nblocks * W)%N ->
-       combine_poly (split_poly p nblocks) = p)
-    /\
-    (forall (q : {poly K}), (size q <= nblocks)%N -> all_coeffs_small q ->
-       split_poly (combine_poly q) nblocks = q)
-    /\
-    (forall (p q : polyF2) (n : nat),
-       split_poly (p + q) n = split_poly p n + split_poly q n)
-    /\
-    (forall (p q : {poly K}),
-       combine_poly (p + q) = combine_poly p + combine_poly q)
-    /\
-    (forall (q : {poly K}), (size q <= nblocks)%N -> all_coeffs_small q ->
-       combine_poly (split_poly (combine_poly q) nblocks) = combine_poly q)
-    /\
-    (forall (p q : polyF2),
-       (size p <= nblocks * W)%N -> (size q <= nblocks * W)%N ->
-       combine_poly (split_poly p nblocks * split_poly q nblocks) = p * q).
-  Proof.
-    split.
-    - move=> p H. exact: combine_poly_split.
-    split.
-    - move=> q Hsz Hacs. exact: split_poly_combine_poly.
-    split.
-    - exact: split_poly_add.
-    split.
-    - exact: combine_poly_add.
-    split.
-    - move=> q Hsz Hacs. exact: combine_poly_split_combine.
-    - move=> p q Hp Hq. exact: combine_poly_mul_split_poly.
-  Qed.
+  Section Homomrphism.
+    Variable (nblocks : nat).
+
+    Theorem split_combine_ring_iso :
+      (forall (p : polyF2), (size p <= nblocks * W)%N ->
+         combine_poly (split_poly p nblocks) = p)
+      /\
+      (forall (q : {poly K}), (size q <= nblocks)%N -> all_coeffs_small q ->
+         split_poly (combine_poly q) nblocks = q)
+      /\
+      (forall (p q : polyF2) (n : nat),
+         split_poly (p + q) n = split_poly p n + split_poly q n)
+      /\
+      (forall (p q : {poly K}),
+         combine_poly (p + q) = combine_poly p + combine_poly q)
+      /\
+      (forall (q : {poly K}), (size q <= nblocks)%N -> all_coeffs_small q ->
+         combine_poly (split_poly (combine_poly q) nblocks) = combine_poly q)
+      /\
+      (forall (p q : polyF2),
+         (size p <= nblocks * W)%N -> (size q <= nblocks * W)%N ->
+         combine_poly (split_poly p nblocks * split_poly q nblocks) = p * q).
+    Proof.
+      split.
+      - move=> p H. exact: combine_poly_split.
+      split.
+      - move=> q Hsz Hacs. exact: split_poly_combine_poly.
+      split.
+      - exact: split_poly_add.
+      split.
+      - exact: combine_poly_add.
+      split.
+      - move=> q Hsz Hacs. exact: combine_poly_split_combine.
+      - move=> p q Hp Hq. exact: combine_poly_mul_split_poly.
+    Qed.
+
+    Inductive local_ring_expr : bool -> Type :=
+      | valF2 : forall (p : polyF2), (size p <= nblocks * W)%N -> local_ring_expr false
+      | multSplit : local_ring_expr false -> local_ring_expr false -> local_ring_expr true
+      | addSplit : forall (l1 l2: bool), local_ring_expr l1 -> local_ring_expr l2 -> local_ring_expr (l1 || l2).
+
+    Fixpoint evalF2x (b : bool) (e : local_ring_expr b) : polyF2 :=
+      match e in local_ring_expr label return polyF2 with
+      | valF2 p _ => 
+          p
+      | multSplit e1 e2 => 
+          (evalF2x false e1) * (evalF2x false e2)
+      | addSplit l1 l2 e1 e2 => 
+          (evalF2x l1 e1) + (evalF2x l2 e2)
+      end.
+
+    Fixpoint evalKx (b : bool) (e : local_ring_expr b) : {poly K} :=
+      match e in local_ring_expr label return {poly K} with
+      | valF2 p _ => 
+          split_poly p nblocks
+      | multSplit e1 e2 => 
+          (evalKx false e1) * (evalKx false e2)
+      | addSplit l1 l2 e1 e2 => 
+          (evalKx l1 e1) + (evalKx l2 e2)
+      end.
+
+  End Homomrphism.
 
   (** ****************************************************************** *)
   (** Bridge: evaluate K[z] at distinct points and interpolate back     *)
