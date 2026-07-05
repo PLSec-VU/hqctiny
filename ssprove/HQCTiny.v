@@ -46,6 +46,7 @@ Module Type HQCTinyParams.
   Parameter W_gt0   : (0 < W)%N.
   Parameter W_le_d  : (W <= d)%N.
   Parameter W2_lt_d : ((2 * W).-1 <= d)%N.
+  Parameter W_lt_n  : (W < n)%N.
 
   (** Number of K[z] blocks — must fit the ciphertext polynomials *)
   Parameter nblocks : nat.
@@ -55,7 +56,7 @@ Module Type HQCTinyParams.
   Parameter npoints : nat.
   Parameter npoints_gt0 : (0 < npoints)%N.
   Parameter npoints_le_card : (npoints <= (2 ^ d))%N.
-  Parameter nblocks_le_npoints : (nblocks <= npoints)%N.
+  Parameter nblocks2_le_npoints : (2 * nblocks <= npoints)%N.
 End HQCTinyParams.
 
 Module HQCTiny (P : HQCTinyParams).
@@ -633,6 +634,24 @@ Module HQCTiny (P : HQCTinyParams).
         have Hsz_pts1 : size (unpack_points pk1) = npoints.
         { rewrite /unpack_points /points_tuple_to_seq. exact: size_tuple. }
         rewrite -{1}(eval_interpolate_id (unpack_points pk1) Hsz_pts1).
+        rewrite -!eval_points_mul -!eval_points_add.
+        f_equal.
+        move: Hpk1; rewrite /valid_pk_b => /andP [/andP [Hsz_ip Hacsb] Hsz_cp].
+        have Hacs_ip : all_coeffs_small (interpolate_n (unpack_points pk1))
+          by apply/all_coeffs_smallbP.
+        have Hsplit_eq : split_poly h_poly nblocks =
+                         interpolate_n (unpack_points pk1)
+          by apply: split_poly_combine_poly.
+        rewrite -Hsplit_eq.
+        have Hsz_h_poly : (size h_poly <= nblocks * W)%N.
+        { rewrite /h_poly.
+          have H_n_bound : (n <= nblocks * W)%N.
+          { move: nblocks_bound => Hnb.
+            apply: (leq_trans _ Hnb).
+            exact: leq_addr. }
+          exact: (leq_trans Hsz_cp H_n_bound). }
+        rewrite (combine_poly_split h_poly nblocks Hsz_h_poly).
+        rewrite fin_to_poly_rq_to_fin.
         admit. }
       (* --- v component --- *)
       { f_equal.
