@@ -1534,19 +1534,135 @@ Module SplitCombine (S : SplitParams).
     move Hsz: (size x) => n.
     elim: n x Hsz Hc0 => [|n IH] x Hsz Hc0.
     - (* size x = 0: x = 0 *)
-      admit.
+      have /size_poly_leq0P Hx0 : (size x <= 0)%N by rewrite Hsz.
+      subst x; exists [::]; done.
     - (* size x = n.+1 *)
-      case: (ltnP (size x) 2) => Hsz2.
-      + (* size x <= 1 *)
-        move: Hsz2; rewrite Hsz ltnS leq_eqVlt => /orP[/eqP Hn1|Hn0].
-        * (* size x = 1 *)
+      case: (ltnP (size x) 3) => Hsz3.
+      + (* size x <= 2, use combine_poly_ker_char *)
+        have Hsz_le2 : (size x <= 2)%N by rewrite -ltnS.
+        have [delta Hker] := combine_poly_ker_char x Hc0 Hsz_le2.
+        exists [:: delta].
+        by rewrite /ker_chain /= mul0r addr0 Hker.
+      + (* size x >= 3: main inductive case *)
+        have Hlow0 := combine_poly_ker_coeff0_low x Hc0.
+        set p0 := (x`_0 : polyF2).
+        (* take_poly W of the first coefficient is zero *)
+        have Htake0 : take_poly W p0 = 0.
+        { apply/polyP => j; rewrite coef_take_poly coef0.
+          case: ifPn => [Hj|//]; by rewrite Hlow0. }
+        (* Decompose p0 = d0 * 'X^W using poly_take_drop *)
+        have := @poly_take_drop F2 W p0.
+        rewrite Htake0 add0r => Hdecomp.
+        set d0 := drop_poly W p0.
+        have Hd0_eq : d0 * 'X^W = p0 by rewrite Hdecomp.
+        (* Size bound: size p0 <= d (from qfpoly structure) *)
+        have Hsz_p0 : (size p0 <= d)%N.
+        { have Hvp : (size p0 <= (size (mk_monic gen)).-1)%N.
+            exact: (valP (x`_0 : K)).
+          apply: leq_trans Hvp _.
+          rewrite size_mk_monic_gen.
+          exact: leqnn. }
+        (* Hence size d0 + W <= d *)
+        have Hd0_bound : (size d0 + W <= d)%N.
+        { rewrite size_drop_poly.
+          case: (ltnP (size p0) W) => [Hlt|Hge].
+          - have /eqP -> : (size p0 - W == 0)%N.
+              by rewrite subn_eq0; apply/ltnW; exact: Hlt.
+            exact: W_le_d.
+          - by rewrite subnK. }
+        have Hcomb_d0 : combine_poly (ker_elem d0) = 0.
+          by apply: combine_poly_ker_elem_no_size.
+        (* x`_0 = in_qpoly gen (d0 * 'X^W) in K *)
+        have Hx0_eq : x`_0 = in_qpoly gen (d0 * 'X^W).
+        { apply/val_inj => /=.
+          rewrite -[Pdiv.CommonRing.rmodp _ _]/
+            ((in_qpoly gen (d0 * 'X^W)) : polyF2).
+          have Hsz_small : (size ((d0 * 'X^W)%R)
+                            < size (mk_monic gen))%N.
+            apply: (leq_ltn_trans (size_polyMleq d0 'X^W)).
+            rewrite size_polyXn addnS /=.
+            apply: (leq_ltn_trans Hd0_bound).
+            by rewrite size_mk_monic_gen.
+          rewrite (in_qpoly_small (R:=F2) (h:=gen)
+            (p:=d0 * 'X^W) Hsz_small).
+          rewrite /p0.
+          by rewrite Hd0_eq. }
+        (* Set y = x - ker_elem d0; show y`_0 = 0 *)
+        set y := x - ker_elem d0.
+        have Hy0 : y`_0 = 0.
+        { rewrite /y coefD coefN Hx0_eq /ker_elem.
+          rewrite !coefD !coefC !coefCM coefX /=.
+          by rewrite mulr0 addr0 subrr. }
+        (* Prove combine_poly(y) = 0 *)
+        have Hc0_y : combine_poly y = 0.
+        { rewrite combine_poly_add Hc0.
+          have Htmp := combine_poly_add (ker_elem d0) (- ker_elem d0).
+          rewrite addrN in Htmp.
           Transparent combine_aux.
-          move: Hc0.
-          rewrite /combine_poly /combine.
-          admit.
-        * (* size x = 0 *)
-          admit.
-      + (* size x >= 2 *)
-        Admitted.
+          have Hc0_0 : combine_poly (0 : {poly K}) = 0.
+          { rewrite /combine_poly /combine size_poly0 /coef_list
+              /iota /= /combine_aux //. }
+          Opaque combine_aux.
+          rewrite Hc0_0 Hcomb_d0 add0r in Htmp.
+          by rewrite -Htmp add0r. }
+        (* Factor y = 'X * z *)
+        have Htake1y : take_poly 1 y = 0.
+        { apply/polyP => j; rewrite coef_take_poly coef0.
+          case: ifPn => [Hj|//].
+          have /eqP -> : j == 0%N by move: Hj; rewrite ltnS leqn0.
+          by rewrite Hy0. }
+        set z := drop_poly 1 y.
+        have Hy_eq : y = 'X * z.
+        { have H := @poly_take_drop K 1 y.
+          rewrite Htake1y add0r expr1 mulrC in H.
+          rewrite /z; exact: esym H. }
+        (* combine_poly(z) = 0 *)
+        have Hc0_z : combine_poly z = 0.
+        { rewrite Hy_eq combine_poly_shift in Hc0_y.
+          apply/eqP.
+          have -> : combine_poly z == 0 = ('X^W * combine_poly z == 0).
+          { by rewrite mulf_eq0
+                       (negbTE (expf_neq0 W (monic_neq0 (monicX F2))))
+                       orFb. }
+          by rewrite -Hc0_y. }
+        (* Size of z is n, so IH applies *)
+        have Hsz_y : (size y = n.+1)%N.
+        { rewrite /y.
+          have Hsz_ke : (size (ker_elem d0) <= 2)%N.
+          { rewrite /ker_elem.
+            apply/leq_trans.
+            apply: size_polyD.
+            rewrite !size_polyC.
+            have [Hd0|Hd0] := boolP (in_qpoly gen d0 == 0).
+            - move/eqP: Hd0 => ->. rewrite mul0r size_poly0.
+              by case: (in_qpoly gen (d0 * 'X^W) == 0).
+            - rewrite size_Cmul // size_polyX.
+              by case: (in_qpoly gen (d0 * 'X^W) == 0). }
+          have Hsz_x_gt_2 : (2 < size x)%N by rewrite Hsz.
+          apply/eqP.
+          rewrite eqn_leq.
+          apply/andP; split.
+          - apply: leq_trans (size_polyD x (- ker_elem d0)).
+            rewrite size_polyN.
+            by rewrite geq_max leqnn.
+          - apply: contraTneq Hsz_x_gt_2 => Hlt.
+            rewrite -Hsz.
+            apply: leq_trans Hsz_ke.
+            apply: leq_trans (size_polyD _ _) _.
+            rewrite Hlt ltnS.
+            by rewrite geq_max leqnn orbT. }
+        have Hsz_z : (size z = n)%N.
+        { have Hz_ne0 : z != 0.
+          { apply/negP; move/eqP => Hz.
+            by rewrite Hy_eq Hz mulr0 size_poly0 in Hsz_y. }
+          rewrite Hy_eq mulrC (size_mulX Hz_ne0) in Hsz_y.
+          exact: succn_inj Hsz_y. }
+        (* Apply induction hypothesis *)
+        have [deltas' Hrec] := IH z Hsz_z Hc0_z.
+        exists (d0 :: deltas').
+        rewrite /ker_chain -/ker_chain /=.
+        rewrite -Hrec (mulrC z) -Hy_eq /y.
+        by rewrite addrC subrK.
+  Qed.
 
 End SplitCombine.
