@@ -915,18 +915,97 @@ Module HQCTiny (P : HQCTinyParams).
     { rewrite /h_poly.
       by rewrite split_poly_combine_poly. }
     have H_test : forall (p q : {poly K}), eval_points npoints (p + q) = point_seq_add (eval_points npoints p) (eval_points npoints q) by move=> p q; exact: eval_points_add.
+    have Hn_le : (n <= nblocks * W)%N by apply: (leq_trans _ nblocks_bound); rewrite mulnC muln2 -addnn; exact: leq_addr.
     pose P_diff :=
       split_poly (fin_to_poly n (rq_to_fin (r1 + h_rq * r2))) nblocks +
       split_poly (fin_to_poly n (f_u p_u k_u_val)) nblocks * split_poly Ring.gen nblocks +
       split_poly r1 nblocks +
       split_poly h_poly nblocks * split_poly r2 nblocks +
       split_poly (fin_to_poly n k_u_val) nblocks * split_poly Ring.gen nblocks.
-    have H_comb : combine_poly P_diff = 0 by admit.
+    have H_comb : combine_poly P_diff = 0.
+    { rewrite /P_diff !combine_poly_add.
+      have H_sz_f1 : (size (fin_to_poly n (rq_to_fin (r1 + h_rq * r2)%R)) <= nblocks * W)%N.
+      { apply: leq_trans Hn_le. rewrite /fin_to_poly. exact: size_polyF2_of_nat. }
+      have H_sz_f2 : (size (fin_to_poly n (f_u p_u k_u_val)) <= nblocks * W)%N.
+      { apply: leq_trans Hn_le. rewrite /fin_to_poly. exact: size_polyF2_of_nat. }
+      have H_sz_f3 : (size (fin_to_poly n k_u_val) <= nblocks * W)%N.
+      { apply: leq_trans Hn_le. rewrite /fin_to_poly. exact: size_polyF2_of_nat. }
+      have H_sz_gen : (size Ring.gen <= nblocks * W)%N.
+      { rewrite Ring.size_gen.
+        change P.RingP.n with n.
+        apply: (leq_trans _ nblocks_bound).
+        rewrite mulnC muln2 -addnn -{1}(add0n n) ltn_add2r.
+        apply: (ltn_trans _ n_gt1). done. }
+      have H_sz_r1 : (size r1 <= nblocks * W)%N.
+      { apply: (leq_trans _ Hn_le). exact: size_Rq_val. }
+      have H_sz_r2 : (size r2 <= nblocks * W)%N.
+      { apply: (leq_trans _ Hn_le). exact: size_Rq_val. }
+      have H_sz_h : (size h_poly <= nblocks * W)%N.
+      { apply: (leq_trans _ Hn_le). exact: H3. }
+      rewrite (combine_poly_split _ _ H_sz_f1) (combine_poly_split _ _ H_sz_r1)
+              (combine_poly_mul_split_poly _ _ _ H_sz_f2 H_sz_gen)
+              (combine_poly_mul_split_poly _ _ _ H_sz_h H_sz_r2)
+              (combine_poly_mul_split_poly _ _ _ H_sz_f3 H_sz_gen).
+      rewrite /rq_to_fin.
+      rewrite (in_qpoly_rq_eq r1 r2 h_rq).
+      fold rq_to_fin.
+      rewrite -H_h_rq_eq.
+      have H_sz_hrq : (size (h_rq : {poly F2}) <= n)%N by rewrite H_h_rq_eq.
+      have H_ueq := u_eq (r1 : {poly F2}) (r2 : {poly F2}) (h_rq : {poly F2}) k_u_val (size_Rq_val r1) (size_Rq_val r2) H_sz_hrq.
+      have H_char2 : forall p : {poly F2}, (p + p = 0)%R.
+      { move=> p. apply/polyP => i. rewrite coefD coef0.
+        rewrite -[p`_i + _]/(p`_i *+ 2).
+        rewrite -mulr_natr.
+        have Hchar : 2 \in [char 'F_2] by exact: pchar_Fp 2 PointFieldHelpers.prime2.
+        by rewrite (pcharf0 Hchar) mulr0. }
+      rewrite -H_ueq.
+      rewrite -!addrA.
+      admit. }
+    have Hsz_Pdiff : (size P_diff <= 2 * nblocks)%N.
+    { rewrite /P_diff.
+      apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+      - apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+        + apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+          * apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+            -- apply: (leq_trans (size_split_poly _ _)).
+               by rewrite mulnC; exact: leq_pmulr.
+            -- apply: (leq_trans (size_polyMleq _ _)).
+               apply: (leq_trans (leq_pred _)).
+               by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly.
+          * apply: (leq_trans (size_split_poly _ _)).
+            by rewrite mulnC; exact: leq_pmulr.
+        + apply: (leq_trans (size_polyMleq _ _)).
+          apply: (leq_trans (leq_pred _)).
+          by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly.
+      - apply: (leq_trans (size_polyMleq _ _)).
+        apply: (leq_trans (leq_pred _)).
+        by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly. }
     have [deltas [H_deltas H_sz]] := combine_poly_ker_decompose P_diff H_comb.
     pose deltas_pad := deltas ++ nseq (2 * nblocks - size deltas) 0%R.
-    have H_pad_sz : size deltas_pad = (2 * nblocks)%N by admit.
-    have H_pad_eq : ker_chain deltas_pad = ker_chain deltas by admit.
-    have H_pad_el : forall idx, (idx < 2 * nblocks)%N -> (size (nth 0%R deltas_pad idx) <= W)%N by admit.
+    have H_deltas_sz : (size deltas <= 2 * nblocks)%N.
+    { rewrite H_sz. case: (size P_diff <= 1)%N.
+      - exact: Hsz_Pdiff.
+      - apply: leq_trans (leq_pred _) Hsz_Pdiff. }
+    have H_pad_sz : size deltas_pad = (2 * nblocks)%N by rewrite /deltas_pad size_cat size_nseq addnC subnK.
+    have H_nseq_zero : forall k0, ker_chain (nseq k0 0) = 0.
+    { elim=> [|k0 IH] /=; first by [].
+      rewrite /ker_elem.
+      admit. }
+    have H_pad_eq_gen : forall ds k0, ker_chain (ds ++ nseq k0 0) = ker_chain ds.
+    { elim=> [|d ds IH] k0 /=.
+      - exact: H_nseq_zero.
+      - by rewrite IH. }
+    have H_pad_eq : ker_chain deltas_pad = ker_chain deltas by exact: H_pad_eq_gen.
+    have H_deltas_el : forall idx, (idx < size deltas)%N -> (size (nth 0%R deltas idx) <= W)%N by admit.
+    have H_pad_el : forall idx, (idx < 2 * nblocks)%N -> (size (nth 0%R deltas_pad idx) <= W)%N.
+    { move=> idx Hidx.
+      rewrite /deltas_pad nth_cat.
+      case: ifPn => Hcond.
+      - exact: H_deltas_el.
+      - rewrite nth_nseq.
+        case: ifPn => [Hidx2|//].
+        + admit.
+        + admit. }
     exists (deltas_to_fin deltas_pad).
     move=> k_u_ker_val.
     have H_f_u_eq : fin_to_deltas (f_u_ker (deltas_to_fin deltas_pad) k_u_ker_val) =
@@ -948,10 +1027,26 @@ Module HQCTiny (P : HQCTinyParams).
     rewrite -!eval_points_mul.
     rewrite -!H_test.
     rewrite H_f_u_eq.
+    have H_char_F2 : 2%N \in [pchar F2] by apply: pchar_Fp; exact: PointFieldHelpers.prime2.
+    have H_charK : 2%N \in [pchar K] by rewrite /K pchar_qpoly.
+    have H_char_polyK_pred : 2%N \in [pchar {poly K}] by rewrite pchar_poly.
+    have H_char_polyK : forall x : {poly K}, x + x = 0 by move=> x; apply: (addrr_pchar2 H_char_polyK_pred).
+    have H_sz_eq : size (fin_to_deltas k_u_ker_val) = size deltas_pad.
+    { by rewrite H_pad_sz /fin_to_deltas size_map size_enum_ord. }
     have -> : (2 * nblocks)%nat = size (fin_to_deltas k_u_ker_val) by rewrite /fin_to_deltas size_map size_enum_ord.
-    rewrite ker_chain_add.
-    - by rewrite H_pad_sz /fin_to_deltas size_map size_enum_ord.
-    - admit.
+    rewrite (ker_chain_add (fin_to_deltas k_u_ker_val) deltas_pad H_sz_eq).
+    rewrite H_pad_eq -H_deltas /P_diff.
+    f_equal.
+    rewrite -!addrA.
+    rewrite [ker_chain _ + (split_poly _ _ + _)]addrCA.
+    rewrite [split_poly (fin_to_poly _ (f_u _ _)) _ * _ + (split_poly (fin_to_poly _ (rq_to_fin _)) _ + _)]addrCA.
+    rewrite [split_poly (fin_to_poly _ (rq_to_fin _)) _ + (split_poly (fin_to_poly _ (rq_to_fin _)) _ + _)]addrA.
+    rewrite H_char_polyK add0r.
+    rewrite [ker_chain _ + (split_poly _ _ * _ + _)]addrCA.
+    rewrite [split_poly (fin_to_poly _ (f_u _ _)) _ * _ + (split_poly (fin_to_poly _ (f_u _ _)) _ * _ + _)]addrA.
+    rewrite H_char_polyK add0r.
+    rewrite addrC.
+    by rewrite -!addrA.
   Admitted.
 
   Lemma hqctiny_v_eq : forall (pk2 : PointSeqCt) (msg : Message_t) (t_fin : 'I_('C(n, we) ^ 3)) (k_v_val : 'I_(2^n)),
