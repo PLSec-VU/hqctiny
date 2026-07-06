@@ -959,8 +959,17 @@ Module HQCTiny (P : HQCTinyParams).
         have Hchar : 2 \in [char 'F_2] by exact: pchar_Fp 2 PointFieldHelpers.prime2.
         by rewrite (pcharf0 Hchar) mulr0. }
       rewrite -H_ueq.
+      apply/polyP => i.
+      rewrite !coefD !coef0.
+      have char2_F2 : forall x : F2, x + x = 0.
+      { move=> x. rewrite -[x + _]/(x *+ 2) -mulr_natr.
+        have Hchar : 2 \in [pchar 'F_2] by exact: pchar_Fp 2 PointFieldHelpers.prime2.
+        by rewrite (pcharf0 Hchar) mulr0. }
       rewrite -!addrA.
-      admit. }
+      rewrite [in X in X = 0]addrA.
+      rewrite [in X in X = 0]addrA.
+      rewrite [in X in _ + X = 0]addrA.
+      apply: char2_F2. }
     have Hsz_Pdiff : (size P_diff <= 2 * nblocks)%N.
     { rewrite /P_diff.
       apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
@@ -988,9 +997,10 @@ Module HQCTiny (P : HQCTinyParams).
       - apply: leq_trans (leq_pred _) Hsz_Pdiff. }
     have H_pad_sz : size deltas_pad = (2 * nblocks)%N by rewrite /deltas_pad size_cat size_nseq addnC subnK.
     have H_nseq_zero : forall k0, ker_chain (nseq k0 0) = 0.
-    { elim=> [|k0 IH] /=; first by [].
-      rewrite /ker_elem.
-      admit. }
+    { elim=> [|k0 IH] /=; first done.
+      rewrite IH mul0r addr0 /ker_elem.
+      have Hz : in_qpoly gen 0 = 0 by rewrite in_qpoly0.
+      by rewrite Hz mul0r Hz !polyC0 mul0r add0r. }
     have H_pad_eq_gen : forall ds k0, ker_chain (ds ++ nseq k0 0) = ker_chain ds.
     { elim=> [|d ds IH] k0 /=.
       - exact: H_nseq_zero.
@@ -1003,9 +1013,7 @@ Module HQCTiny (P : HQCTinyParams).
       case: ifPn => Hcond.
       - exact: H_deltas_el.
       - rewrite nth_nseq.
-        case: ifPn => [Hidx2|//].
-        + admit.
-        + admit. }
+        case: ifPn => [_|//]; by rewrite size_poly0. }
     exists (deltas_to_fin deltas_pad).
     move=> k_u_ker_val.
     have H_f_u_eq : fin_to_deltas (f_u_ker (deltas_to_fin deltas_pad) k_u_ker_val) =
