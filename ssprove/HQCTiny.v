@@ -222,6 +222,12 @@ Module HQCTiny (P : HQCTinyParams).
     let val := nat_of_polyF2 p 0 d in
     Ordinal (nat_of_polyF2_bound p d).
 
+  Definition deltas_size : nat := ((2 ^ W) ^ (2 * nblocks))%N.
+
+  Definition fin_to_deltas (i : 'I_deltas_size) : seq {poly 'F_2} :=
+    let tup := fin_to_tuple_fin (2 ^ W) (2 * nblocks) i in
+    [seq fin_to_poly W (tnth tup j) | j <- enum 'I_(2 * nblocks)].
+
   Definition poly_to_points (p : {poly F2}) : seq K :=
     eval_pts_n (split_poly p nblocks).
 
@@ -252,26 +258,34 @@ Module HQCTiny (P : HQCTinyParams).
           let '(r1_fin, r2_fin, e_fin) := split_fin3 t_fin in
           k_u_fin ← sample (uniform (2^n)) ;;
           k_v_fin ← sample (uniform (2^n)) ;;
+          k_u_ker ← sample (uniform deltas_size) ;;
+          k_v_ker ← sample (uniform deltas_size) ;;
           t_fin' ← sample (uniform (2^(n - n1n2))) ;;
           let r1 := \val (fin_to_rq_we r1_fin) in
           let r2 := \val (fin_to_rq_we r2_fin) in
           let e  := \val (fin_to_rq_we e_fin) in
           let k_u := fin_to_poly n k_u_fin in
           let k_v := fin_to_poly n k_v_fin in
+          let ku_deltas := fin_to_deltas k_u_ker in
+          let kv_deltas := fin_to_deltas k_v_ker in
           let t   := fin_to_poly (n - n1n2) t_fin' in
           let r1_pts := eval_pts_n (split_poly r1 nblocks) in
           let r2_pts := eval_pts_n (split_poly r2 nblocks) in
           let e_pts  := eval_pts_n (split_poly e nblocks) in
           let m_pts  := eval_pts_n (split_poly m nblocks) in
           let gen_pts := eval_pts_n (split_poly Ring.gen nblocks) in
-          let ku_pts := point_seq_mul (eval_pts_n (split_poly k_u nblocks)) gen_pts in
-          let kv_pts := point_seq_mul (eval_pts_n (split_poly k_v nblocks)) gen_pts in
+          let ku_pts := point_seq_add
+                          (point_seq_mul (eval_pts_n (split_poly k_u nblocks)) gen_pts)
+                          (eval_pts_n (ker_chain ku_deltas)) in
+          let kv_pts := point_seq_add
+                          (point_seq_mul (eval_pts_n (split_poly k_v nblocks)) gen_pts)
+                          (eval_pts_n (ker_chain kv_deltas)) in
           let t_pts  := eval_pts_n (split_poly ('X ^+ n1n2 * t) nblocks) in
           let u_pts := point_seq_add r1_pts
-                         (point_seq_add (point_seq_mul h_pts r2_pts) ku_pts) in
+                          (point_seq_add (point_seq_mul h_pts r2_pts) ku_pts) in
           let v_pts := point_seq_add m_pts
-                         (point_seq_add (point_seq_mul s_pts r2_pts)
-                           (point_seq_add e_pts (point_seq_add kv_pts t_pts))) in
+                          (point_seq_add (point_seq_mul s_pts r2_pts)
+                            (point_seq_add e_pts (point_seq_add kv_pts t_pts))) in
           ret (pack_points u_pts, pack_points v_pts)
         else
           fail
@@ -293,16 +307,24 @@ Module HQCTiny (P : HQCTinyParams).
           c_poly ← HQC_enc_oracle ((h_fin, s_fin), msg) ;;
           k_u_fin ← sample (uniform (2^n)) ;;
           k_v_fin ← sample (uniform (2^n)) ;;
+          k_u_ker ← sample (uniform deltas_size) ;;
+          k_v_ker ← sample (uniform deltas_size) ;;
           t_fin' ← sample (uniform (2^(n - n1n2))) ;;
           let u := fin_to_poly n c_poly.1 in
           let v := fin_to_poly n c_poly.2 in
           let k_u := fin_to_poly n k_u_fin in
           let k_v := fin_to_poly n k_v_fin in
+          let ku_deltas := fin_to_deltas k_u_ker in
+          let kv_deltas := fin_to_deltas k_v_ker in
           let t   := fin_to_poly (n - n1n2) t_fin' in
           let u_pts := eval_pts_n (split_poly u nblocks) in
           let v_pts := eval_pts_n (split_poly v nblocks) in
-          let ku_pts := point_seq_mul (eval_pts_n (split_poly k_u nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)) in
-          let kv_pts := point_seq_mul (eval_pts_n (split_poly k_v nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)) in
+          let ku_pts := point_seq_add
+                          (point_seq_mul (eval_pts_n (split_poly k_u nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                          (eval_pts_n (ker_chain ku_deltas)) in
+          let kv_pts := point_seq_add
+                          (point_seq_mul (eval_pts_n (split_poly k_v nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                          (eval_pts_n (ker_chain kv_deltas)) in
           let t_pts  := eval_pts_n (split_poly ('X ^+ n1n2 * t) nblocks) in
           let u_pts_blinded := point_seq_add u_pts ku_pts in
           let v_pts_blinded := point_seq_add v_pts (point_seq_add kv_pts t_pts) in
@@ -587,6 +609,138 @@ Module HQCTiny (P : HQCTinyParams).
     reflexivity.
   Qed.
 
+  Definition f_u_ker (diff : 'I_deltas_size) (k : 'I_deltas_size) : 'I_deltas_size :=
+    insubd k ((k + diff) %% deltas_size)%N.
+
+  Lemma f_u_ker_bij : forall diff, bijective (f_u_ker diff).
+  Proof.
+    move=> diff.
+    have Hgt0 : (0 < deltas_size)%N by rewrite /deltas_size !expn_gt0.
+    pose f_inv (k : 'I_deltas_size) : 'I_deltas_size :=
+      insubd k ((k + (deltas_size - diff)) %% deltas_size)%N.
+    have H1 : cancel (f_u_ker diff) f_inv.
+    { move=> x.
+      have Hlt : (diff < deltas_size)%N by exact: ltn_ord.
+      apply/val_inj.
+      rewrite /f_inv /f_u_ker !val_insubd.
+      have Hlt_inner : ((x + diff) %% deltas_size < deltas_size)%N by rewrite ltn_mod Hgt0.
+      rewrite Hlt_inner.
+      have Hlt_outer : (((x + diff) %% deltas_size + (deltas_size - diff)) %% deltas_size < deltas_size)%N by rewrite ltn_mod Hgt0.
+      rewrite Hlt_outer.
+      rewrite modnDml.
+      have -> : (x + diff + (deltas_size - diff) = x + (diff + (deltas_size - diff)))%N by rewrite addnA.
+      have -> : (diff + (deltas_size - diff) = deltas_size)%N by rewrite addnC subnK // ltnW.
+      rewrite modnDr.
+      by rewrite modn_small // ltn_ord. }
+    have H2 : cancel f_inv (f_u_ker diff).
+    { move=> x.
+      have Hlt : (diff < deltas_size)%N by exact: ltn_ord.
+      apply/val_inj.
+      rewrite /f_inv /f_u_ker !val_insubd.
+      have Hlt_inner : ((x + (deltas_size - diff)) %% deltas_size < deltas_size)%N by rewrite ltn_mod Hgt0.
+      rewrite Hlt_inner.
+      have Hlt_outer : (((x + (deltas_size - diff)) %% deltas_size + diff) %% deltas_size < deltas_size)%N by rewrite ltn_mod Hgt0.
+      rewrite Hlt_outer.
+      rewrite modnDml.
+      have -> : (x + (deltas_size - diff) + diff = x + ((deltas_size - diff) + diff))%N by rewrite addnA.
+      have -> : ((deltas_size - diff) + diff = deltas_size)%N by rewrite subnK // ltnW.
+      rewrite modnDr.
+      by rewrite modn_small // ltn_ord. }
+    exact: (Bijective H1 H2).
+  Qed.
+
+  Definition f_v_ker (diff : 'I_deltas_size) (k : 'I_deltas_size) : 'I_deltas_size :=
+    insubd k ((k + diff) %% deltas_size)%N.
+
+  Lemma f_v_ker_bij : forall diff, bijective (f_v_ker diff).
+  Proof.
+    move=> diff.
+    have Hgt0 : (0 < deltas_size)%N by rewrite /deltas_size !expn_gt0.
+    pose f_inv (k : 'I_deltas_size) : 'I_deltas_size :=
+      insubd k ((k + (deltas_size - diff)) %% deltas_size)%N.
+    have H1 : cancel (f_v_ker diff) f_inv.
+    { move=> x.
+      have Hlt : (diff < deltas_size)%N by exact: ltn_ord.
+      apply/val_inj.
+      rewrite /f_inv /f_v_ker !val_insubd.
+      have Hlt_inner : ((x + diff) %% deltas_size < deltas_size)%N by rewrite ltn_mod Hgt0.
+      rewrite Hlt_inner.
+      have Hlt_outer : (((x + diff) %% deltas_size + (deltas_size - diff)) %% deltas_size < deltas_size)%N by rewrite ltn_mod Hgt0.
+      rewrite Hlt_outer.
+      rewrite modnDml.
+      have -> : (x + diff + (deltas_size - diff) = x + (diff + (deltas_size - diff)))%N by rewrite addnA.
+      have -> : (diff + (deltas_size - diff) = deltas_size)%N by rewrite addnC subnK // ltnW.
+      rewrite modnDr.
+      by rewrite modn_small // ltn_ord. }
+    have H2 : cancel f_inv (f_v_ker diff).
+    { move=> x.
+      have Hlt : (diff < deltas_size)%N by exact: ltn_ord.
+      apply/val_inj.
+      rewrite /f_inv /f_v_ker !val_insubd.
+      have Hlt_inner : ((x + (deltas_size - diff)) %% deltas_size < deltas_size)%N by rewrite ltn_mod Hgt0.
+      rewrite Hlt_inner.
+      have Hlt_outer : (((x + (deltas_size - diff)) %% deltas_size + diff) %% deltas_size < deltas_size)%N by rewrite ltn_mod Hgt0.
+      rewrite Hlt_outer.
+      rewrite modnDml.
+      have -> : (x + (deltas_size - diff) + diff = x + ((deltas_size - diff) + diff))%N by rewrite addnA.
+      have -> : ((deltas_size - diff) + diff = deltas_size)%N by rewrite subnK // ltnW.
+      rewrite modnDr.
+      by rewrite modn_small // ltn_ord. }
+    exact: (Bijective H1 H2).
+  Qed.
+
+  Lemma hqctiny_u_eq : forall (pk1 : PointSeqCt) (t_fin : 'I_('C(n, we) ^ 3)) (k_u_val : 'I_(2^n)),
+    let r1 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 0))) in
+    let r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 1))) in
+    let h_poly := combine_poly (interpolate_n (unpack_points pk1)) in
+    let h_rq := fin_to_rq (poly_to_fin n h_poly) in
+    let p_u := ((r1 : {poly F2}) + (h_rq : {poly F2}) * (r2 : {poly F2})) in
+    valid_pk_b (unpack_points pk1) ->
+    exists (diff : 'I_deltas_size),
+      forall (k_u_ker_val : 'I_deltas_size),
+        point_seq_add
+          (eval_pts_n (split_poly r1 nblocks))
+          (point_seq_add
+             (point_seq_mul (unpack_points pk1) (eval_pts_n (split_poly r2 nblocks)))
+             (point_seq_add
+                (point_seq_mul (eval_pts_n (split_poly (fin_to_poly n k_u_val) nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                (eval_pts_n (ker_chain (fin_to_deltas k_u_ker_val))))) =
+        point_seq_add
+          (eval_pts_n (split_poly (fin_to_poly n (rq_to_fin (r1 + h_rq * r2))) nblocks))
+          (point_seq_add
+             (point_seq_mul (eval_pts_n (split_poly (fin_to_poly n (f_u p_u k_u_val)) nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+             (eval_pts_n (ker_chain (fin_to_deltas (f_u_ker diff k_u_ker_val))))).
+  Proof. Admitted.
+
+  Lemma hqctiny_v_eq : forall (pk2 : PointSeqCt) (msg : Message_t) (t_fin : 'I_('C(n, we) ^ 3)) (k_v_val : 'I_(2^n)),
+    let r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 1))) in
+    let e := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 2))) in
+    let s_poly := combine_poly (interpolate_n (unpack_points pk2)) in
+    let s_rq := fin_to_rq (poly_to_fin n s_poly) in
+    let m_poly := P.encode msg in
+    let p_v := ((m_poly : {poly F2}) + (s_rq : {poly F2}) * (r2 : {poly F2}) + (e : {poly F2})) in
+    valid_pk_b (unpack_points pk2) ->
+    exists (diff : 'I_deltas_size),
+      forall (k_v_ker_val : 'I_deltas_size) (t_val : 'I_(2^(n-n1n2))),
+        point_seq_add (eval_pts_n (split_poly (P.encode msg) nblocks))
+          (point_seq_add
+             (point_seq_mul (unpack_points pk2) (eval_pts_n (split_poly r2 nblocks)))
+             (point_seq_add
+                (eval_pts_n (split_poly e nblocks))
+                (point_seq_add
+                   (point_seq_add
+                      (point_seq_mul (eval_pts_n (split_poly (fin_to_poly n k_v_val) nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                      (eval_pts_n (ker_chain (fin_to_deltas k_v_ker_val))))
+                   (eval_pts_n (split_poly ('X^n1n2 * fin_to_poly (n - n1n2) t_val) nblocks))))) =
+        point_seq_add
+          (eval_pts_n (split_poly (fin_to_poly n (rq_to_fin (HQC_Sec.truncate (m_poly + s_rq * r2 + e)))) nblocks))
+          (point_seq_add
+             (point_seq_add
+                (point_seq_mul (eval_pts_n (split_poly (fin_to_poly n (f_v p_v k_v_val)) nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                (eval_pts_n (ker_chain (fin_to_deltas (f_v_ker diff k_v_ker_val)))))
+             (eval_pts_n (split_poly ('X^n1n2 * fin_to_poly (n - n1n2) (f_t p_v t_val)) nblocks))).
+  Proof. Admitted.
+
   (** Main theorem *)
   Theorem hqctiny_indistinguishable :
     hqctiny_encrypt ≈₀ (Sim ∘ HQC_Sec.hqc_encrypt)%pack.
@@ -622,6 +776,16 @@ Module HQCTiny (P : HQCTinyParams).
       Unshelve. 3: exact (f_v p_v).
       { apply: f_v_bij. }
       intro k_v_val. simpl.
+      have [diff_u Hdiff_u] := hqctiny_u_eq pk1 t_fin k_u_val Hpk1.
+      eapply r_uniform_bij.
+      Unshelve. 3: exact (f_u_ker diff_u).
+      { apply: f_u_ker_bij. }
+      intro k_u_ker_val. simpl.
+      have [diff_v Hdiff_v] := hqctiny_v_eq pk2 msg t_fin k_v_val Hpk2.
+      eapply r_uniform_bij.
+      Unshelve. 3: exact (f_v_ker diff_v).
+      { apply: f_v_ker_bij. }
+      intro k_v_ker_val. simpl.
       eapply r_uniform_bij.
       Unshelve. 3: exact (f_t p_v).
       { apply: f_t_bij. }
@@ -631,37 +795,13 @@ Module HQCTiny (P : HQCTinyParams).
       f_equal.
       (* --- u component --- *)
       { f_equal.
-        have Hsz_pts1 : size (unpack_points pk1) = npoints.
-        { rewrite /unpack_points /points_tuple_to_seq. exact: size_tuple. }
-        rewrite -{1}(eval_interpolate_id (unpack_points pk1) Hsz_pts1).
-        rewrite -!eval_points_mul -!eval_points_add.
-        f_equal.
-        move: Hpk1; rewrite /valid_pk_b => /andP [/andP [Hsz_ip Hacsb] Hsz_cp].
-        have Hacs_ip : all_coeffs_small (interpolate_n (unpack_points pk1))
-          by apply/all_coeffs_smallbP.
-        have Hsplit_eq : split_poly h_poly nblocks =
-                         interpolate_n (unpack_points pk1)
-          by apply: split_poly_combine_poly.
-        rewrite -Hsplit_eq.
-        have Hsz_h_poly : (size h_poly <= nblocks * W)%N.
-        { rewrite /h_poly.
-          have H_n_bound : (n <= nblocks * W)%N.
-          { move: nblocks_bound => Hnb.
-            apply: (leq_trans _ Hnb).
-            exact: leq_addr. }
-          exact: (leq_trans Hsz_cp H_n_bound). }
-        rewrite (combine_poly_split h_poly nblocks Hsz_h_poly).
-        rewrite fin_to_poly_rq_to_fin.
-        admit. }
+        exact: Hdiff_u. }
       (* --- v component --- *)
       { f_equal.
-        have Hsz_pts2 : size (unpack_points pk2) = npoints.
-        { rewrite /unpack_points /points_tuple_to_seq. exact: size_tuple. }
-        rewrite -{1}(eval_interpolate_id (unpack_points pk2) Hsz_pts2).
-        admit. } }
+        exact: Hdiff_v. } }
     { (* false branch *)
       simplify_linking.
       apply: r_fail. }
-  Admitted.
+  Qed.
 
 End HQCTiny.
