@@ -1638,19 +1638,20 @@ Module SplitCombine (S : SplitParams).
               by case: (in_qpoly gen (d0 * 'X^W) == 0).
             - rewrite size_Cmul // size_polyX.
               by case: (in_qpoly gen (d0 * 'X^W) == 0). }
-          have Hsz_x_gt_2 : (2 < size x)%N by rewrite Hsz.
-          apply/eqP.
-          rewrite eqn_leq.
-          apply/andP; split.
-          - apply: leq_trans (size_polyD x (- ker_elem d0)).
-            rewrite size_polyN.
-            by rewrite geq_max leqnn.
-          - apply: contraTneq Hsz_x_gt_2 => Hlt.
-            rewrite -Hsz.
-            apply: leq_trans Hsz_ke.
-            apply: leq_trans (size_polyD _ _) _.
-            rewrite Hlt ltnS.
-            by rewrite geq_max leqnn orbT. }
+          apply/eqP; rewrite eqn_leq; apply/andP; split.
+          - apply: (leq_trans (size_polyD _ _)).
+            rewrite size_polyN geq_max Hsz leqnn andTb.
+            by rewrite -Hsz; exact: leq_trans Hsz_ke (ltnW Hsz3).
+          - have Hsize_x : (size x <=
+                maxn (size (x - ker_elem d0)%R) (size (ker_elem d0)))%N.
+            { have H := @size_polyD K (x - ker_elem d0)%R (ker_elem d0).
+              by rewrite subrK in H. }
+            rewrite leq_max in Hsize_x.
+            case/orP: Hsize_x => H.
+            + rewrite -Hsz; exact: H.
+            + exfalso.
+              have Hle := leq_trans H Hsz_ke.
+              by rewrite ltnNge Hle in Hsz3. }
         have Hsz_z : (size z = n)%N.
         { have Hz_ne0 : z != 0.
           { apply/negP; move/eqP => Hz.
