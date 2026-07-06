@@ -1528,7 +1528,8 @@ Module SplitCombine (S : SplitParams).
   Lemma combine_poly_ker_decompose (x : {poly K}) :
     combine_poly x = 0 ->
     exists (deltas : seq polyF2),
-      x = ker_chain deltas /\ (size deltas <= size x)%N.
+      x = ker_chain deltas /\
+      size deltas = if (size x <= 1)%N then size x else (size x).-1.
   Proof.
     move=> Hc0.
     move Hsz: (size x) => n.
@@ -1541,7 +1542,9 @@ Module SplitCombine (S : SplitParams).
         have [delta Hker] := combine_poly_ker_char x Hc0 Hsz_le2.
         exists [:: delta]; split.
         * by rewrite /ker_chain /= mul0r addr0 Hker.
-        * by [].
+        * rewrite Hsz in Hsz3; rewrite /=.
+          clear IH Hsz x Hc0 Hsz_le2 delta Hker.
+          case: n Hsz3 => [|[|n']] //=.
       + have Hlow0 := combine_poly_ker_coeff0_low x Hc0.
         set p0 := (x`_0 : polyF2).
         have Htake0 : take_poly W p0 = 0.
@@ -1651,7 +1654,14 @@ Module SplitCombine (S : SplitParams).
         - rewrite /ker_chain -/ker_chain /=.
           rewrite -Hrec (mulrC z) -Hy_eq /y.
           by rewrite addrC subrK.
-        - by rewrite /= ltnS.
+        - rewrite /= Hrec_sz.
+          have Hn2 : (2 <= n)%N.
+          { rewrite -ltnS. move: Hsz3; rewrite Hsz. exact. }
+          have Hn0f : (n < 1)%N = false := leq_gtF (ltnW Hn2).
+          rewrite Hn0f.
+          have Hn1f : (n <= 1)%N = false := ltn_geF Hn2.
+          rewrite Hn1f /=.
+          exact: prednK (ltn_trans (ltn0Sn 0) Hn2).
   Qed.
 
 End SplitCombine.
