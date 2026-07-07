@@ -51,13 +51,13 @@ Module Type HQCTinyParams.
 
   (** Number of K[z] blocks — must fit the ciphertext polynomials *)
   Parameter nblocks : nat.
-  Parameter nblocks_bound : (2 * n <= nblocks * W)%N.
+  Parameter nblocks_bound : (n < nblocks * W)%N.
 
   (** Number of evaluation points *)
   Parameter npoints : nat.
   Parameter npoints_gt0 : (0 < npoints)%N.
   Parameter npoints_le_card : (npoints <= (2 ^ d))%N.
-  Parameter nblocks2_le_npoints : (2 * nblocks <= npoints)%N.
+  Parameter nblocks2_le_npoints : ((2 * nblocks).-1 <= npoints)%N.
 End HQCTinyParams.
 
 Module HQCTiny (P : HQCTinyParams).
@@ -934,7 +934,7 @@ Module HQCTiny (P : HQCTinyParams).
     { rewrite /h_poly.
       by rewrite split_poly_combine_poly. }
     have H_test : forall (p q : {poly K}), eval_points npoints (p + q) = point_seq_add (eval_points npoints p) (eval_points npoints q) by move=> p q; exact: eval_points_add.
-    have Hn_le : (n <= nblocks * W)%N by apply: (leq_trans _ nblocks_bound); rewrite mulnC muln2 -addnn; exact: leq_addr.
+    have Hn_le : (n <= nblocks * W)%N by exact: (ltnW nblocks_bound).
     pose P_diff :=
       split_poly (fin_to_poly n (rq_to_fin (r1 + h_rq * r2))) nblocks +
       split_poly (fin_to_poly n (f_u p_u k_u_val)) nblocks * split_poly Ring.gen nblocks +
@@ -950,11 +950,7 @@ Module HQCTiny (P : HQCTinyParams).
       have H_sz_f3 : (size (fin_to_poly n k_u_val) <= nblocks * W)%N.
       { apply: leq_trans Hn_le. rewrite /fin_to_poly. exact: size_polyF2_of_nat. }
       have H_sz_gen : (size Ring.gen <= nblocks * W)%N.
-      { rewrite Ring.size_gen.
-        change P.RingP.n with n.
-        apply: (leq_trans _ nblocks_bound).
-        rewrite mulnC muln2 -addnn -{1}(add0n n) ltn_add2r.
-        apply: (ltn_trans _ n_gt1). done. }
+      { rewrite Ring.size_gen. change P.RingP.n with n. exact: nblocks_bound. }
       have H_sz_r1 : (size r1 <= nblocks * W)%N.
       { apply: (leq_trans _ Hn_le). exact: size_Rq_val. }
       have H_sz_r2 : (size r2 <= nblocks * W)%N.
@@ -1131,7 +1127,7 @@ Module HQCTiny (P : HQCTinyParams).
         point_seq_add (eval_points npoints p) (eval_points npoints q)
       by move=> p q; exact: eval_points_add.
     have Hn_le : (n <= nblocks * W)%N
-      by apply: (leq_trans _ nblocks_bound); rewrite mulnC muln2 -addnn; exact: leq_addr.
+      by exact: (ltnW nblocks_bound).
     pose q_trunc := (drop_poly n1n2 (p_v %% Ring.gen) : {poly F2}).
     have Hsz_q_trunc : (size q_trunc <= n - n1n2)%N.
     { rewrite /q_trunc size_drop_poly. apply: leq_sub2r.
@@ -1154,10 +1150,7 @@ Module HQCTiny (P : HQCTinyParams).
       have H_sz_f3 : (size (fin_to_poly n k_v_val) <= nblocks * W)%N
         by (apply: leq_trans Hn_le; rewrite /fin_to_poly; exact: size_polyF2_of_nat).
       have H_sz_gen : (size Ring.gen <= nblocks * W)%N
-        by (rewrite Ring.size_gen; change P.RingP.n with n;
-          apply: (leq_trans _ nblocks_bound);
-          rewrite mulnC muln2 -addnn -{1}(add0n n) ltn_add2r;
-          apply: (ltn_trans _ n_gt1); done).
+        by (rewrite Ring.size_gen; change P.RingP.n with n; exact: nblocks_bound).
       have H_sz_m_poly : (size (m_poly : {poly F2}) <= nblocks * W)%N
         by (apply: (leq_trans _ Hn_le); exact: size_Rq_val).
       have H_sz_r2 : (size (r2 : {poly F2}) <= nblocks * W)%N
@@ -1472,3 +1465,150 @@ Module HQCTiny (P : HQCTinyParams).
   Qed.
 
 End HQCTiny.
+
+Open Scope ring_scope.
+
+Definition d_val : nat := 9009%N.
+Definition gen_K_val : {poly 'F_2} := GRing.add (GRing.add 'X^9009 'X^29) 1%:P.
+
+Lemma gen_K_monic_aux : gen_K_val \is monic.
+Proof.
+  rewrite monicE.
+  have H1 : (size (1%:P : {poly 'F_2}) < size (GRing.add 'X^9009 'X^29 : {poly 'F_2}))%N.
+  - rewrite size_polyDl.
+    + rewrite !size_polyXn. by [].
+    + rewrite size_polyC size_polyXn. by [].
+  - rewrite (lead_coefDl H1).
+    have H2 : (size ('X^29 : {poly 'F_2}) < size ('X^9009 : {poly 'F_2}))%N.
+    + rewrite !size_polyXn. by [].
+    + rewrite (lead_coefDl H2).
+      rewrite lead_coefXn. by [].
+Qed.
+
+Lemma size_gen_K_aux : size gen_K_val = d_val.+1.
+Proof.
+  rewrite /gen_K_val /d_val.
+  have H1 : (size (1%:P : {poly 'F_2}) < size (GRing.add 'X^9009 'X^29 : {poly 'F_2}))%N.
+  - rewrite size_polyDl.
+    + rewrite !size_polyXn. by [].
+    + rewrite size_polyC size_polyXn. by [].
+  - rewrite (size_polyDl H1).
+    have H2 : (size ('X^29 : {poly 'F_2}) < size ('X^9009 : {poly 'F_2}))%N.
+    + rewrite !size_polyXn. by [].
+    + rewrite (size_polyDl H2).
+      rewrite size_polyXn. by [].
+Qed.
+
+Module HQCTiny1Params <: HQCTinyParams.
+  Include HQC1.
+
+  Definition d : nat := d_val.
+  Definition gen_K : {poly 'F_2} := gen_K_val.
+
+  Lemma gen_K_monic : gen_K \is monic.
+  Proof. exact: gen_K_monic_aux. Qed.
+
+  Lemma size_gen_K : size gen_K = d.+1.
+  Proof. exact: size_gen_K_aux. Qed.
+
+  Lemma gen_K_irreducible : irreducible_poly gen_K.
+  Proof.
+    Admitted.
+
+  Definition W : nat := 4505%N.
+  Lemma W_gt0 : (0 < W)%N. Proof. done. Qed.
+  Lemma W_le_d : (W <= d)%N. Proof. done. Qed.
+  Lemma W2_lt_d : ((2 * W).-1 <= d)%N. Proof. done. Qed.
+  Lemma d_le_W2 : (d <= 2 * W)%N. Proof. done. Qed.
+  Lemma W_lt_n : (W < n)%N. Proof. done. Qed.
+
+  Definition nblocks : nat := 4%N.
+  Lemma nblocks_bound : (n < nblocks * W)%N. Proof. done. Qed.
+
+  Definition npoints : nat := 7%N.
+  Lemma npoints_gt0 : (0 < npoints)%N. Proof. done. Qed.
+  Lemma npoints_le_card : (npoints <= (2 ^ d))%N.
+  Proof.
+    have H1 : (7 <= 2 ^ 3)%N by [].
+    have H2 : (2 ^ 3 <= 2 ^ 9009)%N.
+    { rewrite leq_exp2l //. }
+    exact: (leq_trans H1 H2).
+  Qed.
+  Lemma nblocks2_le_npoints : ((2 * nblocks).-1 <= npoints)%N. Proof. done. Qed.
+End HQCTiny1Params.
+
+Module HQCTiny3Params <: HQCTinyParams.
+  Include HQC3.
+
+  Definition d : nat := d_val.
+  Definition gen_K : {poly 'F_2} := gen_K_val.
+
+  Lemma gen_K_monic : gen_K \is monic.
+  Proof. exact: gen_K_monic_aux. Qed.
+
+  Lemma size_gen_K : size gen_K = d.+1.
+  Proof. exact: size_gen_K_aux. Qed.
+
+  Lemma gen_K_irreducible : irreducible_poly gen_K.
+  Proof.
+    Admitted.
+
+  Definition W : nat := 4505%N.
+  Lemma W_gt0 : (0 < W)%N. Proof. done. Qed.
+  Lemma W_le_d : (W <= d)%N. Proof. done. Qed.
+  Lemma W2_lt_d : ((2 * W).-1 <= d)%N. Proof. done. Qed.
+  Lemma d_le_W2 : (d <= 2 * W)%N. Proof. done. Qed.
+  Lemma W_lt_n : (W < n)%N. Proof. done. Qed.
+
+  Definition nblocks : nat := 8%N.
+  Lemma nblocks_bound : (n < nblocks * W)%N. Proof. done. Qed.
+
+  Definition npoints : nat := 15%N.
+  Lemma npoints_gt0 : (0 < npoints)%N. Proof. done. Qed.
+  Lemma npoints_le_card : (npoints <= (2 ^ d))%N.
+  Proof.
+    have H1 : (15 <= 2 ^ 4)%N by [].
+    have H2 : (2 ^ 4 <= 2 ^ 9009)%N.
+    { rewrite leq_exp2l //. }
+    exact: (leq_trans H1 H2).
+  Qed.
+  Lemma nblocks2_le_npoints : ((2 * nblocks).-1 <= npoints)%N. Proof. done. Qed.
+End HQCTiny3Params.
+
+Module HQCTiny5Params <: HQCTinyParams.
+  Include HQC5.
+
+  Definition d : nat := d_val.
+  Definition gen_K : {poly 'F_2} := gen_K_val.
+
+  Lemma gen_K_monic : gen_K \is monic.
+  Proof. exact: gen_K_monic_aux. Qed.
+
+  Lemma size_gen_K : size gen_K = d.+1.
+  Proof. exact: size_gen_K_aux. Qed.
+
+  Lemma gen_K_irreducible : irreducible_poly gen_K.
+  Proof.
+    Admitted.
+
+  Definition W : nat := 4505%N.
+  Lemma W_gt0 : (0 < W)%N. Proof. done. Qed.
+  Lemma W_le_d : (W <= d)%N. Proof. done. Qed.
+  Lemma W2_lt_d : ((2 * W).-1 <= d)%N. Proof. done. Qed.
+  Lemma d_le_W2 : (d <= 2 * W)%N. Proof. done. Qed.
+  Lemma W_lt_n : (W < n)%N. Proof. done. Qed.
+
+  Definition nblocks : nat := 13%N.
+  Lemma nblocks_bound : (n < nblocks * W)%N. Proof. done. Qed.
+
+  Definition npoints : nat := 25%N.
+  Lemma npoints_gt0 : (0 < npoints)%N. Proof. done. Qed.
+  Lemma npoints_le_card : (npoints <= (2 ^ d))%N.
+  Proof.
+    have H1 : (25 <= 2 ^ 5)%N by [].
+    have H2 : (2 ^ 5 <= 2 ^ 9009)%N.
+    { rewrite leq_exp2l //. }
+    exact: (leq_trans H1 H2).
+  Qed.
+  Lemma nblocks2_le_npoints : ((2 * nblocks).-1 <= npoints)%N. Proof. done. Qed.
+End HQCTiny5Params.
