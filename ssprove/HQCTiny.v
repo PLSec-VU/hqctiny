@@ -1240,7 +1240,35 @@ Module HQCTiny (P : HQCTinyParams).
         0 P.n) (mk_monic Ring.gen)]/(s_rq : {poly F2}).
       rewrite H_s_rq_eq.
       rewrite -/p_s.
-      admit. }
+      have H_veq_ps : p_s + fin_to_poly n k_v_val * Ring.gen +
+          'X^n1n2 * q_trunc =
+        fin_to_poly n (rq_to_fin (truncate (in_qpoly Ring.gen p_s))) +
+        fin_to_poly n (f_v p_s k_v_val) * Ring.gen
+        by rewrite /p_s H_veq'.
+      rewrite -H_veq_ps.
+      apply/polyP => j; rewrite !coefD !coef0.
+      have char2_F2 : forall (x : F2), x + x = 0.
+      { move=> x. rewrite -[x + _]/(x *+ 2) -mulr_natr.
+        have Hpchar : 2 \in [pchar 'F_2]
+          by exact: pchar_Fp 2 PointFieldHelpers.prime2.
+        by rewrite (pcharf0 Hpchar) mulr0. }
+      rewrite -!addrA.
+      rewrite [('X^n1n2 * q_trunc)`_j +
+          (('X^n1n2 * q_trunc)`_j + _)]addrA char2_F2 add0r.
+      rewrite [(fin_to_poly n k_v_val * Ring.gen)`_j +
+          (m_poly`_j + _)]addrCA.
+      rewrite [e`_j + (m_poly`_j + _)]addrCA.
+      rewrite [(s_poly * r2)`_j + (m_poly`_j + _)]addrCA.
+      rewrite [m_poly`_j + (m_poly`_j + _)]addrA char2_F2 add0r.
+      rewrite [(fin_to_poly n k_v_val * Ring.gen)`_j +
+          ((s_poly * r2)`_j + _)]addrCA.
+      rewrite [e`_j + ((s_poly * r2)`_j + _)]addrCA.
+      rewrite [(s_poly * r2)`_j +
+          ((s_poly * r2)`_j + _)]addrA char2_F2 add0r.
+      rewrite [(fin_to_poly n k_v_val * Ring.gen)`_j +
+          (e`_j + _)]addrCA.
+      rewrite [e`_j + (e`_j + _)]addrA char2_F2 add0r.
+      exact: char2_F2. }
     have Hsz_Pdiff : (size P_diff <= 2 * nblocks)%N.
     { rewrite /P_diff.
       apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
