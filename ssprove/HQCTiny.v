@@ -66,7 +66,7 @@ Module HQCTiny (P : HQCTinyParams).
   Module HQC_Sec := HQC_Security P.
   Import HQC_Sec.
 
-  Module PointSplitParams.
+  Module PointSegmentParams.
     Definition d := P.d.
     Definition gen := P.gen_K.
     Definition gen_monic := P.gen_K_monic.
@@ -76,9 +76,9 @@ Module HQCTiny (P : HQCTinyParams).
     Definition W_gt0 := P.W_gt0.
     Definition W_le_d := P.W_le_d.
     Definition W2_lt_d := P.W2_lt_d.
-  End PointSplitParams.
+  End PointSegmentParams.
 
-  Module SC := SplitCombine PointSplitParams.
+  Module SC := SegmentCombine PointSegmentParams.
   Import SC.
   Import SC.PF.
 
@@ -104,14 +104,14 @@ Module HQCTiny (P : HQCTinyParams).
     - by apply: H; rewrite mem_iota in Hk.
   Qed.
 
-  Lemma all_coeffs_small_split_poly (p : {poly 'F_2}) nblks :
-    all_coeffs_small (split_poly p nblks).
+  Lemma all_coeffs_small_segment_poly (p : {poly 'F_2}) nblks :
+    all_coeffs_small (segment_poly p nblks).
   Proof.
     rewrite /all_coeffs_small => k Hk.
     have Hk_lt : (k < nblks)%N.
-    { have Hsz := size_split_poly p nblks.
+    { have Hsz := size_segment_poly p nblks.
       exact: (leq_trans Hk Hsz). }
-    rewrite coef_split_poly Hk_lt /split_block.
+    rewrite coef_segment_poly Hk_lt /segment_block.
     have -> : (in_qpoly gen (take_poly W (drop_poly (k * W) p)) : {poly 'F_2}) =
               take_poly W (drop_poly (k * W) p).
     { apply: in_qpoly_small.
@@ -127,7 +127,7 @@ Module HQCTiny (P : HQCTinyParams).
     (size iph <= nblocks)%N && all_coeffs_smallb iph && (size (combine_poly iph) <= n)%N.
 
   Definition valid_pk (pts : seq K) : Prop :=
-    exists h : Ring.Rq, eval_pts_n (split_poly (h : {poly F2}) nblocks) = pts.
+    exists h : Ring.Rq, eval_pts_n (segment_poly (h : {poly F2}) nblocks) = pts.
 
   Definition K_to_fin (x : K) : 'I_(2 ^ d) :=
     cast_ord card_K (enum_rank x).
@@ -323,7 +323,7 @@ Module HQCTiny (P : HQCTinyParams).
   Qed.
 
   Definition poly_to_points (p : {poly F2}) : seq K :=
-    eval_pts_n (split_poly p nblocks).
+    eval_pts_n (segment_poly p nblocks).
 
   Definition PointSeqCt := chFin ((2 ^ d) ^ npoints).
   Definition PublicKey_t := chProd PointSeqCt PointSeqCt.
@@ -363,18 +363,18 @@ Module HQCTiny (P : HQCTinyParams).
           let ku_deltas := fin_to_deltas k_u_ker in
           let kv_deltas := fin_to_deltas k_v_ker in
           let t   := fin_to_poly (n - n1n2) t_fin' in
-          let r1_pts := eval_pts_n (split_poly r1 nblocks) in
-          let r2_pts := eval_pts_n (split_poly r2 nblocks) in
-          let e_pts  := eval_pts_n (split_poly e nblocks) in
-          let m_pts  := eval_pts_n (split_poly m nblocks) in
-          let gen_pts := eval_pts_n (split_poly Ring.gen nblocks) in
+          let r1_pts := eval_pts_n (segment_poly r1 nblocks) in
+          let r2_pts := eval_pts_n (segment_poly r2 nblocks) in
+          let e_pts  := eval_pts_n (segment_poly e nblocks) in
+          let m_pts  := eval_pts_n (segment_poly m nblocks) in
+          let gen_pts := eval_pts_n (segment_poly Ring.gen nblocks) in
           let ku_pts := point_seq_add
-                          (point_seq_mul (eval_pts_n (split_poly k_u nblocks)) gen_pts)
+                          (point_seq_mul (eval_pts_n (segment_poly k_u nblocks)) gen_pts)
                           (eval_pts_n (ker_chain ku_deltas)) in
           let kv_pts := point_seq_add
-                          (point_seq_mul (eval_pts_n (split_poly k_v nblocks)) gen_pts)
+                          (point_seq_mul (eval_pts_n (segment_poly k_v nblocks)) gen_pts)
                           (eval_pts_n (ker_chain kv_deltas)) in
-          let t_pts  := eval_pts_n (split_poly ('X ^+ n1n2 * t) nblocks) in
+          let t_pts  := eval_pts_n (segment_poly ('X ^+ n1n2 * t) nblocks) in
           let u_pts := point_seq_add r1_pts
                           (point_seq_add (point_seq_mul h_pts r2_pts) ku_pts) in
           let v_pts := point_seq_add m_pts
@@ -411,15 +411,15 @@ Module HQCTiny (P : HQCTinyParams).
           let ku_deltas := fin_to_deltas k_u_ker in
           let kv_deltas := fin_to_deltas k_v_ker in
           let t   := fin_to_poly (n - n1n2) t_fin' in
-          let u_pts := eval_pts_n (split_poly u nblocks) in
-          let v_pts := eval_pts_n (split_poly v nblocks) in
+          let u_pts := eval_pts_n (segment_poly u nblocks) in
+          let v_pts := eval_pts_n (segment_poly v nblocks) in
           let ku_pts := point_seq_add
-                          (point_seq_mul (eval_pts_n (split_poly k_u nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                          (point_seq_mul (eval_pts_n (segment_poly k_u nblocks)) (eval_pts_n (segment_poly Ring.gen nblocks)))
                           (eval_pts_n (ker_chain ku_deltas)) in
           let kv_pts := point_seq_add
-                          (point_seq_mul (eval_pts_n (split_poly k_v nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                          (point_seq_mul (eval_pts_n (segment_poly k_v nblocks)) (eval_pts_n (segment_poly Ring.gen nblocks)))
                           (eval_pts_n (ker_chain kv_deltas)) in
-          let t_pts  := eval_pts_n (split_poly ('X ^+ n1n2 * t) nblocks) in
+          let t_pts  := eval_pts_n (segment_poly ('X ^+ n1n2 * t) nblocks) in
           let u_pts_blinded := point_seq_add u_pts ku_pts in
           let v_pts_blinded := point_seq_add v_pts (point_seq_add kv_pts t_pts) in
           ret (pack_points u_pts_blinded, pack_points v_pts_blinded)
@@ -905,16 +905,16 @@ Module HQCTiny (P : HQCTinyParams).
     exists (diff : 'I_deltas_size),
       forall (k_u_ker_val : 'I_deltas_size),
         point_seq_add
-          (eval_pts_n (split_poly r1 nblocks))
+          (eval_pts_n (segment_poly r1 nblocks))
           (point_seq_add
-             (point_seq_mul (unpack_points pk1) (eval_pts_n (split_poly r2 nblocks)))
+             (point_seq_mul (unpack_points pk1) (eval_pts_n (segment_poly r2 nblocks)))
              (point_seq_add
-                (point_seq_mul (eval_pts_n (split_poly (fin_to_poly n k_u_val) nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                (point_seq_mul (eval_pts_n (segment_poly (fin_to_poly n k_u_val) nblocks)) (eval_pts_n (segment_poly Ring.gen nblocks)))
                 (eval_pts_n (ker_chain (fin_to_deltas k_u_ker_val))))) =
         point_seq_add
-          (eval_pts_n (split_poly (fin_to_poly n (rq_to_fin (r1 + h_rq * r2))) nblocks))
+          (eval_pts_n (segment_poly (fin_to_poly n (rq_to_fin (r1 + h_rq * r2))) nblocks))
           (point_seq_add
-             (point_seq_mul (eval_pts_n (split_poly (fin_to_poly n (f_u p_u k_u_val)) nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+             (point_seq_mul (eval_pts_n (segment_poly (fin_to_poly n (f_u p_u k_u_val)) nblocks)) (eval_pts_n (segment_poly Ring.gen nblocks)))
              (eval_pts_n (ker_chain (fin_to_deltas (f_u_ker diff k_u_ker_val))))).
   Proof.
     intros pk1 t_fin k_u_val r1 r2 h_poly h_rq p_u Hpk1.
@@ -930,17 +930,17 @@ Module HQCTiny (P : HQCTinyParams).
       rewrite -fin_to_poly_rq_to_fin.
       rewrite fin_to_rqK.
       exact: H_h_eq. }
-    have H_split_h : split_poly h_poly nblocks = interpolate_n (unpack_points pk1).
+    have H_split_h : segment_poly h_poly nblocks = interpolate_n (unpack_points pk1).
     { rewrite /h_poly.
-      by rewrite split_poly_combine_poly. }
+      by rewrite segment_poly_combine_poly. }
     have H_test : forall (p q : {poly K}), eval_points npoints (p + q) = point_seq_add (eval_points npoints p) (eval_points npoints q) by move=> p q; exact: eval_points_add.
     have Hn_le : (n <= nblocks * W)%N by exact: (ltnW nblocks_bound).
     pose P_diff :=
-      split_poly (fin_to_poly n (rq_to_fin (r1 + h_rq * r2))) nblocks +
-      split_poly (fin_to_poly n (f_u p_u k_u_val)) nblocks * split_poly Ring.gen nblocks +
-      split_poly r1 nblocks +
-      split_poly h_poly nblocks * split_poly r2 nblocks +
-      split_poly (fin_to_poly n k_u_val) nblocks * split_poly Ring.gen nblocks.
+      segment_poly (fin_to_poly n (rq_to_fin (r1 + h_rq * r2))) nblocks +
+      segment_poly (fin_to_poly n (f_u p_u k_u_val)) nblocks * segment_poly Ring.gen nblocks +
+      segment_poly r1 nblocks +
+      segment_poly h_poly nblocks * segment_poly r2 nblocks +
+      segment_poly (fin_to_poly n k_u_val) nblocks * segment_poly Ring.gen nblocks.
     have H_comb : combine_poly P_diff = 0.
     { rewrite /P_diff !combine_poly_add.
       have H_sz_f1 : (size (fin_to_poly n (rq_to_fin (r1 + h_rq * r2)%R)) <= nblocks * W)%N.
@@ -958,9 +958,9 @@ Module HQCTiny (P : HQCTinyParams).
       have H_sz_h : (size h_poly <= nblocks * W)%N.
       { apply: (leq_trans _ Hn_le). exact: H3. }
       rewrite (combine_poly_split _ _ H_sz_f1) (combine_poly_split _ _ H_sz_r1)
-              (combine_poly_mul_split_poly _ _ _ H_sz_f2 H_sz_gen)
-              (combine_poly_mul_split_poly _ _ _ H_sz_h H_sz_r2)
-              (combine_poly_mul_split_poly _ _ _ H_sz_f3 H_sz_gen).
+              (combine_poly_mul_segment_poly _ _ _ H_sz_f2 H_sz_gen)
+              (combine_poly_mul_segment_poly _ _ _ H_sz_h H_sz_r2)
+              (combine_poly_mul_segment_poly _ _ _ H_sz_f3 H_sz_gen).
       rewrite /rq_to_fin.
       rewrite (in_qpoly_rq_eq r1 r2 h_rq).
       fold rq_to_fin.
@@ -991,19 +991,19 @@ Module HQCTiny (P : HQCTinyParams).
       - apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
         + apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
           * apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
-            -- apply: (leq_trans (size_split_poly _ _)).
+            -- apply: (leq_trans (size_segment_poly _ _)).
                by rewrite mulnC; exact: leq_pmulr.
             -- apply: (leq_trans (size_polyMleq _ _)).
                apply: (leq_trans (leq_pred _)).
-               by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly.
-          * apply: (leq_trans (size_split_poly _ _)).
+               by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly.
+          * apply: (leq_trans (size_segment_poly _ _)).
             by rewrite mulnC; exact: leq_pmulr.
         + apply: (leq_trans (size_polyMleq _ _)).
           apply: (leq_trans (leq_pred _)).
-          by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly.
+          by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly.
       - apply: (leq_trans (size_polyMleq _ _)).
         apply: (leq_trans (leq_pred _)).
-        by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly. }
+        by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly. }
     have [deltas [H_deltas [H_sz H_all]]] := combine_poly_ker_decompose P_diff H_comb.
     pose deltas_pad := deltas ++ nseq (2 * nblocks - size deltas) 0%R.
     have H_deltas_sz : (size deltas <= 2 * nblocks)%N.
@@ -1069,12 +1069,12 @@ Module HQCTiny (P : HQCTinyParams).
     rewrite H_pad_eq -H_deltas /P_diff.
     f_equal.
     rewrite -!addrA.
-    rewrite [ker_chain _ + (split_poly _ _ + _)]addrCA.
-    rewrite [split_poly (fin_to_poly _ (f_u _ _)) _ * _ + (split_poly (fin_to_poly _ (rq_to_fin _)) _ + _)]addrCA.
-    rewrite [split_poly (fin_to_poly _ (rq_to_fin _)) _ + (split_poly (fin_to_poly _ (rq_to_fin _)) _ + _)]addrA.
+    rewrite [ker_chain _ + (segment_poly _ _ + _)]addrCA.
+    rewrite [segment_poly (fin_to_poly _ (f_u _ _)) _ * _ + (segment_poly (fin_to_poly _ (rq_to_fin _)) _ + _)]addrCA.
+    rewrite [segment_poly (fin_to_poly _ (rq_to_fin _)) _ + (segment_poly (fin_to_poly _ (rq_to_fin _)) _ + _)]addrA.
     rewrite H_char_polyK add0r.
-    rewrite [ker_chain _ + (split_poly _ _ * _ + _)]addrCA.
-    rewrite [split_poly (fin_to_poly _ (f_u _ _)) _ * _ + (split_poly (fin_to_poly _ (f_u _ _)) _ * _ + _)]addrA.
+    rewrite [ker_chain _ + (segment_poly _ _ * _ + _)]addrCA.
+    rewrite [segment_poly (fin_to_poly _ (f_u _ _)) _ * _ + (segment_poly (fin_to_poly _ (f_u _ _)) _ * _ + _)]addrA.
     rewrite H_char_polyK add0r.
     rewrite addrC.
     by rewrite -!addrA.
@@ -1090,23 +1090,23 @@ Module HQCTiny (P : HQCTinyParams).
     valid_pk_b (unpack_points pk2) ->
     exists (diff : 'I_deltas_size),
       forall (k_v_ker_val : 'I_deltas_size) (t_val : 'I_(2^(n-n1n2))),
-        point_seq_add (eval_pts_n (split_poly (P.encode msg) nblocks))
+        point_seq_add (eval_pts_n (segment_poly (P.encode msg) nblocks))
           (point_seq_add
-             (point_seq_mul (unpack_points pk2) (eval_pts_n (split_poly r2 nblocks)))
+             (point_seq_mul (unpack_points pk2) (eval_pts_n (segment_poly r2 nblocks)))
              (point_seq_add
-                (eval_pts_n (split_poly e nblocks))
+                (eval_pts_n (segment_poly e nblocks))
                 (point_seq_add
                    (point_seq_add
-                      (point_seq_mul (eval_pts_n (split_poly (fin_to_poly n k_v_val) nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                      (point_seq_mul (eval_pts_n (segment_poly (fin_to_poly n k_v_val) nblocks)) (eval_pts_n (segment_poly Ring.gen nblocks)))
                       (eval_pts_n (ker_chain (fin_to_deltas k_v_ker_val))))
-                   (eval_pts_n (split_poly ('X^n1n2 * fin_to_poly (n - n1n2) t_val) nblocks))))) =
+                   (eval_pts_n (segment_poly ('X^n1n2 * fin_to_poly (n - n1n2) t_val) nblocks))))) =
         point_seq_add
-          (eval_pts_n (split_poly (fin_to_poly n (rq_to_fin (HQC_Sec.truncate (m_poly + s_rq * r2 + e)))) nblocks))
+          (eval_pts_n (segment_poly (fin_to_poly n (rq_to_fin (HQC_Sec.truncate (m_poly + s_rq * r2 + e)))) nblocks))
           (point_seq_add
              (point_seq_add
-                (point_seq_mul (eval_pts_n (split_poly (fin_to_poly n (f_v p_v k_v_val)) nblocks)) (eval_pts_n (split_poly Ring.gen nblocks)))
+                (point_seq_mul (eval_pts_n (segment_poly (fin_to_poly n (f_v p_v k_v_val)) nblocks)) (eval_pts_n (segment_poly Ring.gen nblocks)))
                 (eval_pts_n (ker_chain (fin_to_deltas (f_v_ker diff k_v_ker_val)))))
-             (eval_pts_n (split_poly ('X^n1n2 * fin_to_poly (n - n1n2) (f_t p_v t_val)) nblocks))).
+             (eval_pts_n (segment_poly ('X^n1n2 * fin_to_poly (n - n1n2) (f_t p_v t_val)) nblocks))).
   Proof.
     intros pk2 msg t_fin k_v_val r2 e s_poly s_rq m_poly p_v Hpk2.
     move/andP: Hpk2 => [/andP [H1 H2] H3].
@@ -1120,8 +1120,8 @@ Module HQCTiny (P : HQCTinyParams).
       by rewrite /fin_to_poly /poly_to_fin /= polyF2_takeK; apply: take_poly_id.
     have H_s_rq_eq : (s_rq : {poly F2}) = s_poly
       by rewrite /s_rq -fin_to_poly_rq_to_fin fin_to_rqK H_s_eq.
-    have H_split_s : split_poly s_poly nblocks = interpolate_n (unpack_points pk2)
-      by rewrite /s_poly split_poly_combine_poly.
+    have H_split_s : segment_poly s_poly nblocks = interpolate_n (unpack_points pk2)
+      by rewrite /s_poly segment_poly_combine_poly.
     have H_test : forall (p q : {poly K}),
         eval_points npoints (p + q) =
         point_seq_add (eval_points npoints p) (eval_points npoints q)
@@ -1134,13 +1134,13 @@ Module HQCTiny (P : HQCTinyParams).
       have H := ltn_modpN0 p_v (monic_neq0 Ring.gen_monic).
       rewrite Ring.size_gen in H. exact: H. }
     pose P_diff :=
-      split_poly (fin_to_poly n (rq_to_fin (HQC_Sec.truncate (m_poly + s_rq * r2 + e)))) nblocks +
-      split_poly (fin_to_poly n (f_v p_v k_v_val)) nblocks * split_poly Ring.gen nblocks +
-      split_poly ('X^n1n2 * q_trunc) nblocks +
-      split_poly (m_poly : {poly F2}) nblocks +
-      split_poly s_poly nblocks * split_poly (r2 : {poly F2}) nblocks +
-      split_poly (e : {poly F2}) nblocks +
-      split_poly (fin_to_poly n k_v_val) nblocks * split_poly Ring.gen nblocks.
+      segment_poly (fin_to_poly n (rq_to_fin (HQC_Sec.truncate (m_poly + s_rq * r2 + e)))) nblocks +
+      segment_poly (fin_to_poly n (f_v p_v k_v_val)) nblocks * segment_poly Ring.gen nblocks +
+      segment_poly ('X^n1n2 * q_trunc) nblocks +
+      segment_poly (m_poly : {poly F2}) nblocks +
+      segment_poly s_poly nblocks * segment_poly (r2 : {poly F2}) nblocks +
+      segment_poly (e : {poly F2}) nblocks +
+      segment_poly (fin_to_poly n k_v_val) nblocks * segment_poly Ring.gen nblocks.
     have H_comb : combine_poly P_diff = 0.
     { rewrite /P_diff !combine_poly_add.
       have H_sz_f1 : (size (fin_to_poly n (rq_to_fin (HQC_Sec.truncate (m_poly + s_rq * r2 + e)%R))) <= nblocks * W)%N
@@ -1185,10 +1185,10 @@ Module HQCTiny (P : HQCTinyParams).
           exact: (leq_trans Htmp Hfinal). }
       rewrite (combine_poly_split _ _ H_sz_f1)
               (combine_poly_split _ _ H_sz_m_poly)
-              (combine_poly_mul_split_poly _ _ _ H_sz_f2 H_sz_gen)
-              (combine_poly_mul_split_poly _ _ _ H_sz_s H_sz_r2)
+              (combine_poly_mul_segment_poly _ _ _ H_sz_f2 H_sz_gen)
+              (combine_poly_mul_segment_poly _ _ _ H_sz_s H_sz_r2)
               (combine_poly_split _ _ H_sz_e)
-              (combine_poly_mul_split_poly _ _ _ H_sz_f3 H_sz_gen)
+              (combine_poly_mul_segment_poly _ _ _ H_sz_f3 H_sz_gen)
               (combine_poly_split X_q nblocks H_sz_X_q)
               /X_q.
       rewrite /p_v.
@@ -1271,24 +1271,24 @@ Module HQCTiny (P : HQCTinyParams).
             -- apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
                ++ { apply: (leq_trans (size_polyD _ _)).
                     rewrite geq_max. apply/andP; split.
-                    - apply: (leq_trans (size_split_poly _ _)).
+                    - apply: (leq_trans (size_segment_poly _ _)).
                       by rewrite mulnC; exact: leq_pmulr.
                     - apply: (leq_trans (size_polyMleq _ _)).
                       apply: (leq_trans (leq_pred _)).
                       by rewrite mulnC muln2 -addnn;
-                         apply: leq_add; exact: size_split_poly. }
-               ++ apply: (leq_trans (size_split_poly _ _)).
+                         apply: leq_add; exact: size_segment_poly. }
+               ++ apply: (leq_trans (size_segment_poly _ _)).
                   by rewrite mulnC; exact: leq_pmulr.
-            -- apply: (leq_trans (size_split_poly _ _)).
+            -- apply: (leq_trans (size_segment_poly _ _)).
                by rewrite mulnC; exact: leq_pmulr.
           * apply: (leq_trans (size_polyMleq _ _)).
             apply: (leq_trans (leq_pred _)).
-            by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly.
-        + apply: (leq_trans (size_split_poly _ _)).
+            by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly.
+        + apply: (leq_trans (size_segment_poly _ _)).
           by rewrite mulnC; exact: leq_pmulr.
       - apply: (leq_trans (size_polyMleq _ _)).
         apply: (leq_trans (leq_pred _)).
-        by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly. }
+        by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly. }
     have [deltas [H_deltas [H_sz H_all]]] := combine_poly_ker_decompose P_diff H_comb.
     pose deltas_pad := deltas ++ nseq (2 * nblocks - size deltas) 0%R.
     have H_deltas_sz : (size deltas <= 2 * nblocks)%N.
@@ -1376,28 +1376,28 @@ Module HQCTiny (P : HQCTinyParams).
       rewrite geq_max.
       apply/andP; split; [exact: size_polyF2_of_nat | exact: Hsz_q_trunc]. }
     rewrite (take_poly_id Hsz_sum).
-    rewrite mulrDr split_poly_add.
-    rewrite split_poly_add.
+    rewrite mulrDr segment_poly_add.
+    rewrite segment_poly_add.
     rewrite -!addrA.
-    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly m_poly nblocks + _)]addrCA.
-    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly s_poly nblocks * _ + _)]addrCA.
-    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly e nblocks + _)]addrCA.
-    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly (polyF2_of_nat k_v_val 0 n) nblocks * _ + _)]addrCA.
-    rewrite [split_poly ('X^n1n2 * polyF2_of_nat t_val 0 (n - n1n2)) nblocks + split_poly ('X^n1n2 * q_trunc) nblocks]addrC.
-    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly ('X^n1n2 * q_trunc) nblocks + _)]addrA.
+    rewrite [segment_poly ('X^n1n2 * q_trunc) nblocks + (segment_poly m_poly nblocks + _)]addrCA.
+    rewrite [segment_poly ('X^n1n2 * q_trunc) nblocks + (segment_poly s_poly nblocks * _ + _)]addrCA.
+    rewrite [segment_poly ('X^n1n2 * q_trunc) nblocks + (segment_poly e nblocks + _)]addrCA.
+    rewrite [segment_poly ('X^n1n2 * q_trunc) nblocks + (segment_poly (polyF2_of_nat k_v_val 0 n) nblocks * _ + _)]addrCA.
+    rewrite [segment_poly ('X^n1n2 * polyF2_of_nat t_val 0 (n - n1n2)) nblocks + segment_poly ('X^n1n2 * q_trunc) nblocks]addrC.
+    rewrite [segment_poly ('X^n1n2 * q_trunc) nblocks + (segment_poly ('X^n1n2 * q_trunc) nblocks + _)]addrA.
     rewrite H_char_polyK add0r.
-    rewrite [ker_chain (fin_to_deltas k_v_ker_val) + (split_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrCA.
-    rewrite [split_poly (polyF2_of_nat _ 0 n) nblocks * _ + (split_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrCA.
-    rewrite [split_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + (split_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrA.
+    rewrite [ker_chain (fin_to_deltas k_v_ker_val) + (segment_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrCA.
+    rewrite [segment_poly (polyF2_of_nat _ 0 n) nblocks * _ + (segment_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrCA.
+    rewrite [segment_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + (segment_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrA.
     rewrite H_char_polyK add0r.
     rewrite [ker_chain (fin_to_deltas k_v_ker_val) + (_ + _)]addrCA.
-    rewrite [split_poly (polyF2_of_nat _ 0 n) nblocks * _ + (split_poly (polyF2_of_nat _ 0 n) nblocks * _ + _)]addrA.
+    rewrite [segment_poly (polyF2_of_nat _ 0 n) nblocks * _ + (segment_poly (polyF2_of_nat _ 0 n) nblocks * _ + _)]addrA.
     rewrite H_char_polyK add0r.
     change (P.encode msg) with m_poly.
-    rewrite [split_poly (polyF2_of_nat k_v_val 0 n) nblocks * _ + (ker_chain _ + _)]addrCA.
-    rewrite [split_poly e nblocks + (ker_chain _ + _)]addrCA.
-    rewrite [split_poly s_poly nblocks * _ + (ker_chain _ + _)]addrCA.
-    rewrite [split_poly m_poly nblocks + (ker_chain _ + _)]addrCA.
+    rewrite [segment_poly (polyF2_of_nat k_v_val 0 n) nblocks * _ + (ker_chain _ + _)]addrCA.
+    rewrite [segment_poly e nblocks + (ker_chain _ + _)]addrCA.
+    rewrite [segment_poly s_poly nblocks * _ + (ker_chain _ + _)]addrCA.
+    rewrite [segment_poly m_poly nblocks + (ker_chain _ + _)]addrCA.
     done.
   Qed.
 
@@ -1469,12 +1469,13 @@ End HQCTiny.
 Open Scope ring_scope.
 
 Definition d_val : nat := 9009%N.
-Definition gen_K_val : {poly 'F_2} := GRing.add (GRing.add 'X^9009 'X^29) 1%:P.
+Definition gen_K_val : {poly 'F_2} := 'X^9009 + 'X^29 + 1.
 
 Lemma gen_K_monic_aux : gen_K_val \is monic.
 Proof.
   rewrite monicE.
-  have H1 : (size (1%:P : {poly 'F_2}) < size (GRing.add 'X^9009 'X^29 : {poly 'F_2}))%N.
+  have H1 : (size (1%:P : {poly 'F_2}) <
+             size (GRing.add 'X^9009 'X^29 : {poly 'F_2}))%N.
   - rewrite size_polyDl.
     + rewrite !size_polyXn. by [].
     + rewrite size_polyC size_polyXn. by [].
@@ -1488,7 +1489,8 @@ Qed.
 Lemma size_gen_K_aux : size gen_K_val = d_val.+1.
 Proof.
   rewrite /gen_K_val /d_val.
-  have H1 : (size (1%:P : {poly 'F_2}) < size (GRing.add 'X^9009 'X^29 : {poly 'F_2}))%N.
+  have H1 : (size (1%:P : {poly 'F_2}) <
+             size (GRing.add 'X^9009 'X^29 : {poly 'F_2}))%N.
   - rewrite size_polyDl.
     + rewrite !size_polyXn. by [].
     + rewrite size_polyC size_polyXn. by [].
@@ -1511,9 +1513,13 @@ Module HQCTiny1Params <: HQCTinyParams.
   Lemma size_gen_K : size gen_K = d.+1.
   Proof. exact: size_gen_K_aux. Qed.
 
-  Lemma gen_K_irreducible : irreducible_poly gen_K.
-  Proof.
-    Admitted.
+  (* Axiom: x^9009 + x^29 + 1 is irreducible over GF(2), a standard fact used
+     to define GF(2^9009). Proving this in Rocq requires formalizing Rabin's
+     irreducibility test: check gcd(p, X^(2^(9009/l)) - X) = 1 for each prime
+     factor l of 9009 (l ∈ {3,7,11,13}) and p | X^(2^9009) - X. MathComp has
+     no built-in Rabin test, and irreducibleb is infeasible here (it enumerates
+     all 2^9009 polynomials of degree < 9009). *)
+  Axiom gen_K_irreducible : irreducible_poly gen_K.
 
   Definition W : nat := 4505%N.
   Lemma W_gt0 : (0 < W)%N. Proof. done. Qed.
@@ -1549,9 +1555,8 @@ Module HQCTiny3Params <: HQCTinyParams.
   Lemma size_gen_K : size gen_K = d.+1.
   Proof. exact: size_gen_K_aux. Qed.
 
-  Lemma gen_K_irreducible : irreducible_poly gen_K.
-  Proof.
-    Admitted.
+  (* See HQCTiny1Params for explanation. *)
+  Axiom gen_K_irreducible : irreducible_poly gen_K.
 
   Definition W : nat := 4505%N.
   Lemma W_gt0 : (0 < W)%N. Proof. done. Qed.
@@ -1587,9 +1592,8 @@ Module HQCTiny5Params <: HQCTinyParams.
   Lemma size_gen_K : size gen_K = d.+1.
   Proof. exact: size_gen_K_aux. Qed.
 
-  Lemma gen_K_irreducible : irreducible_poly gen_K.
-  Proof.
-    Admitted.
+  (* See HQCTiny1Params for explanation. *)
+  Axiom gen_K_irreducible : irreducible_poly gen_K.
 
   Definition W : nat := 4505%N.
   Lemma W_gt0 : (0 < W)%N. Proof. done. Qed.

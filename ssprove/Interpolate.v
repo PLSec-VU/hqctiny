@@ -1,12 +1,3 @@
-(******************************************************************************)
-(*  Polynomial Split / Combine over Binary Extension Fields                   *)
-(*                                                                            *)
-(*  Given K = F2[X]/(gen) of degree d and a window size W,                    *)
-(*  split packs W consecutive coefficients of a polynomial over F2            *)
-(*  into a single K element; combine reconstructs the polynomial.             *)
-(*                                                                            *)
-(*  Proven: combine (split p nblocks) = p when size p ≤ nblocks * W.          *)
-(******************************************************************************)
 
 Set Warnings "-notation-overridden,-ambiguous-paths".
 From mathcomp Require Import all_ssreflect all_algebra.
@@ -43,30 +34,30 @@ Module PointField (P : PointFieldParams).
   Proof. rewrite card_qfpoly (card_Fp PointFieldHelpers.prime2) P.size_gen. done. Qed.
 End PointField.
 
-Module Type SplitParams.
+Module Type SegmentParams.
   Include PointFieldParams.
   Parameter W : nat.
   Parameter W_gt0 : (0 < W)%N.
   Parameter W_le_d : (W <= d)%N.
   Parameter W2_lt_d : ((2 * W).-1 <= d)%N.
-End SplitParams.
+End SegmentParams.
 
-Module SplitCombine (S : SplitParams).
+Module SegmentCombine (S : SegmentParams).
   Include S.
   Module PF := PointField S. Import PF.
   Definition F2 := 'F_2.
   Local Notation polyF2 := {poly F2}.
 
-  Definition split_block (p : polyF2) (k : nat) : K :=
+  Definition segment_block (p : polyF2) (k : nat) : K :=
     in_qpoly gen (take_poly W (drop_poly (k * W) p)).
 
-  Fixpoint split_blocks (p : polyF2) (nblocks : nat) : list K :=
+  Fixpoint segment_blocks (p : polyF2) (nblocks : nat) : list K :=
     match nblocks with
     | 0 => [::]
-    | nb.+1 => split_blocks p nb ++ [:: split_block p nb]
+    | nb.+1 => segment_blocks p nb ++ [:: segment_block p nb]
     end.
 
-  Lemma size_split_blocks p nblocks : size (split_blocks p nblocks) = nblocks.
+  Lemma size_segment_blocks p nblocks : size (segment_blocks p nblocks) = nblocks.
   Proof. elim: nblocks => [|nb IH] //=. by rewrite size_cat IH /= addn1. Qed.
 
   Fixpoint combine_aux (blocks : list K) (pos : nat) : polyF2 :=
@@ -130,11 +121,11 @@ Module SplitCombine (S : SplitParams).
     - done.
   Qed.
 
-  Lemma split_block_take k m (p : polyF2) :
+  Lemma segment_block_take k m (p : polyF2) :
     (k * W + W <= m)%N ->
-    split_block p k = split_block (take_poly m p) k.
+    segment_block p k = segment_block (take_poly m p) k.
   Proof.
-    move=> Hbound. rewrite /split_block.
+    move=> Hbound. rewrite /segment_block.
     congr (in_qpoly gen _).
     apply/polyP => i.
     rewrite !coef_take_poly !coef_drop_poly.
@@ -152,13 +143,13 @@ Module SplitCombine (S : SplitParams).
 
   Lemma combine_split (p : polyF2) nblocks :
     (size p <= nblocks * W)%N ->
-    combine (split_blocks p nblocks) = p.
+    combine (segment_blocks p nblocks) = p.
   Proof.
     move=> Hsz.
     rewrite /combine.
     elim: nblocks p Hsz => [|nb IH] p Hsz.
     { rewrite mul0n in Hsz. move: Hsz; rewrite size_poly_leq0 => /eqP ->.
-      by rewrite /split_blocks. }
+      by rewrite /segment_blocks. }
     rewrite mulSn in Hsz.
     have Hsz_low : (size (take_poly (nb * W) p) <= nb * W)%N.
     { exact: size_take_poly. }
@@ -167,13 +158,13 @@ Module SplitCombine (S : SplitParams).
       rewrite /= in Hsz.
       rewrite addnC.
       exact: Hsz. }
-    rewrite /split_blocks /= -/split_blocks.
-    rewrite combine_aux_cat size_split_blocks add0n.
-    have -> : split_blocks p nb = split_blocks (take_poly (nb * W) p) nb.
+    rewrite /segment_blocks /= -/segment_blocks.
+    rewrite combine_aux_cat size_segment_blocks add0n.
+    have -> : segment_blocks p nb = segment_blocks (take_poly (nb * W) p) nb.
     { clear IH Hsz Hsz_low Hsz_hi.
       move: p; elim: nb => [|k IHk] p //=.
       - rewrite IHk.
-        have -> : split_blocks (take_poly (k * W) p) k = split_blocks (take_poly (k.+1 * W) p) k.
+        have -> : segment_blocks (take_poly (k * W) p) k = segment_blocks (take_poly (k.+1 * W) p) k.
         { rewrite (IHk (take_poly (k.+1 * W) p)).
           rewrite take_poly_take.
           { clear IHk.
@@ -183,10 +174,10 @@ Module SplitCombine (S : SplitParams).
           done. }
         congr (_ ++ _).
         f_equal.
-        apply: (split_block_take k (k.+1 * W) p).
+        apply: (segment_block_take k (k.+1 * W) p).
         by rewrite mulSn addnC. }
     rewrite (IH (take_poly (nb * W) p) Hsz_low).
-    rewrite /split_block /=.
+    rewrite /segment_block /=.
     have sz_mk_gen : size (mk_monic gen) = d.+1.
     { rewrite /mk_monic size_gen gen_monic.
       have Hgt1 : (1 < d.+1)%N.
@@ -207,45 +198,45 @@ Module SplitCombine (S : SplitParams).
     apply: poly_take_drop.
   Qed.
 
-  Definition split_poly (p : polyF2) (nblocks : nat) : {poly K} :=
-    \poly_(k < nblocks) (split_block p k).
+  Definition segment_poly (p : polyF2) (nblocks : nat) : {poly K} :=
+    \poly_(k < nblocks) (segment_block p k).
 
-  Lemma size_split_poly p nblocks : (size (split_poly p nblocks) <= nblocks)%N.
+  Lemma size_segment_poly p nblocks : (size (segment_poly p nblocks) <= nblocks)%N.
   Proof. exact: size_poly. Qed.
 
-  Lemma coef_split_poly p nblocks k :
-    (split_poly p nblocks)`_k = if (k < nblocks)%N then split_block p k else 0.
+  Lemma coef_segment_poly p nblocks k :
+    (segment_poly p nblocks)`_k = if (k < nblocks)%N then segment_block p k else 0.
   Proof. by rewrite coef_poly. Qed.
 
-  Lemma split_block_add (p q : polyF2) k :
-    split_block (p + q) k = split_block p k + split_block q k.
+  Lemma segment_block_add (p q : polyF2) k :
+    segment_block (p + q) k = segment_block p k + segment_block q k.
   Proof.
-    rewrite /split_block drop_polyD take_polyD in_qpolyD.
+    rewrite /segment_block drop_polyD take_polyD in_qpolyD.
     done.
   Qed.
 
-  Lemma split_blocks_add (p q : polyF2) nblocks :
-    split_blocks (p + q) nblocks =
-    map (fun '(a, b) => a + b) (zip (split_blocks p nblocks) (split_blocks q nblocks)).
+  Lemma segment_blocks_add (p q : polyF2) nblocks :
+    segment_blocks (p + q) nblocks =
+    map (fun '(a, b) => a + b) (zip (segment_blocks p nblocks) (segment_blocks q nblocks)).
   Proof.
     elim: nblocks => [|nb IH].
     - done.
-    - rewrite /split_blocks /= -/split_blocks.
-      rewrite IH split_block_add.
-      rewrite (@zip_cat K K (split_blocks p nb) [:: split_block p nb]
-                                (split_blocks q nb) [:: split_block q nb]).
-      { rewrite !size_split_blocks. done. }
+    - rewrite /segment_blocks /= -/segment_blocks.
+      rewrite IH segment_block_add.
+      rewrite (@zip_cat K K (segment_blocks p nb) [:: segment_block p nb]
+                                (segment_blocks q nb) [:: segment_block q nb]).
+      { rewrite !size_segment_blocks. done. }
       by rewrite map_cat.
   Qed.
 
-  Lemma split_poly_add (p q : polyF2) nblocks :
-    split_poly (p + q) nblocks = split_poly p nblocks + split_poly q nblocks.
+  Lemma segment_poly_add (p q : polyF2) nblocks :
+    segment_poly (p + q) nblocks = segment_poly p nblocks + segment_poly q nblocks.
   Proof.
-    rewrite /split_poly.
+    rewrite /segment_poly.
     apply/polyP => k.
     rewrite coefD !coef_poly.
     case: ifP => Hk.
-    - by rewrite split_block_add.
+    - by rewrite segment_block_add.
     - by rewrite add0r.
   Qed.
 
@@ -335,32 +326,32 @@ Module SplitCombine (S : SplitParams).
       done.
   Qed.
 
-  Lemma split_blocksE p nblocks :
-    split_blocks p nblocks = [seq split_block p i | i <- iota 0 nblocks].
+  Lemma segment_blocksE p nblocks :
+    segment_blocks p nblocks = [seq segment_block p i | i <- iota 0 nblocks].
   Proof.
     elim: nblocks => [|nb IH] //=.
     rewrite IH map_iota_snoc. done.
   Qed.
 
-  Lemma coef_list_split_poly p nblocks :
-    coef_list (split_poly p nblocks) nblocks = split_blocks p nblocks.
+  Lemma coef_list_segment_poly p nblocks :
+    coef_list (segment_poly p nblocks) nblocks = segment_blocks p nblocks.
   Proof.
-    rewrite /coef_list split_blocksE.
+    rewrite /coef_list segment_blocksE.
     apply/eq_in_map => i.
     rewrite mem_iota => /andP[_ Hi].
-    by rewrite coef_split_poly Hi.
+    by rewrite coef_segment_poly Hi.
   Qed.
 
   Lemma combine_poly_split (p : polyF2) nblocks :
     (size p <= nblocks * W)%N ->
-    combine_poly (split_poly p nblocks) = p.
+    combine_poly (segment_poly p nblocks) = p.
   Proof.
     move=> Hsz.
     rewrite /combine_poly /combine.
-    have Hsz_sp : (size (split_poly p nblocks) <= nblocks)%N.
-    { exact: size_split_poly. }
-    rewrite -(combine_aux_coef_list_pad (split_poly p nblocks) nblocks 0 Hsz_sp).
-    rewrite coef_list_split_poly.
+    have Hsz_sp : (size (segment_poly p nblocks) <= nblocks)%N.
+    { exact: size_segment_poly. }
+    rewrite -(combine_aux_coef_list_pad (segment_poly p nblocks) nblocks 0 Hsz_sp).
+    rewrite coef_list_segment_poly.
     apply: combine_split.
     exact: Hsz.
   Qed.
@@ -523,19 +514,19 @@ Module SplitCombine (S : SplitParams).
     by rewrite Hgt1 /= size_gen.
   Qed.
 
-  Lemma split_poly_combine_poly (q : {poly K}) nblocks :
+  Lemma segment_poly_combine_poly (q : {poly K}) nblocks :
     (size q <= nblocks)%N -> all_coeffs_small q ->
-    split_poly (combine_poly q) nblocks = q.
+    segment_poly (combine_poly q) nblocks = q.
   Proof.
     move=> Hsz Hacs.
     apply/polyP => k.
-    rewrite coef_split_poly.
+    rewrite coef_segment_poly.
     case: ifP => Hk; last first.
     { apply/esym/coefp_ge_size.
       have Hnk : (nblocks <= k)%N.
         by rewrite leqNgt Hk.
       exact: leq_trans Hsz Hnk. }
-    rewrite /split_block /combine_poly /combine.
+    rewrite /segment_block /combine_poly /combine.
     have Hcoef_small : forall i, (i < size (coef_list q (size q)))%N ->
       (size ((nth 0%R (coef_list q (size q)) i) : polyF2) <= W)%N.
     { rewrite size_coef_list => i Hi.
@@ -581,22 +572,22 @@ Module SplitCombine (S : SplitParams).
 
   Lemma combine_poly_split_combine (q : {poly K}) nblocks :
     (size q <= nblocks)%N -> all_coeffs_small q ->
-    combine_poly (split_poly (combine_poly q) nblocks) = combine_poly q.
+    combine_poly (segment_poly (combine_poly q) nblocks) = combine_poly q.
   Proof.
     move=> Hsz Hacs.
-    by rewrite (split_poly_combine_poly q nblocks Hsz Hacs).
+    by rewrite (segment_poly_combine_poly q nblocks Hsz Hacs).
   Qed.
 
-  Lemma combine_poly_mul_split_poly (p q : polyF2) nblocks :
+  Lemma combine_poly_mul_segment_poly (p q : polyF2) nblocks :
     (size p <= nblocks * W)%N -> (size q <= nblocks * W)%N ->
-    combine_poly (split_poly p nblocks * split_poly q nblocks) = p * q.
+    combine_poly (segment_poly p nblocks * segment_poly q nblocks) = p * q.
   Proof.
     move=> Hp Hq.
     pose block (a : polyF2) (i : nat) := take_poly W (drop_poly (i * W) a).
     have block_mulE : forall a b i j,
-      ((split_block a i) * (split_block b j) : polyF2) = block a i * block b j.
+      ((segment_block a i) * (segment_block b j) : polyF2) = block a i * block b j.
     { move=> a b i j.
-      rewrite /split_block /block.
+      rewrite /segment_block /block.
       rewrite -in_qpolyM.
       apply: in_qpoly_small.
       apply: leq_ltn_trans (size_polyMleq _ _) _.
@@ -609,8 +600,8 @@ Module SplitCombine (S : SplitParams).
       - rewrite size_mk_monic_gen.
         apply: leq_trans W2_lt_d _.
         by rewrite leqnn. }
-    set sp := split_poly p nblocks.
-    set sq := split_poly q nblocks.
+    set sp := segment_poly p nblocks.
+    set sq := segment_poly q nblocks.
     pose P_p : {poly {poly F2}} := \poly_(j < nblocks) block p j.
     pose P_q : {poly {poly F2}} := \poly_(j < nblocks) block q j.
 
@@ -642,7 +633,7 @@ Module SplitCombine (S : SplitParams).
       have -> : \sum_(i < size sp) (sp`_i : polyF2) * 'X^(i * W) =
                 \sum_(i < nblocks) (sp`_i : polyF2) * 'X^(i * W).
       { rewrite (big_ord_widen nblocks (fun i => (sp`_i : polyF2) * 'X^(i * W))).
-        - exact: size_split_poly.
+        - exact: size_segment_poly.
         - rewrite [LHS](big_mkcond _) [RHS](big_mkcond _).
           apply: eq_bigr => i _. case: (ltnP i (size sp)) => // Hge.
           have -> : sp`_i = 0 by apply: nth_default.
@@ -650,7 +641,7 @@ Module SplitCombine (S : SplitParams).
       rewrite /P_p horner_poly. apply: eq_bigr => i _.
       congr (_ * _).
       - have Hlt : (i < nblocks)%N by exact: ltn_ord.
-        rewrite coef_split_poly Hlt /split_block in_qpoly_small //.
+        rewrite coef_segment_poly Hlt /segment_block in_qpoly_small //.
         apply: (leq_ltn_trans (size_take_poly _ _)). rewrite size_mk_monic_gen.
         apply: (leq_trans _ W2_lt_d). move: W_gt0. case: W => // w _.
         by rewrite mul2n -addnn /= leq_addl.
@@ -664,7 +655,7 @@ Module SplitCombine (S : SplitParams).
       have -> : \sum_(i < size sq) (sq`_i : polyF2) * 'X^(i * W) =
                 \sum_(i < nblocks) (sq`_i : polyF2) * 'X^(i * W).
       { rewrite (big_ord_widen nblocks (fun i => (sq`_i : polyF2) * 'X^(i * W))).
-        - exact: size_split_poly.
+        - exact: size_segment_poly.
         - rewrite [LHS](big_mkcond _) [RHS](big_mkcond _).
           apply: eq_bigr => i _. case: (ltnP i (size sq)) => // Hge.
           have -> : sq`_i = 0 by apply: nth_default.
@@ -672,7 +663,7 @@ Module SplitCombine (S : SplitParams).
       rewrite /P_q horner_poly. apply: eq_bigr => i _.
       congr (_ * _).
       - have Hlt : (i < nblocks)%N by exact: ltn_ord.
-        rewrite coef_split_poly Hlt /split_block in_qpoly_small //.
+        rewrite coef_segment_poly Hlt /segment_block in_qpoly_small //.
         apply: (leq_ltn_trans (size_take_poly _ _)). rewrite size_mk_monic_gen.
         apply: (leq_trans _ W2_lt_d). move: W_gt0. case: W => // w _.
         by rewrite mul2n -addnn /= leq_addl.
@@ -685,7 +676,7 @@ Module SplitCombine (S : SplitParams).
       elim/big_rec2: _ => [|i y1 y2 _ Hrec].
       - by [].
       - rewrite poly_of_qpolyD Hrec. congr (_ + _).
-        rewrite /sp /sq !coef_split_poly.
+        rewrite /sp /sq !coef_segment_poly.
         case: ifP => [Hj | Hj]; case: ifP => [Hmj | Hmj].
         + by rewrite block_mulE.
         + have Hq_ge : (nblocks * W <= (m - i)%N * W)%N.
@@ -751,7 +742,7 @@ Module SplitCombine (S : SplitParams).
     have Hsz_bound : (size (sp * sq)%R <= nblocks + nblocks)%N.
     { apply: (leq_trans (size_polyMleq sp sq)).
       apply: (leq_trans (leq_pred _)).
-      by apply: leq_add; exact: size_split_poly. }
+      by apply: leq_add; exact: size_segment_poly. }
     have Hsz_P_bound : (size (P_p * P_q)%R <= nblocks + nblocks)%N.
     { apply: (leq_trans (size_polyMleq P_p P_q)).
       apply: (leq_trans (leq_pred _)).
@@ -783,35 +774,35 @@ Module SplitCombine (S : SplitParams).
 
     Theorem split_combine_ring_iso :
       (forall (p : polyF2), (size p <= nblocks * W)%N ->
-         combine_poly (split_poly p nblocks) = p)
+         combine_poly (segment_poly p nblocks) = p)
       /\
       (forall (q : {poly K}), (size q <= nblocks)%N -> all_coeffs_small q ->
-         split_poly (combine_poly q) nblocks = q)
+         segment_poly (combine_poly q) nblocks = q)
       /\
       (forall (p q : polyF2) (n : nat),
-         split_poly (p + q) n = split_poly p n + split_poly q n)
+         segment_poly (p + q) n = segment_poly p n + segment_poly q n)
       /\
       (forall (p q : {poly K}),
          combine_poly (p + q) = combine_poly p + combine_poly q)
       /\
       (forall (q : {poly K}), (size q <= nblocks)%N -> all_coeffs_small q ->
-         combine_poly (split_poly (combine_poly q) nblocks) = combine_poly q)
+         combine_poly (segment_poly (combine_poly q) nblocks) = combine_poly q)
       /\
       (forall (p q : polyF2),
          (size p <= nblocks * W)%N -> (size q <= nblocks * W)%N ->
-         combine_poly (split_poly p nblocks * split_poly q nblocks) = p * q).
+         combine_poly (segment_poly p nblocks * segment_poly q nblocks) = p * q).
     Proof.
       split.
       - move=> p H. exact: combine_poly_split.
       split.
-      - move=> q Hsz Hacs. exact: split_poly_combine_poly.
+      - move=> q Hsz Hacs. exact: segment_poly_combine_poly.
       split.
-      - exact: split_poly_add.
+      - exact: segment_poly_add.
       split.
       - exact: combine_poly_add.
       split.
       - move=> q Hsz Hacs. exact: combine_poly_split_combine.
-      - move=> p q Hp Hq. exact: combine_poly_mul_split_poly.
+      - move=> p q Hp Hq. exact: combine_poly_mul_segment_poly.
     Qed.
 
     Inductive local_ring_expr : bool -> Type :=
@@ -832,16 +823,16 @@ Module SplitCombine (S : SplitParams).
     Fixpoint evalKx (b : bool) (e : local_ring_expr b) : {poly K} :=
       match e in local_ring_expr label return {poly K} with
       | valF2 p _ => 
-          split_poly p nblocks
+          segment_poly p nblocks
       | multSplit e1 e2 => 
           (evalKx false e1) * (evalKx false e2)
       | addSplit l1 l2 e1 e2 => 
           (evalKx l1 e1) + (evalKx l2 e2)
       end.
 
-    (** Homomorphism: evalKx factors through split_poly on false-indexed expressions *)
-    Lemma evalKx_split_poly (e : local_ring_expr false) :
-      evalKx false e = split_poly (evalF2x false e) nblocks.
+    (** Homomorphism: evalKx factors through segment_poly on false-indexed expressions *)
+    Lemma evalKx_segment_poly (e : local_ring_expr false) :
+      evalKx false e = segment_poly (evalF2x false e) nblocks.
     Proof.
       dependent induction e.
       - (* valF2 *) done.
@@ -853,7 +844,7 @@ Module SplitCombine (S : SplitParams).
         specialize (IHe1 e1 (erefl false) (@JMeq_refl _ e1)).
         specialize (IHe2 e2 (erefl false) (@JMeq_refl _ e2)).
         rewrite IHe1 IHe2.
-        rewrite split_poly_add.
+        rewrite segment_poly_add.
         reflexivity.
     Qed.
 
@@ -882,8 +873,8 @@ Module SplitCombine (S : SplitParams).
       dependent induction e.
       - (* valF2 *) simpl. apply/combine_poly_split. exact: i.
       - (* multSplit *) simpl.
-        rewrite (evalKx_split_poly e1) (evalKx_split_poly e2).
-        apply: combine_poly_mul_split_poly.
+        rewrite (evalKx_segment_poly e1) (evalKx_segment_poly e2).
+        apply: combine_poly_mul_segment_poly.
         + exact: evalF2x_false_size.
         + exact: evalF2x_false_size.
       - (* addSplit *) simpl.
@@ -1669,4 +1660,4 @@ Module SplitCombine (S : SplitParams).
           + exact: Hrec_all.
   Qed.
 
-End SplitCombine.
+End SegmentCombine.
