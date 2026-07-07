@@ -1,6 +1,40 @@
-load("sagemath/hqctiny.sage")
+from math import ceil
 import json
 import binascii
+
+F2x.<x> = PolynomialRing(GF(2), 'x')
+
+# Parameters: d = 9009, modulus = x^9009 + x^29 + 1
+K.<a> = GF((2, 9009), name='a', modulus=x^9009 + x^29 + 1)
+W = 4505
+
+def split(poly) -> 'list[K]':
+    coeffs = poly.list()
+    blocks = ceil(len(coeffs) / W)
+    result = []
+    for k in range(blocks):
+        val = 0
+        for j in range(W):
+            idx = k * W + j
+            if idx < len(coeffs) and coeffs[idx]:
+                val |= (1 << j)
+        result.append(K.from_integer(val))
+    return result
+
+def combine(blocks: 'list[K]') -> 'F2x':
+    result = F2x(0)
+    x = F2x.gen()
+    for k, elem in enumerate(blocks):
+        if elem == 0:
+            continue
+        result += elem.polynomial().change_variable_name('x') * (x ^ (k * W))
+    return result
+
+def evaluate(k_poly: 'list[K]', val: 'K') -> 'K':
+    result = K(0)
+    for k, coeff in enumerate(k_poly):
+        result += coeff * (val ^ k)
+    return result
 
 def to_hex(elem):
     # K elements can be converted to integers using to_integer()
