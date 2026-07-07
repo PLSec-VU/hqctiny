@@ -14,6 +14,8 @@ pub struct AwaitingHandshake {
     pub request: HandshakeRequest,
     pub pk: Vec<u8>,
     pub sk: Vec<u8>,
+    pub tree: rs_merkle::MerkleTree<Blake3Algorithm>,
+    pub point_data: Vec<(u8, PointType, Gf2_9009)>,
 }
 
 pub struct CollectingPoints {
@@ -111,7 +113,7 @@ where
         let hash_ek_kem = *pk_params.hash_ek_kem();
 
         // Build Merkle tree to get the root hash
-        let (tree, _) = build_merkle_tree::<SCHEME>(&pk);
+        let (tree, point_data) = build_merkle_tree::<SCHEME>(&pk);
         let merkle_root = tree.root().expect("Merkle tree has leaves");
 
         let request = HandshakeRequest {
@@ -126,6 +128,8 @@ where
                 request: request.clone(),
                 pk,
                 sk,
+                tree,
+                point_data,
             },
             _phantom: std::marker::PhantomData,
         };
@@ -149,7 +153,8 @@ where
         Client<SCHEME, SStore, E, CollectingPoints>,
         Vec<PointRequest>,
     )> {
-        let (tree, point_data) = build_merkle_tree::<SCHEME>(&self.state.pk);
+        let tree = self.state.tree;
+        let point_data = self.state.point_data;
         let merkle_root = tree
             .root()
             .ok_or(Error::Other("Merkle tree root missing"))?;
