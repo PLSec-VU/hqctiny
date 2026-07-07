@@ -46,6 +46,7 @@ Module Type HQCTinyParams.
   Parameter W_gt0   : (0 < W)%N.
   Parameter W_le_d  : (W <= d)%N.
   Parameter W2_lt_d : ((2 * W).-1 <= d)%N.
+  Parameter d_le_W2 : (d <= 2 * W)%N.
   Parameter W_lt_n  : (W < n)%N.
 
   (** Number of K[z] blocks — must fit the ciphertext polynomials *)
@@ -1006,7 +1007,15 @@ Module HQCTiny (P : HQCTinyParams).
       - exact: H_nseq_zero.
       - by rewrite IH. }
     have H_pad_eq : ker_chain deltas_pad = ker_chain deltas by exact: H_pad_eq_gen.
-    have H_deltas_el : forall idx, (idx < size deltas)%N -> (size (nth 0%R deltas idx) <= W)%N by admit.
+    have H_deltas_el : forall idx, (idx < size deltas)%N -> (size (nth 0%R deltas idx) <= W)%N.
+    { move=> idx Hidx.
+      have /allP H_all' := H_all.
+      have H_in : nth 0%R deltas idx \in deltas by exact: mem_nth.
+      have H_sz_el' := H_all' (nth 0%R deltas idx) H_in.
+      have H_tmp : (size (nth 0%R deltas idx) + W <= 2 * W)%N by exact: leq_trans H_sz_el' d_le_W2.
+      rewrite mul2n in H_tmp.
+      rewrite -addnn in H_tmp.
+      by rewrite leq_add2r in H_tmp. }
     have H_pad_el : forall idx, (idx < 2 * nblocks)%N -> (size (nth 0%R deltas_pad idx) <= W)%N.
     { move=> idx Hidx.
       rewrite /deltas_pad nth_cat.
@@ -1055,7 +1064,7 @@ Module HQCTiny (P : HQCTinyParams).
     rewrite H_char_polyK add0r.
     rewrite addrC.
     by rewrite -!addrA.
-  Admitted.
+  Qed.
 
   Lemma hqctiny_v_eq : forall (pk2 : PointSeqCt) (msg : Message_t) (t_fin : 'I_('C(n, we) ^ 3)) (k_v_val : 'I_(2^n)),
     let r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 1))) in
