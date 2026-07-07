@@ -266,9 +266,6 @@ fn reduce(poly: &[u64], result: &mut Gf2_9009) {
 
     for wi in (141..len).rev() {
         let w = buf[wi];
-        if w == 0 {
-            continue;
-        }
         buf[wi] = 0;
 
         let target_idx = wi - 141;
@@ -284,13 +281,11 @@ fn reduce(poly: &[u64], result: &mut Gf2_9009) {
 
     // Finally, reduce the start_word (140)
     let w = buf[START_WORD];
-    if w > 0 {
-        let w_high = w >> START_BIT;
-        buf[START_WORD] = w & ((1u64 << START_BIT) - 1);
+    let w_high = w >> START_BIT;
+    buf[START_WORD] = w & ((1u64 << START_BIT) - 1);
 
-        // For off = 0 and off = 29:
-        buf[0] ^= w_high ^ (w_high << 29);
-    }
+    // For off = 0 and off = 29:
+    buf[0] ^= w_high ^ (w_high << 29);
 
     let copy_len = GF29009_NUM_U64.min(len);
     result.data.fill(0);
