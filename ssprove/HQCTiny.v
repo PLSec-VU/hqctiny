@@ -703,6 +703,24 @@ Module HQCTiny (P : HQCTinyParams).
     reflexivity.
   Qed.
 
+  Lemma in_qpoly_rq_eq3 (a b c d' : Ring.Rq) :
+    ((a + b * c + d') : {poly 'F_2})
+    = (in_qpoly Ring.gen ((a : {poly 'F_2}) + (b : {poly 'F_2})
+        * (c : {poly 'F_2}) + (d' : {poly 'F_2})) : {poly 'F_2}).
+  Proof.
+    apply/val_inj => /=.
+    set m := mk_monic Ring.gen.
+    have Hm_monic : m \is monic by rewrite /m; apply: monic_mk_monic.
+    have sz_lt_m : forall (x : Ring.Rq), (size (x : {poly 'F_2}) < size m)%N.
+    { move=> x. apply: (leq_ltn_trans (size_Rq_val x)).
+      rewrite /m Ring.size_mk_monic_gen. exact: ltnSn. }
+    rewrite -!(Pdiv.IdomainMonic.modpE (q := m) Hm_monic) //.
+    rewrite !modpD.
+    rewrite (modp_small (sz_lt_m a)).
+    rewrite (modp_small (sz_lt_m d')).
+    reflexivity.
+  Qed.
+
   Definition f_u_ker (diff : 'I_deltas_size) (k : 'I_deltas_size) : 'I_deltas_size :=
     let deltas_k := fin_to_deltas k in
     let deltas_diff := fin_to_deltas diff in
@@ -1195,11 +1213,34 @@ Module HQCTiny (P : HQCTinyParams).
         ((m_poly : {poly F2}) + s_poly * (r2 : {poly F2}) + (e : {poly F2}))
         t_val) = 0.
       { rewrite /f_t H_t_val_eq /q_trunc.
-        admit. }
+        have Hft0 : fin_to_poly (n - n1n2) (poly_to_fin (n - n1n2) 0) = 0.
+        { rewrite /fin_to_poly /poly_to_fin /=.
+          rewrite polyF2_takeK. apply: take_poly_id.
+          rewrite size_poly0. exact: leq0n. }
+        rewrite -H_s_rq_eq -/p_v -/q_trunc.
+        rewrite H_char2.
+        exact: Hft0. }
       have H_sz_pv_s : (size s_poly <= n)%N by exact: H3.
       have H_veq := v_eq (r2 : {poly F2}) (e : {poly F2}) s_poly
         (m_poly : {poly F2}) k_v_val t_val
         (size_Rq_val r2) (size_Rq_val e) H_sz_pv_s (size_Rq_val m_poly).
+      move: H_veq; rewrite /= => H_veq'.
+      rewrite H_t_val_eq in H_veq'.
+      rewrite H_f_t_zero in H_veq'.
+      rewrite mulr0 addr0 in H_veq'.
+      set p_s := ((m_poly : {poly F2}) + s_poly * (r2 : {poly F2})
+                 + (e : {poly F2}))%R.
+      have H_rq_eq : m_poly + s_rq * r2 + e
+        = in_qpoly Ring.gen p_s.
+      { apply/val_inj; rewrite /p_s.
+        have := in_qpoly_rq_eq3 m_poly s_rq r2 e.
+        admit. }
+      rewrite H_rq_eq.
+      rewrite -[Pdiv.CommonRing.rmodp (R:=fintype_ordinal__canonical__GRing_NzRing
+        (Zp_trunc (pdiv 2))) (polyF2_of_nat (nat_of_polyF2 s_poly 0 n)
+        0 P.n) (mk_monic Ring.gen)]/(s_rq : {poly F2}).
+      rewrite H_s_rq_eq.
+      rewrite -/p_s.
       admit. }
     have Hsz_Pdiff : (size P_diff <= 2 * nblocks)%N.
     { rewrite /P_diff.
