@@ -1276,14 +1276,23 @@ Module HQCTiny (P : HQCTinyParams).
         + apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
           * apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
             -- apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
-               ++ admit.
-               ++ admit.
+               ++ { apply: (leq_trans (size_polyD _ _)).
+                    rewrite geq_max. apply/andP; split.
+                    - apply: (leq_trans (size_split_poly _ _)).
+                      by rewrite mulnC; exact: leq_pmulr.
+                    - apply: (leq_trans (size_polyMleq _ _)).
+                      apply: (leq_trans (leq_pred _)).
+                      by rewrite mulnC muln2 -addnn;
+                         apply: leq_add; exact: size_split_poly. }
+               ++ apply: (leq_trans (size_split_poly _ _)).
+                  by rewrite mulnC; exact: leq_pmulr.
             -- apply: (leq_trans (size_split_poly _ _)).
                by rewrite mulnC; exact: leq_pmulr.
           * apply: (leq_trans (size_polyMleq _ _)).
             apply: (leq_trans (leq_pred _)).
             by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly.
-        + admit.
+        + apply: (leq_trans (size_split_poly _ _)).
+          by rewrite mulnC; exact: leq_pmulr.
       - apply: (leq_trans (size_polyMleq _ _)).
         apply: (leq_trans (leq_pred _)).
         by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly. }
