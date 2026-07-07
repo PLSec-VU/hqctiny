@@ -173,7 +173,7 @@ fn karatsuba_mul(a: &[u64], b: &[u64], out: &mut [u64; 512]) {
     a_padded[..a.len()].copy_from_slice(a);
     b_padded[..b.len()].copy_from_slice(b);
 
-    let mut scratch = [0u64; 256 * 4 * 10];
+    let mut scratch = [0u64; 1024];
     karatsuba_recursive(
         &a_padded[..padded],
         &b_padded[..padded],
@@ -200,18 +200,15 @@ fn karatsuba_recursive(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64
     let (a_lo, a_hi) = a.split_at(m);
     let (b_lo, b_hi) = b.split_at(m);
 
-    let (z0, scratch) = scratch.split_at_mut(n);
     let (z1, scratch) = scratch.split_at_mut(n);
-    let (z2, scratch) = scratch.split_at_mut(n);
     let (a_sum, scratch) = scratch.split_at_mut(m);
     let (b_sum, scratch) = scratch.split_at_mut(m);
 
-    z0.fill(0);
     z1.fill(0);
-    z2.fill(0);
 
-    karatsuba_recursive(a_lo, b_lo, z0, scratch);
-    karatsuba_recursive(a_hi, b_hi, z2, scratch);
+    let (out_lo, out_hi) = out.split_at_mut(n);
+    karatsuba_recursive(a_lo, b_lo, out_lo, scratch);
+    karatsuba_recursive(a_hi, b_hi, out_hi, scratch);
 
     for i in 0..m {
         a_sum[i] = a_lo[i] ^ a_hi[i];
@@ -221,13 +218,11 @@ fn karatsuba_recursive(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64
     karatsuba_recursive(a_sum, b_sum, z1, scratch);
 
     for i in 0..n {
-        out[i] ^= z0[i];
-        out[2 * m + i] ^= z2[i];
+        z1[i] ^= out[i] ^ out[n + i];
     }
 
     for i in 0..n {
-        let mid = z0[i] ^ z1[i] ^ z2[i];
-        out[m + i] ^= mid;
+        out[m + i] ^= z1[i];
     }
 }
 
