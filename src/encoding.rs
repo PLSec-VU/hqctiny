@@ -139,7 +139,7 @@ pub fn decode_handshake_response<T: HqcScheme>(data: &[u8]) -> Result<HandshakeR
 }
 
 pub fn public_eval_limbs<T: HqcScheme>() -> usize {
-    let w = 4492;
+    let w = crate::math::segmentation::W;
     let num_blocks = (T::VEC_N_SIZE_64 * 64).div_ceil(w).max(1);
     let max_bits = w + T::POINTS_NUM * (num_blocks - 1);
     max_bits.div_ceil(64)
@@ -380,10 +380,10 @@ mod tests {
         };
         let mut buf = [0u8; 2000];
         let enc = encode_point_request::<Hqc1>(&req, &mut buf).unwrap();
-        // limbs for index 1, Hqc1:
-        // W = 4492, num_blocks = (277 * 64).div_ceil(4492) = 4
-        // max_bits = 4492 + 1 * 3 = 4505
-        // limbs = 4505.div_ceil(64) = 71
+        // limbs for Hqc1:
+        // W = 4505, num_blocks = (277 * 64).div_ceil(4505) = 4
+        // max_bits = 4505 + 7 * 3 = 4526
+        // limbs = 4526.div_ceil(64) = 71
         // size = 1 + 88 (cookie) + 568 (eval) + 32 (merkle_root) + 4 (witness) = 693 bytes
         assert_eq!(enc.len(), 693);
         let dec = decode_point_request::<Hqc1>(enc).unwrap();

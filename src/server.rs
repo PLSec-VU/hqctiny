@@ -164,22 +164,25 @@ where
 
         let n = SCHEME::PARAM_N;
         let n_words = n.div_ceil(64);
-        let mut mask_poly = vec![0u64; n_words];
-        blinding::generate_quotient_mask(&theta, b"quotient mask", n, &mut mask_poly);
+        let num_deltas = blinding::num_kernel_deltas(n);
 
         let r2_blocks = split(r2_poly);
-        let e_blocks = split(e_poly);
-        let mask_blocks = split(&mask_poly);
 
         let power = req.point_index;
         let mut r2_xi = Gf2_9009::zero();
         evaluate_at_generator(&r2_blocks, power, &mut r2_xi);
 
-        let mut mask_xi = Gf2_9009::zero();
-        evaluate_at_generator(&mask_blocks, power, &mut mask_xi);
-
+        // The quotient masks and kernel deltas of u and v must be mutually
+        // independent (HQCTiny.v samples them separately); a shared mask
+        // would cancel in u XOR v and leak the message.
         let eval = match req.point_type {
             PointType::U => {
+                let mut mask_poly = vec![0u64; n_words];
+                blinding::generate_quotient_mask(&theta, b"quotient mask u", n, &mut mask_poly);
+                let mask_blocks = split(&mask_poly);
+                let mut mask_xi = Gf2_9009::zero();
+                evaluate_at_generator(&mask_blocks, power, &mut mask_xi);
+
                 let r1_blocks = split(r1_poly);
                 let mut r1_xi = Gf2_9009::zero();
                 evaluate_at_generator(&r1_blocks, power, &mut r1_xi);
@@ -195,9 +198,19 @@ where
                     req.point_index as usize,
                 );
                 u_xi.add(&term_mask);
+
+                let deltas =
+                    blinding::generate_kernel_deltas(&theta, b"kernel deltas u", num_deltas);
+                u_xi.add(&blinding::evaluate_ker_chain(&deltas, power as usize));
                 u_xi
             }
             PointType::V => {
+                let mut mask_poly = vec![0u64; n_words];
+                blinding::generate_quotient_mask(&theta, b"quotient mask v", n, &mut mask_poly);
+                let mask_blocks = split(&mask_poly);
+                let mut mask_xi = Gf2_9009::zero();
+                evaluate_at_generator(&mask_blocks, power, &mut mask_xi);
+
                 let mut k_encoded = vec![0u64; SCHEME::VEC_N_SIZE_64];
                 SCHEME::code_encode(&mut k_encoded, m);
 
@@ -205,6 +218,7 @@ where
                 let mut k_xi = Gf2_9009::zero();
                 evaluate_at_generator(&k_blocks, power, &mut k_xi);
 
+                let e_blocks = split(e_poly);
                 let mut e_xi = Gf2_9009::zero();
                 evaluate_at_generator(&e_blocks, power, &mut e_xi);
 
@@ -235,6 +249,10 @@ where
                     req.point_index as usize,
                 );
                 v_xi.add(&term_mask);
+
+                let deltas =
+                    blinding::generate_kernel_deltas(&theta, b"kernel deltas v", num_deltas);
+                v_xi.add(&blinding::evaluate_ker_chain(&deltas, power as usize));
                 v_xi
             }
         };

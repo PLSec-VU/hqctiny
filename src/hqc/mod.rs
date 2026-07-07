@@ -117,7 +117,14 @@ pub trait HqcScheme {
         evals: &[crate::math::gf2_9009::Gf2_9009],
     ) -> Vec<crate::math::gf2_9009::Gf2_9009>;
     fn code_encode(em: &mut [u64], m: &[u8]);
-    fn get_point_degree(point_idx: usize) -> usize;
+
+    /// Degree of the segment-evaluated ring modulus x^n + 1 at point a^point_idx:
+    /// bit n lands in block n/W at offset n%W, so the evaluation is
+    /// x^(n%W + point_idx*(n/W)) + 1.
+    fn get_point_degree(point_idx: usize) -> usize {
+        let w = crate::math::segmentation::W;
+        (Self::PARAM_N % w) + (Self::PARAM_N / w) * point_idx
+    }
 }
 
 pub trait HqcPublicKeyParameters {
@@ -156,8 +163,7 @@ macro_rules! define_hqc_variant {
         $param_omega_e:expr,
         $param_n:expr,
         $points_num:expr,
-        $matrix_file:literal,
-        $point_degrees:expr
+        $matrix_file:literal
     ) => {
         pub mod $mod_name {
             #[cfg(test)]
@@ -285,12 +291,6 @@ macro_rules! define_hqc_variant {
                         c_code_encode(em.as_mut_ptr(), m.as_ptr() as *const u64);
                     }
                 }
-
-                fn get_point_degree(point_idx: usize) -> usize {
-                    let degrees: &[usize] = &$point_degrees;
-                    degrees[point_idx - 1]
-                }
-
 
                 unsafe fn keypair(entropy: &[u8], pk: &mut [u8], sk: &mut [u8]) -> i32 {
                     assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
@@ -527,8 +527,7 @@ define_hqc_variant!(
     75,
     17669,
     7,
-    "../math/interpolate_matrix_17669.bin",
-    [4160, 4163, 4166, 4169, 4172, 4175, 4178]
+    "../math/interpolate_matrix_17669.bin"
 );
 define_hqc_variant!(
     hqc3,
@@ -547,10 +546,7 @@ define_hqc_variant!(
     114,
     35851,
     15,
-    "../math/interpolate_matrix_35851.bin",
-    [
-        4330, 4337, 4344, 4351, 4358, 4365, 4372, 4379, 4386, 4393, 4400, 4407, 4414, 4421, 4428
-    ]
+    "../math/interpolate_matrix_35851.bin"
 );
 define_hqc_variant!(
     hqc5,
@@ -569,11 +565,7 @@ define_hqc_variant!(
     149,
     57637,
     25,
-    "../math/interpolate_matrix_57637.bin",
-    [
-        3601, 3613, 3625, 3637, 3649, 3661, 3673, 3685, 3697, 3709, 3721, 3733, 3745, 3757, 3769,
-        3781, 3793, 3805, 3817, 3829, 3841, 3853, 3865, 3877, 3889
-    ]
+    "../math/interpolate_matrix_57637.bin"
 );
 
 pub use hqc1::Hqc1;

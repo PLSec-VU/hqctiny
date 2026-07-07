@@ -1,12 +1,14 @@
 //! Polynomial segmentation for the Binius-style tower construction.
 //!
 //! Converts between F2[x] polynomials and vectors of GF(2^9009) field elements
-//! by splitting coefficient blocks of size W = DEGREE/2.
+//! by splitting coefficient blocks of size W = ceil(DEGREE/2).
 
 use super::gf2_9009::{DEGREE, GF29009_NUM_U64, Gf2_9009};
 
-/// Block size: half the field degree.
-pub const W: usize = DEGREE / 2; // 4504
+/// Block size. Must satisfy DEGREE <= 2*W (HQCTiny.v: d_le_W2), otherwise the
+/// kernel-blinding bijection of the security proof does not cover all kernel
+/// residues; hence ceiling division, giving 4505 rather than 4504.
+pub const W: usize = DEGREE.div_ceil(2); // 4505
 
 #[inline(always)]
 fn get_64_bits(poly: &[u64], bit_idx: usize) -> u64 {

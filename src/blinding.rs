@@ -1,8 +1,8 @@
 //! Blinding mask generation and stripping operations.
 //!
 //! This module provides functions to:
-//! - Generate quotient and truncate blinding masks using BLAKE3 XOF (non-constant time).
-//! - Strip blinding masks by reducing polynomials modulo x^n - 1.
+use crate::math::gf2_9009::{DEGREE, GF29009_NUM_U64, Gf2_9009};
+use crate::math::segmentation::W;
 
 /// Reduce a polynomial modulo x^n - 1 (constant-time for fixed `n`).
 ///
@@ -48,8 +48,45 @@ pub fn reduce_mod_xn_minus_1<'o>(poly: &[u64], n: usize, out: &'o mut [u64]) -> 
     &mut out[..n_words]
 }
 
-/// Generate a quotient-blinding mask polynomial m of degree n-2.
-///
+/// Fill `out` with BLAKE3 XOF output keyed by theta and context.
+fn fill_mask_words(theta: &[u8], context: &[u8], out: &mut [u64]) {
+    let cl = context.len();
+    let tl = theta.len();
+    let mut ctx_seed = [0u8; 128]; // stack alloc
+    let ctx_seed = &mut ctx_seed[..tl + cl];
+    ctx_seed[..tl].copy_from_slice(theta);
+    ctx_seed[tl..tl + cl].copy_from_slice(context);
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(ctx_seed);
+    hasher.update(b"mask");
+    let mut xof = hasher.finalize_xof();
+    xof.fill(bytemuck::cast_slice_mut::<u64, u8>(out));
+}
+
+/// Clear all bits at positions >= start.
+fn clear_bits_from(words: &mut [u64], start: usize) {
+    let word = start / 64;
+    if word >= words.len() {
+        return;
+    }
+    words[word] &= (1u64 << (start % 64)) - 1;
+    for w in &mut words[word + 1..] {
+        *w = 0;
+    }
+}
+
+/// Clear all bits at positions < end.
+fn clear_bits_below(words: &mut [u64], end: usize) {
+    let word = end / 64;
+    let bit = end % 64;
+    let full = word.min(words.len());
+    words[..full].fill(0);
+    if bit > 0 && word < words.len() {
+        words[word] &= !((1u64 << bit) - 1);
+    }
+}
+
 /// Writes into `out`, which must be at least `n.div_ceil(64)` words.
 /// Returns a subslice of `out` with the mask.
 pub fn generate_quotient_mask<'o>(
@@ -64,40 +101,12 @@ pub fn generate_quotient_mask<'o>(
         "generate_mask output buffer too small"
     );
 
-    let cl = context.len();
-    let tl = theta.len();
-    let mut ctx_seed = [0u8; 128]; // stack alloc
-    let ctx_seed = &mut ctx_seed[..tl + cl];
-    ctx_seed[..tl].copy_from_slice(theta);
-    ctx_seed[tl..tl + cl].copy_from_slice(context);
-
-    let out_bytes = bytemuck::cast_slice_mut::<u64, u8>(&mut out[..n_words]);
-
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(ctx_seed);
-    hasher.update(b"mask");
-    let mut xof = hasher.finalize_xof();
-    xof.fill(out_bytes);
-
-    // Any bits from n-1 upwards should be zero
-    let valid_bits = n - 1;
-    let full_words = valid_bits / 64;
-    let extra_bits = valid_bits % 64;
-
-    if full_words < n_words {
-        let mask = (1u64 << extra_bits) - 1;
-        out[full_words] &= mask;
-        for w in out.iter_mut().take(n_words).skip(full_words + 1) {
-            *w = 0;
-        }
-    }
-
-    &mut out[..n_words]
+    let out = &mut out[..n_words];
+    fill_mask_words(theta, context, out);
+    clear_bits_from(out, n);
+    out
 }
 
-/// Generate a truncate blinding mask polynomial t of degree < n-1,
-/// with the first `n1n2` coefficients set to zero.
-///
 /// Writes into `out`, which must be at least `n.div_ceil(64)` words.
 /// Returns a subslice of `out` with the mask.
 pub fn generate_truncate_mask<'o>(
@@ -113,25 +122,59 @@ pub fn generate_truncate_mask<'o>(
         "generate_truncate_mask output buffer too small"
     );
 
-    // Generate the baseline quotient mask (which satisfies degree < n-1)
-    generate_quotient_mask(theta, context, n, out);
+    let out = &mut out[..n_words];
+    fill_mask_words(theta, context, out);
+    clear_bits_below(out, n1n2);
+    clear_bits_from(out, n);
+    out
+}
 
-    // Clear the first n1n2 coefficients
-    let full_words = n1n2 / 64;
-    let rem_bits = n1n2 % 64;
+pub const KER_DELTA_BITS: usize = DEGREE - W;
 
-    let clear_len = full_words.min(n_words);
-    out[..clear_len].fill(0);
-    if rem_bits > 0 && full_words < n_words {
-        out[full_words] &= !((1u64 << rem_bits) - 1);
+pub fn num_kernel_deltas(n: usize) -> usize {
+    2 * n.div_ceil(W) - 2
+}
+
+pub fn generate_kernel_deltas(theta: &[u8], context: &[u8], count: usize) -> Vec<Gf2_9009> {
+    let delta_words = KER_DELTA_BITS.div_ceil(64);
+    let mut words = vec![0u64; count * delta_words];
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(theta);
+    hasher.update(context);
+    let mut xof = hasher.finalize_xof();
+    xof.fill(bytemuck::cast_slice_mut::<u64, u8>(&mut words));
+
+    let rem_bits = KER_DELTA_BITS % 64;
+    (0..count)
+        .map(|k| {
+            let mut data = [0u64; GF29009_NUM_U64];
+            data[..delta_words].copy_from_slice(&words[k * delta_words..(k + 1) * delta_words]);
+            if rem_bits > 0 {
+                data[delta_words - 1] &= (1u64 << rem_bits) - 1;
+            }
+            Gf2_9009::new(data)
+        })
+        .collect()
+}
+
+/// Evaluate the kernel chain of `deltas` at the point a^power.
+pub fn evaluate_ker_chain(deltas: &[Gf2_9009], power: usize) -> Gf2_9009 {
+    let mut acc = Gf2_9009::zero();
+    let mut term = Gf2_9009::zero();
+    for (j, delta) in deltas.iter().enumerate() {
+        delta.mul_by_x_pow(W + power * j, &mut term);
+        acc.add(&term);
+        delta.mul_by_x_pow(power * (j + 1), &mut term);
+        acc.add(&term);
     }
-
-    &mut out[..n_words]
+    acc
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::segmentation::{combine, evaluate_at_generator};
 
     #[test]
     fn test_truncate_mask() {
@@ -149,16 +192,12 @@ mod tests {
             assert_eq!((mask[word] >> bit) & 1, 0, "bit {} should be zero", i);
         }
 
-        // Check degree is < n-1
-        let last_bit = (n - 1) % 64;
-        let last_word = (n - 1) / 64;
-        if last_word < mask.len() {
-            assert_eq!(
-                (mask[last_word] >> last_bit) & 1,
-                0,
-                "bit n-1 should be zero (degree < n-1)"
-            );
-        }
+        // Check degree is < n
+        assert_eq!(
+            mask[n_words - 1] >> (n % 64),
+            0,
+            "bits from n upwards should be zero (degree < n)"
+        );
         assert_eq!(mask.len(), n_words);
     }
 
@@ -170,16 +209,74 @@ mod tests {
         let mut buf = [0u64; 512];
         let mask = generate_quotient_mask(theta, b"mask", n, &mut buf);
 
-        let last_bit = (n - 1) % 64;
-        let last_word = (n - 1) / 64;
-        if last_word < mask.len() {
-            assert_eq!(
-                (mask[last_word] >> last_bit) & 1,
-                0,
-                "bit n-1 should be zero (degree < n-1)"
-            );
-        }
+        assert_eq!(
+            mask[n_words - 1] >> (n % 64),
+            0,
+            "bits from n upwards should be zero (degree < n)"
+        );
         assert_eq!(mask.len(), n_words);
+    }
+
+    #[test]
+    fn test_mask_contexts_independent() {
+        let theta = b"mask theta test _______________";
+        let n: usize = 17669;
+        let mut buf_u = [0u64; 512];
+        let mut buf_v = [0u64; 512];
+        let mask_u = generate_quotient_mask(theta, b"quotient mask u", n, &mut buf_u).to_vec();
+        let mask_v = generate_quotient_mask(theta, b"quotient mask v", n, &mut buf_v).to_vec();
+        assert_ne!(mask_u, mask_v, "u and v masks must differ");
+    }
+
+    #[test]
+    fn test_kernel_delta_degree() {
+        let theta = b"kernel theta test ______________";
+        let deltas = generate_kernel_deltas(theta, b"kernel deltas u", 6);
+        assert_eq!(deltas.len(), 6);
+        let delta_words = KER_DELTA_BITS.div_ceil(64);
+        let rem_bits = KER_DELTA_BITS % 64;
+        for delta in &deltas {
+            assert_eq!(
+                delta.data[delta_words - 1] >> rem_bits,
+                0,
+                "delta degree must be < KER_DELTA_BITS"
+            );
+            for w in &delta.data[delta_words..] {
+                assert_eq!(*w, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_kernel_chain_vanishes_under_combine() {
+        let theta = b"kernel theta test ______________";
+        let count = 6;
+        let deltas = generate_kernel_deltas(theta, b"kernel deltas u", count);
+
+        // Chain coefficients in K[z]: C_j = delta_j * x^W + delta_{j-1}
+        let mut chain = vec![Gf2_9009::zero(); count + 1];
+        let mut shifted = Gf2_9009::zero();
+        for (j, delta) in deltas.iter().enumerate() {
+            delta.mul_by_x_pow(W, &mut shifted);
+            chain[j].add(&shifted);
+            chain[j + 1].add(delta);
+        }
+
+        // The chain lies in the kernel of combine, so the client's
+        // interpolate + combine recovery is unaffected by it.
+        let combined = combine(&chain);
+        assert!(
+            combined.iter().all(|&w| w == 0),
+            "kernel chain must vanish under combine"
+        );
+
+        // The shift-based evaluator agrees with generic evaluation.
+        for power in 1..=7u8 {
+            let mut expected = Gf2_9009::zero();
+            evaluate_at_generator(&chain, power, &mut expected);
+            let got = evaluate_ker_chain(&deltas, power as usize);
+            assert_eq!(got, expected, "evaluator mismatch at power {}", power);
+        }
     }
 
     #[test]
