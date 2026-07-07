@@ -989,7 +989,7 @@ Module HQCTiny (P : HQCTinyParams).
       - apply: (leq_trans (size_polyMleq _ _)).
         apply: (leq_trans (leq_pred _)).
         by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_split_poly. }
-    have [deltas [H_deltas H_sz]] := combine_poly_ker_decompose P_diff H_comb.
+    have [deltas [H_deltas [H_sz H_all]]] := combine_poly_ker_decompose P_diff H_comb.
     pose deltas_pad := deltas ++ nseq (2 * nblocks - size deltas) 0%R.
     have H_deltas_sz : (size deltas <= 2 * nblocks)%N.
     { rewrite H_sz. case: (size P_diff <= 1)%N.

@@ -1282,68 +1282,67 @@ Module SplitCombine (S : SplitParams).
   Qed.
   Opaque combine_aux.
 
-  (** Converse: every kernel element of size ≤ 2 is in the image of ker_elem *)
+  (** Converse: every kernel element of size ≤ 2 is in the image of ker_elem,
+      and the delta witness satisfies (size delta + W <= d). *)
   Lemma combine_poly_ker_char (x : {poly K}) :
     combine_poly x = 0 ->
     (size x <= 2)%N ->
-    exists delta : polyF2, ker_elem delta = x.
+    exists delta : polyF2,
+      ker_elem delta = x /\ (size delta + W <= d)%N.
   Proof.
     move=> Hc0 Hsz.
     pose delta := (x`_1 : polyF2).
-    exists delta.
-    apply/polyP => i.
-    case: i => [|[|i]].
-    - (* coeff 0 *)
-      rewrite ker_elem_coef0 /delta.
-      have Hcoeff_eq : (x`_0 : polyF2) = (x`_1 : polyF2) * 'X^W.
-      {
-        Transparent combine_aux.
-        move: Hc0.
-        rewrite /combine_poly /combine.
-        rewrite -(combine_aux_coef_list_pad x 2 0 Hsz).
-        rewrite /coef_list /combine_aux /=.
-        rewrite mul0n expr0 mulr1 mul1n addr0.
-        move/eqP.
-        rewrite addr_eq0.
-        move/eqP.
-        move=> Heq.
-        rewrite Heq.
-        apply/polyP => k.
-        rewrite coefN.
-        apply/eqP.
-        set v := ((x`_1 : polyF2) * 'X^W)`_k.
-        case: v => [[|[|]]] //=.
-      }
-      rewrite -Hcoeff_eq.
-      apply/val_inj.
-      apply: val_in_qpoly_eq.
-      move: (valP x`_0).
-      move=> Hpoly.
-      move: Hpoly.
+    set x0 := (x`_0 : K).
+    set x1 := (x`_1 : K).
+    have Hx0_val : (size (x0 : polyF2) <= d)%N.
+    { move: (valP x0).
       rewrite /poly_of_size /poly_of_size_pred /=.
-      move=> Hle.
-      apply: leq_ltn_trans Hle _.
-      rewrite size_mk_monic_gen.
-      exact: ltnSn.
-    - (* coeff 1 *)
-      rewrite ker_elem_coef1 /delta.
-      apply/val_inj.
-      apply: val_in_qpoly_eq.
-      move: (valP x`_1).
-      move=> Hpoly.
-      move: Hpoly.
-      rewrite /poly_of_size /poly_of_size_pred /=.
-      move=> Hle.
-      apply: leq_ltn_trans Hle _.
-      rewrite size_mk_monic_gen.
-      exact: ltnSn.
-    - (* coeff >= 2 *)
-      rewrite /ker_elem coefD coefC coefMX coefC /=.
-      rewrite add0r.
-      symmetry.
-      apply: coefp_ge_size.
-      apply: leq_trans Hsz _.
-      by case: i => [|[|i]] //; exact: leqnn.
+      move=> Hle. apply: leq_trans Hle _.
+      rewrite size_mk_monic_gen. exact: leqnn. }
+    have Hcoeff_eq : (x0 : polyF2) = delta * 'X^W.
+    { Transparent combine_aux.
+      move: Hc0.
+      rewrite /combine_poly /combine.
+      rewrite -(combine_aux_coef_list_pad x 2 0 Hsz).
+      rewrite /coef_list /combine_aux /=.
+      rewrite mul0n expr0 mulr1 mul1n addr0.
+      move/eqP. rewrite addr_eq0. move/eqP => Heq.
+      rewrite Heq /delta. apply/polyP => k. rewrite coefN. apply/eqP.
+      set v := ((x1 : polyF2) * 'X^W)`_k.
+      case: v => [[|[|]]] //=.
+      Opaque combine_aux. }
+    have Hszbound : (size delta + W <= d)%N.
+    { rewrite Hcoeff_eq in Hx0_val.
+      have [->|Hne] := eqVneq delta 0.
+      - rewrite size_poly0 add0n. exact: W_le_d.
+      - rewrite size_mulXn // addnC in Hx0_val. exact: Hx0_val. }
+    exists delta; split.
+    - apply/polyP => i.
+      case: i => [|[|i]].
+      + (* coeff 0 *)
+        rewrite ker_elem_coef0 -Hcoeff_eq /x0.
+        apply/val_inj.
+        apply: val_in_qpoly_eq.
+        move: (valP x0).
+        rewrite /poly_of_size /poly_of_size_pred /=.
+        move=> Hle. apply: leq_ltn_trans Hle _.
+        rewrite size_mk_monic_gen. exact: ltnSn.
+      + (* coeff 1 *)
+        rewrite ker_elem_coef1 /delta.
+        apply/val_inj.
+        apply: val_in_qpoly_eq.
+        move: (valP x1).
+        rewrite /poly_of_size /poly_of_size_pred /=.
+        move=> Hle. apply: leq_ltn_trans Hle _.
+        rewrite size_mk_monic_gen. exact: ltnSn.
+      + (* coeff >= 2 *)
+        rewrite /ker_elem coefD coefC coefMX coefC /=.
+        rewrite add0r.
+        symmetry.
+        apply: coefp_ge_size.
+        apply: leq_trans Hsz _.
+        by case: i => [|[|i]] //; exact: leqnn.
+    - exact: Hszbound.
   Qed.
 
   (** Kernel chain: sum of shifted ker_elem terms *)
@@ -1524,27 +1523,30 @@ Module SplitCombine (S : SplitParams).
   Qed.
   Opaque combine_aux.
 
-  (** Full kernel characterization: x decomposes as a chain of ker_elem terms *)
+  (** Full kernel characterization: x decomposes as a chain of ker_elem terms,
+      and each delta in the chain satisfies (size delta + W <= d). *)
   Lemma combine_poly_ker_decompose (x : {poly K}) :
     combine_poly x = 0 ->
     exists (deltas : seq polyF2),
       x = ker_chain deltas /\
-      size deltas = if (size x <= 1)%N then size x else (size x).-1.
+      size deltas = (if (size x <= 1)%N then size x else (size x).-1) /\
+      all (fun delta : polyF2 => (size delta + W <= d)%N) deltas.
   Proof.
     move=> Hc0.
     move Hsz: (size x) => n.
     elim: n x Hsz Hc0 => [|n IH] x Hsz Hc0.
     - have /size_poly_leq0P Hx0 : (size x <= 0)%N by rewrite Hsz.
-      subst x; exists [::]; split; first done.
-      done.
+      subst x; exists [::]; split; first done. split; done.
     - case: (ltnP (size x) 3) => Hsz3.
       + have Hsz_le2 : (size x <= 2)%N by rewrite -ltnS.
-        have [delta Hker] := combine_poly_ker_char x Hc0 Hsz_le2.
-        exists [:: delta]; split.
+        have [delta [Hker Hdelta_sz]] :=
+          combine_poly_ker_char x Hc0 Hsz_le2.
+        exists [:: delta]; split; [| split].
         * by rewrite /ker_chain /= mul0r addr0 Hker.
         * rewrite Hsz in Hsz3; rewrite /=.
-          clear IH Hsz x Hc0 Hsz_le2 delta Hker.
+          clear IH Hsz x Hc0 Hsz_le2 Hker.
           case: n Hsz3 => [|[|n']] //=.
+        * rewrite /= andbT. exact: Hdelta_sz.
       + have Hlow0 := combine_poly_ker_coeff0_low x Hc0.
         set p0 := (x`_0 : polyF2).
         have Htake0 : take_poly W p0 = 0.
@@ -1649,8 +1651,8 @@ Module SplitCombine (S : SplitParams).
             by rewrite Hy_eq Hz mulr0 size_poly0 in Hsz_y. }
           rewrite Hy_eq mulrC (size_mulX Hz_ne0) in Hsz_y.
           exact: succn_inj Hsz_y. }
-        have [deltas' [Hrec Hrec_sz]] := IH z Hsz_z Hc0_z.
-        exists (d0 :: deltas'); split.
+        have [deltas' [Hrec [Hrec_sz Hrec_all]]] := IH z Hsz_z Hc0_z.
+        exists (d0 :: deltas'); split; [| split].
         - rewrite /ker_chain -/ker_chain /=.
           rewrite -Hrec (mulrC z) -Hy_eq /y.
           by rewrite addrC subrK.
@@ -1662,6 +1664,9 @@ Module SplitCombine (S : SplitParams).
           have Hn1f : (n <= 1)%N = false := ltn_geF Hn2.
           rewrite Hn1f /=.
           exact: prednK (ltn_trans (ltn0Sn 0) Hn2).
+        - apply/andP; split.
+          + exact: Hd0_bound.
+          + exact: Hrec_all.
   Qed.
 
 End SplitCombine.
