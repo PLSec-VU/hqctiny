@@ -121,6 +121,32 @@ Module HQCTiny (P : HQCTinyParams).
     exact: size_take_poly.
   Qed.
 
+  Lemma nblocks_ge2 : (2 <= nblocks)%N.
+  Proof.
+    have H1_lt : (1 * W < nblocks * W)%N.
+    { rewrite mul1n. apply: (ltn_trans W_lt_n nblocks_bound). }
+    by rewrite (ltn_pmul2r W_gt0) in H1_lt.
+  Qed.
+
+  Lemma size_mul_segment_poly_le : forall (A B : {poly 'F_2}),
+    (size (segment_poly A nblocks * segment_poly B nblocks)%R <= (2 * nblocks).-1)%N.
+  Proof.
+    move=> A B.
+    apply: (leq_trans (size_polyMleq _ _)).
+    rewrite -subn1 -[X in (_ <= X)%N]subn1.
+    apply: leq_sub2r.
+    by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly.
+  Qed.
+  Lemma H_deltas_sz_bound : (1 <= 2 * nblocks - 2)%N.
+  Proof.
+    have H_ge2 := nblocks_ge2.
+    rewrite mul2n -addnn.
+    have -> : (nblocks + nblocks - 2 = (nblocks - 2) + nblocks)%N.
+    { by rewrite addnC -addnBA // addnC. }
+    apply: (leq_trans (n := nblocks)).
+    - by apply: (leq_trans (n := 2)).
+    - exact: leq_addl.
+  Qed.
   (** Guard predicate for valid point sequences *)
   Definition valid_pk_b (pts : seq K) : bool :=
     let iph := interpolate_n pts in
@@ -223,28 +249,28 @@ Module HQCTiny (P : HQCTinyParams).
     let val := nat_of_polyF2 p 0 d in
     Ordinal (nat_of_polyF2_bound p d).
 
-  Definition deltas_size : nat := ((2 ^ W) ^ (2 * nblocks))%N.
+  Definition deltas_size : nat := ((2 ^ (d - W)) ^ (2 * nblocks - 2))%N.
 
   Definition fin_to_deltas (i : 'I_deltas_size) : seq {poly 'F_2} :=
-    let tup := fin_to_tuple_fin (2 ^ W) (2 * nblocks) i in
-    [seq fin_to_poly W (tnth tup j) | j <- enum 'I_(2 * nblocks)].
+    let tup := fin_to_tuple_fin (2 ^ (d - W)) (2 * nblocks - 2) i in
+    [seq fin_to_poly (d - W) (tnth tup j) | j <- enum 'I_(2 * nblocks - 2)].
 
   Definition deltas_to_fin (deltas : seq {poly 'F_2}) : 'I_deltas_size :=
-    let tup := [tuple poly_to_fin W (nth 0%R deltas i) | i < 2 * nblocks] in
-    tuple_fin_to_fin (2 ^ W) (2 * nblocks) tup.
+    let tup := [tuple poly_to_fin (d - W) (nth 0%R deltas i) | i < 2 * nblocks - 2] in
+    tuple_fin_to_fin (2 ^ (d - W)) (2 * nblocks - 2) tup.
 
-  Lemma fin_to_poly_to_fin : forall (p : {poly F2}),
-    (size p <= W)%N ->
-    fin_to_poly W (poly_to_fin W p) = p.
+  Lemma fin_to_poly_to_fin : forall (d0 : nat) (p : {poly F2}),
+    (size p <= d0)%N ->
+    fin_to_poly d0 (poly_to_fin d0 p) = p.
   Proof.
-    move=> p Hsz.
+    move=> d0 p Hsz.
     rewrite /fin_to_poly /poly_to_fin /= polyF2_takeK.
     exact: take_poly_id.
   Qed.
 
   Lemma deltas_to_finK : forall (deltas : seq {poly F2}),
-    size deltas = (2 * nblocks)%N ->
-    (forall idx, (idx < 2 * nblocks)%N -> size (nth 0%R deltas idx) <= W)%N ->
+    size deltas = (2 * nblocks - 2)%N ->
+    (forall idx, (idx < 2 * nblocks - 2)%N -> size (nth 0%R deltas idx) <= d - W)%N ->
     fin_to_deltas (deltas_to_fin deltas) = deltas.
   Proof.
     move=> deltas Hsz Hsz_el.
@@ -252,33 +278,33 @@ Module HQCTiny (P : HQCTinyParams).
     apply: (@eq_from_nth _ 0%R).
     - by rewrite size_map size_enum_ord Hsz.
     - move=> idx. rewrite size_map size_enum_ord => Hidx.
-      have Hidx_ord : (idx < 2 * nblocks)%N by exact: Hidx.
+      have Hidx_ord : (idx < 2 * nblocks - 2)%N by exact: Hidx.
       rewrite (nth_map (Ordinal Hidx_ord)) ?size_enum_ord //=.
       rewrite tnth_mktuple /=.
       rewrite nth_enum_ord //=.
-      have H_sz_p : (size (nth 0%R deltas idx) <= W)%N by exact: (Hsz_el idx Hidx).
+      have H_sz_p : (size (nth 0%R deltas idx) <= d - W)%N by exact: (Hsz_el idx Hidx).
       apply: fin_to_poly_to_fin.
       exact: H_sz_p.
   Qed.
 
-  Lemma size_fin_to_deltas : forall i idx, (size (nth 0%R (fin_to_deltas i) idx) <= W)%N.
+  Lemma size_fin_to_deltas : forall i idx, (size (nth 0%R (fin_to_deltas i) idx) <= d - W)%N.
   Proof.
     move=> i idx.
     rewrite /fin_to_deltas.
-    case: (ltnP idx (2 * nblocks)) => Hidx.
-    - have Hidx_ord : (idx < 2 * nblocks)%N by exact: Hidx.
+    case: (ltnP idx (2 * nblocks - 2)) => Hidx.
+    - have Hidx_ord : (idx < 2 * nblocks - 2)%N by exact: Hidx.
       rewrite (nth_map (Ordinal Hidx_ord)) ?size_enum_ord //=.
       rewrite /fin_to_poly.
-      apply: (leq_trans (size_polyF2_of_nat _ 0 W)).
+      apply: (leq_trans (size_polyF2_of_nat _ 0 (d - W))).
       by rewrite add0n.
     - rewrite nth_default.
       + rewrite size_map size_enum_ord. exact: Hidx.
       + simpl. rewrite size_poly0. exact: leq0n.
   Qed.
 
-  Lemma poly_to_fin_fin_to_poly : forall (i : 'I_(2^W)), poly_to_fin W (fin_to_poly W i) = i.
+  Lemma poly_to_fin_fin_to_poly : forall (d0 : nat) (i : 'I_(expn 2 d0)), poly_to_fin d0 (fin_to_poly d0 i) = i.
   Proof.
-    move=> i.
+    move=> d0 i.
     rewrite /poly_to_fin /fin_to_poly /=.
     apply/val_inj => /=.
     by rewrite nat_of_polyF2_of_nat // muln1.
@@ -724,27 +750,27 @@ Module HQCTiny (P : HQCTinyParams).
   Definition f_u_ker (diff : 'I_deltas_size) (k : 'I_deltas_size) : 'I_deltas_size :=
     let deltas_k := fin_to_deltas k in
     let deltas_diff := fin_to_deltas diff in
-    let deltas_sum := [seq (nth 0%R deltas_k idx + nth 0%R deltas_diff idx)%R | idx <- iota 0 (2 * nblocks)] in
+    let deltas_sum := [seq (nth 0%R deltas_k idx + nth 0%R deltas_diff idx)%R | idx <- iota 0 (2 * nblocks - 2)] in
     deltas_to_fin deltas_sum.
 
   Lemma f_u_ker_bij : forall diff, bijective (f_u_ker diff).
   Proof.
     move=> diff.
-    have H_inj : injective (tuple_fin_to_fin (2^W) (2 * nblocks)) := can_inj (tuple_fin_to_finK (2^W) (2 * nblocks)).
+    have H_inj : injective (tuple_fin_to_fin (2^(d-W)) (2 * nblocks - 2)) := can_inj (tuple_fin_to_finK (2^(d-W)) (2 * nblocks - 2)).
     apply: (Bijective (g := f_u_ker diff)) => x.
     - rewrite /f_u_ker.
-      have H_sz_sum : forall k_val idx, (idx < 2 * nblocks)%N ->
-        (size (nth 0%R [seq (nth 0%R (fin_to_deltas k_val) idx0 + nth 0%R (fin_to_deltas diff) idx0)%R | idx0 <- iota 0 (2 * nblocks)] idx) <= W)%N.
+      have H_sz_sum : forall k_val idx, (idx < 2 * nblocks - 2)%N ->
+        (size (nth 0%R [seq (nth 0%R (fin_to_deltas k_val) idx0 + nth 0%R (fin_to_deltas diff) idx0)%R | idx0 <- iota 0 (2 * nblocks - 2)] idx) <= d - W)%N.
       { move=> k_val idx Hidx.
         rewrite (nth_map 0%N 0%R) ?size_iota // nth_iota //= add0n.
         apply: (leq_trans (size_polyD _ _)).
         rewrite geq_max.
         apply/andP; split; exact: size_fin_to_deltas. }
-      rewrite -{2}(fin_to_tuple_finK (2^W) (2 * nblocks) x).
+      rewrite -{2}(fin_to_tuple_finK (2^(d-W)) (2 * nblocks - 2) x).
       rewrite /deltas_to_fin.
       congr tuple_fin_to_fin.
       apply/val_inj => /=.
-      apply: (@eq_from_nth _ (Ordinal (expn_gt0 2 W))); first by rewrite size_map size_enum_ord size_tuple.
+      apply: (@eq_from_nth _ (Ordinal (expn_gt0 2 (d-W)))); first by rewrite size_map size_enum_ord size_tuple.
       move=> idx Hidx.
       rewrite size_map size_enum_ord in Hidx.
       rewrite (nth_map (Ordinal Hidx)) ?size_enum_ord //=.
@@ -764,24 +790,24 @@ Module HQCTiny (P : HQCTinyParams).
           by rewrite (pcharf0 Hchar) mulr0. }
         rewrite addr0.
         rewrite /fin_to_deltas.
-        have H_idx_ord : (idx < 2 * nblocks)%N by exact: Hidx.
+        have H_idx_ord : (idx < 2 * nblocks - 2)%N by exact: Hidx.
         rewrite (nth_map (Ordinal H_idx_ord)) ?size_enum_ord //=.
         rewrite /tnth /= nth_enum_ord //=.
-        rewrite poly_to_fin_fin_to_poly.
-        by rewrite (set_nth_default (Ordinal (expn_gt0 2 W))) ?size_tuple.
+        rewrite (poly_to_fin_fin_to_poly (d-W)).
+        by rewrite (set_nth_default (Ordinal (expn_gt0 2 (d-W)))) ?size_tuple.
     - rewrite /f_u_ker.
-      have H_sz_sum : forall k_val idx, (idx < 2 * nblocks)%N ->
-        (size (nth 0%R [seq (nth 0%R (fin_to_deltas k_val) idx0 + nth 0%R (fin_to_deltas diff) idx0)%R | idx0 <- iota 0 (2 * nblocks)] idx) <= W)%N.
+      have H_sz_sum : forall k_val idx, (idx < 2 * nblocks - 2)%N ->
+        (size (nth 0%R [seq (nth 0%R (fin_to_deltas k_val) idx0 + nth 0%R (fin_to_deltas diff) idx0)%R | idx0 <- iota 0 (2 * nblocks - 2)] idx) <= d - W)%N.
       { move=> k_val idx Hidx.
         rewrite (nth_map 0%N 0%R) ?size_iota // nth_iota //= add0n.
         apply: (leq_trans (size_polyD _ _)).
         rewrite geq_max.
         apply/andP; split; exact: size_fin_to_deltas. }
-      rewrite -{2}(fin_to_tuple_finK (2^W) (2 * nblocks) x).
+      rewrite -{2}(fin_to_tuple_finK (2^(d-W)) (2 * nblocks - 2) x).
       rewrite /deltas_to_fin.
       congr tuple_fin_to_fin.
       apply/val_inj => /=.
-      apply: (@eq_from_nth _ (Ordinal (expn_gt0 2 W))); first by rewrite size_map size_enum_ord size_tuple.
+      apply: (@eq_from_nth _ (Ordinal (expn_gt0 2 (d-W)))); first by rewrite size_map size_enum_ord size_tuple.
       move=> idx Hidx.
       rewrite size_map size_enum_ord in Hidx.
       rewrite (nth_map (Ordinal Hidx)) ?size_enum_ord //=.
@@ -801,41 +827,41 @@ Module HQCTiny (P : HQCTinyParams).
           by rewrite (pcharf0 Hchar) mulr0. }
         rewrite addr0.
         rewrite /fin_to_deltas.
-        have H_idx_ord : (idx < 2 * nblocks)%N by exact: Hidx.
+        have H_idx_ord : (idx < 2 * nblocks - 2)%N by exact: Hidx.
         rewrite (nth_map (Ordinal H_idx_ord)) ?size_enum_ord //=.
         rewrite /tnth /= nth_enum_ord //=.
-        rewrite poly_to_fin_fin_to_poly.
-        by rewrite (set_nth_default (Ordinal (expn_gt0 2 W))) ?size_tuple.
+        rewrite (poly_to_fin_fin_to_poly (d-W)).
+        by rewrite (set_nth_default (Ordinal (expn_gt0 2 (d-W)))) ?size_tuple.
   Qed.
 
   Definition f_v_ker (diff : 'I_deltas_size) (k : 'I_deltas_size) : 'I_deltas_size :=
     let deltas_k := fin_to_deltas k in
     let deltas_diff := fin_to_deltas diff in
-    let deltas_sum := [seq (nth 0%R deltas_k idx + nth 0%R deltas_diff idx)%R | idx <- iota 0 (2 * nblocks)] in
+    let deltas_sum := [seq (nth 0%R deltas_k idx + nth 0%R deltas_diff idx)%R | idx <- iota 0 (2 * nblocks - 2)] in
     deltas_to_fin deltas_sum.
 
   Lemma f_v_ker_bij : forall diff, bijective (f_v_ker diff).
   Proof.
     move=> diff.
-    have H_inj : injective (tuple_fin_to_fin (2^W) (2 * nblocks)) := can_inj (tuple_fin_to_finK (2^W) (2 * nblocks)).
+    have H_inj : injective (tuple_fin_to_fin (2^(d-W)) (2 * nblocks - 2)) := can_inj (tuple_fin_to_finK (2^(d-W)) (2 * nblocks - 2)).
     apply: (Bijective (g := f_v_ker diff)) => x.
     - rewrite /f_v_ker.
-      have H_sz_sum : forall k_val idx, (idx < 2 * nblocks)%N ->
-        (size (nth 0%R [seq (nth 0%R (fin_to_deltas k_val) idx0 + nth 0%R (fin_to_deltas diff) idx0)%R | idx0 <- iota 0 (2 * nblocks)] idx) <= W)%N.
+      have H_sz_sum : forall k_val idx, (idx < 2 * nblocks - 2)%N ->
+        (size (nth 0%R [seq (nth 0%R (fin_to_deltas k_val) idx0 + nth 0%R (fin_to_deltas diff) idx0)%R | idx0 <- iota 0 (2 * nblocks - 2)] idx) <= d - W)%N.
       { move=> k_val idx Hidx.
         rewrite (nth_map 0%N 0%R) ?size_iota // nth_iota //= add0n.
         apply: (leq_trans (size_polyD _ _)).
         rewrite geq_max.
         apply/andP; split; exact: size_fin_to_deltas. }
-      rewrite -{2}(fin_to_tuple_finK (2^W) (2 * nblocks) x).
+      rewrite -{2}(fin_to_tuple_finK (2^(d-W)) (2 * nblocks - 2) x).
       rewrite /deltas_to_fin.
       congr tuple_fin_to_fin.
       apply/val_inj => /=.
-      apply: (@eq_from_nth _ (Ordinal (expn_gt0 2 W))); first by rewrite size_map size_enum_ord size_tuple.
+      apply: (@eq_from_nth _ (Ordinal (expn_gt0 2 (d-W)))); first by rewrite size_map size_enum_ord size_tuple.
       move=> idx Hidx.
       rewrite size_map size_enum_ord in Hidx.
       rewrite (nth_map (Ordinal Hidx)) ?size_enum_ord //=.
-      rewrite nth_enum_ord //=.
+      rewrite /tnth /= nth_enum_ord //=.
       rewrite (nth_map 0%N 0%R) ?size_iota // nth_iota //= add0n.
       rewrite deltas_to_finK.
       + by rewrite size_map size_iota.
@@ -851,28 +877,28 @@ Module HQCTiny (P : HQCTinyParams).
           by rewrite (pcharf0 Hchar) mulr0. }
         rewrite addr0.
         rewrite /fin_to_deltas.
-        have H_idx_ord : (idx < 2 * nblocks)%N by exact: Hidx.
+        have H_idx_ord : (idx < 2 * nblocks - 2)%N by exact: Hidx.
         rewrite (nth_map (Ordinal H_idx_ord)) ?size_enum_ord //=.
         rewrite /tnth /= nth_enum_ord //=.
-        rewrite poly_to_fin_fin_to_poly.
-        by rewrite (set_nth_default (Ordinal (expn_gt0 2 W))) ?size_tuple.
+        rewrite (poly_to_fin_fin_to_poly (d-W)).
+        by rewrite (set_nth_default (Ordinal (expn_gt0 2 (d-W)))) ?size_tuple.
     - rewrite /f_v_ker.
-      have H_sz_sum : forall k_val idx, (idx < 2 * nblocks)%N ->
-        (size (nth 0%R [seq (nth 0%R (fin_to_deltas k_val) idx0 + nth 0%R (fin_to_deltas diff) idx0)%R | idx0 <- iota 0 (2 * nblocks)] idx) <= W)%N.
+      have H_sz_sum : forall k_val idx, (idx < 2 * nblocks - 2)%N ->
+        (size (nth 0%R [seq (nth 0%R (fin_to_deltas k_val) idx0 + nth 0%R (fin_to_deltas diff) idx0)%R | idx0 <- iota 0 (2 * nblocks - 2)] idx) <= d - W)%N.
       { move=> k_val idx Hidx.
         rewrite (nth_map 0%N 0%R) ?size_iota // nth_iota //= add0n.
         apply: (leq_trans (size_polyD _ _)).
         rewrite geq_max.
         apply/andP; split; exact: size_fin_to_deltas. }
-      rewrite -{2}(fin_to_tuple_finK (2^W) (2 * nblocks) x).
+      rewrite -{2}(fin_to_tuple_finK (2^(d-W)) (2 * nblocks - 2) x).
       rewrite /deltas_to_fin.
       congr tuple_fin_to_fin.
       apply/val_inj => /=.
-      apply: (@eq_from_nth _ (Ordinal (expn_gt0 2 W))); first by rewrite size_map size_enum_ord size_tuple.
+      apply: (@eq_from_nth _ (Ordinal (expn_gt0 2 (d-W)))); first by rewrite size_map size_enum_ord size_tuple.
       move=> idx Hidx.
       rewrite size_map size_enum_ord in Hidx.
       rewrite (nth_map (Ordinal Hidx)) ?size_enum_ord //=.
-      rewrite nth_enum_ord //=.
+      rewrite /tnth /= nth_enum_ord //=.
       rewrite (nth_map 0%N 0%R) ?size_iota // nth_iota //= add0n.
       rewrite deltas_to_finK.
       + by rewrite size_map size_iota.
@@ -888,11 +914,11 @@ Module HQCTiny (P : HQCTinyParams).
           by rewrite (pcharf0 Hchar) mulr0. }
         rewrite addr0.
         rewrite /fin_to_deltas.
-        have H_idx_ord : (idx < 2 * nblocks)%N by exact: Hidx.
+        have H_idx_ord : (idx < 2 * nblocks - 2)%N by exact: Hidx.
         rewrite (nth_map (Ordinal H_idx_ord)) ?size_enum_ord //=.
         rewrite /tnth /= nth_enum_ord //=.
-        rewrite poly_to_fin_fin_to_poly.
-        by rewrite (set_nth_default (Ordinal (expn_gt0 2 W))) ?size_tuple.
+        rewrite (poly_to_fin_fin_to_poly (d-W)).
+        by rewrite (set_nth_default (Ordinal (expn_gt0 2 (d-W)))) ?size_tuple.
   Qed.
 
   Lemma hqctiny_u_eq : forall (pk1 : PointSeqCt) (t_fin : 'I_('C(n, we) ^ 3)) (k_u_val : 'I_(2^n)),
@@ -985,32 +1011,34 @@ Module HQCTiny (P : HQCTinyParams).
       rewrite [in X in X = 0]addrA.
       rewrite [in X in _ + X = 0]addrA.
       apply: char2_F2. }
-    have Hsz_Pdiff : (size P_diff <= 2 * nblocks)%N.
+    have H_nb : (nblocks <= (2 * nblocks).-1)%N.
+    { rewrite mul2n.
+      case: nblocks => [|nb] //=.
+      by rewrite ltnS -addnn; exact: leq_addl. }
+    have Hsz_Pdiff : (size P_diff <= (2 * nblocks).-1)%N.
     { rewrite /P_diff.
       apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
       - apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
         + apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
           * apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
             -- apply: (leq_trans (size_segment_poly _ _)).
-               by rewrite mulnC; exact: leq_pmulr.
-            -- apply: (leq_trans (size_polyMleq _ _)).
-               apply: (leq_trans (leq_pred _)).
-               by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly.
+               exact: H_nb.
+            -- exact: size_mul_segment_poly_le.
           * apply: (leq_trans (size_segment_poly _ _)).
-            by rewrite mulnC; exact: leq_pmulr.
-        + apply: (leq_trans (size_polyMleq _ _)).
-          apply: (leq_trans (leq_pred _)).
-          by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly.
-      - apply: (leq_trans (size_polyMleq _ _)).
-        apply: (leq_trans (leq_pred _)).
-        by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly. }
+            exact: H_nb.
+        + exact: size_mul_segment_poly_le.
+      - exact: size_mul_segment_poly_le. }
     have [deltas [H_deltas [H_sz H_all]]] := combine_poly_ker_decompose P_diff H_comb.
-    pose deltas_pad := deltas ++ nseq (2 * nblocks - size deltas) 0%R.
-    have H_deltas_sz : (size deltas <= 2 * nblocks)%N.
-    { rewrite H_sz. case: (size P_diff <= 1)%N.
-      - exact: Hsz_Pdiff.
-      - apply: leq_trans (leq_pred _) Hsz_Pdiff. }
-    have H_pad_sz : size deltas_pad = (2 * nblocks)%N by rewrite /deltas_pad size_cat size_nseq addnC subnK.
+    pose deltas_pad := deltas ++ nseq (2 * nblocks - 2 - size deltas) 0%R.
+    have H_deltas_sz : (size deltas <= 2 * nblocks - 2)%N.
+    { rewrite H_sz. case: ifP => Hcond.
+      - apply: (leq_trans Hcond).
+        exact: H_deltas_sz_bound.
+      - have -> : (2 * nblocks - 2)%N = ((2 * nblocks).-1 - 1)%N by rewrite subnS !subn1.
+        have -> : (size P_diff).-1 = (size P_diff - 1)%N by rewrite subn1.
+        apply: leq_sub2r.
+        exact: Hsz_Pdiff. }
+    have H_pad_sz : size deltas_pad = (2 * nblocks - 2)%N by rewrite /deltas_pad size_cat size_nseq addnC subnK.
     have H_nseq_zero : forall k0, ker_chain (nseq k0 0) = 0.
     { elim=> [|k0 IH] /=; first done.
       rewrite IH mul0r addr0 /ker_elem.
@@ -1021,16 +1049,15 @@ Module HQCTiny (P : HQCTinyParams).
       - exact: H_nseq_zero.
       - by rewrite IH. }
     have H_pad_eq : ker_chain deltas_pad = ker_chain deltas by exact: H_pad_eq_gen.
-    have H_deltas_el : forall idx, (idx < size deltas)%N -> (size (nth 0%R deltas idx) <= W)%N.
+    have H_deltas_el : forall idx, (idx < size deltas)%N -> (size (nth 0%R deltas idx) <= d - W)%N.
     { move=> idx Hidx.
       have /allP H_all' := H_all.
       have H_in : nth 0%R deltas idx \in deltas by exact: mem_nth.
       have H_sz_el' := H_all' (nth 0%R deltas idx) H_in.
-      have H_tmp : (size (nth 0%R deltas idx) + W <= 2 * W)%N by exact: leq_trans H_sz_el' d_le_W2.
-      rewrite mul2n in H_tmp.
-      rewrite -addnn in H_tmp.
-      by rewrite leq_add2r in H_tmp. }
-    have H_pad_el : forall idx, (idx < 2 * nblocks)%N -> (size (nth 0%R deltas_pad idx) <= W)%N.
+      rewrite leq_subRL.
+      - exact: W_le_d.
+      - by rewrite addnC. }
+    have H_pad_el : forall idx, (idx < 2 * nblocks - 2)%N -> (size (nth 0%R deltas_pad idx) <= d - W)%N.
     { move=> idx Hidx.
       rewrite /deltas_pad nth_cat.
       case: ifPn => Hcond.
@@ -1040,7 +1067,7 @@ Module HQCTiny (P : HQCTinyParams).
     exists (deltas_to_fin deltas_pad).
     move=> k_u_ker_val.
     have H_f_u_eq : fin_to_deltas (f_u_ker (deltas_to_fin deltas_pad) k_u_ker_val) =
-      [seq ((fin_to_deltas k_u_ker_val)`_idx + deltas_pad`_idx)%R | idx <- iota 0 (2 * nblocks)].
+      [seq ((fin_to_deltas k_u_ker_val)`_idx + deltas_pad`_idx)%R | idx <- iota 0 (2 * nblocks - 2)].
     { rewrite /f_u_ker.
       have H_deltas_padK : fin_to_deltas (deltas_to_fin deltas_pad) = deltas_pad.
       { by rewrite deltas_to_finK. }
@@ -1064,7 +1091,7 @@ Module HQCTiny (P : HQCTinyParams).
     have H_char_polyK : forall x : {poly K}, x + x = 0 by move=> x; apply: (addrr_pchar2 H_char_polyK_pred).
     have H_sz_eq : size (fin_to_deltas k_u_ker_val) = size deltas_pad.
     { by rewrite H_pad_sz /fin_to_deltas size_map size_enum_ord. }
-    have -> : (2 * nblocks)%nat = size (fin_to_deltas k_u_ker_val) by rewrite /fin_to_deltas size_map size_enum_ord.
+    have -> : (2 * nblocks - 2)%nat = size (fin_to_deltas k_u_ker_val) by rewrite /fin_to_deltas size_map size_enum_ord.
     rewrite (ker_chain_add (fin_to_deltas k_u_ker_val) deltas_pad H_sz_eq).
     rewrite H_pad_eq -H_deltas /P_diff.
     f_equal.
@@ -1262,40 +1289,36 @@ Module HQCTiny (P : HQCTinyParams).
           (e`_j + _)]addrCA.
       rewrite [e`_j + (e`_j + _)]addrA char2_F2 add0r.
       exact: char2_F2. }
-    have Hsz_Pdiff : (size P_diff <= 2 * nblocks)%N.
+    have H_nb : (nblocks <= (2 * nblocks).-1)%N.
+    { rewrite mul2n.
+      case: nblocks => [|nb] //=.
+      by rewrite ltnS -addnn; exact: leq_addl. }
+    have Hsz_Pdiff : (size P_diff <= (2 * nblocks).-1)%N.
     { rewrite /P_diff.
       apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
-      - apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
-        + apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
-          * apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
-            -- apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
-               ++ { apply: (leq_trans (size_polyD _ _)).
-                    rewrite geq_max. apply/andP; split.
-                    - apply: (leq_trans (size_segment_poly _ _)).
-                      by rewrite mulnC; exact: leq_pmulr.
-                    - apply: (leq_trans (size_polyMleq _ _)).
-                      apply: (leq_trans (leq_pred _)).
-                      by rewrite mulnC muln2 -addnn;
-                         apply: leq_add; exact: size_segment_poly. }
-               ++ apply: (leq_trans (size_segment_poly _ _)).
-                  by rewrite mulnC; exact: leq_pmulr.
-            -- apply: (leq_trans (size_segment_poly _ _)).
-               by rewrite mulnC; exact: leq_pmulr.
-          * apply: (leq_trans (size_polyMleq _ _)).
-            apply: (leq_trans (leq_pred _)).
-            by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly.
-        + apply: (leq_trans (size_segment_poly _ _)).
-          by rewrite mulnC; exact: leq_pmulr.
-      - apply: (leq_trans (size_polyMleq _ _)).
-        apply: (leq_trans (leq_pred _)).
-        by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly. }
+      { apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+        { apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+          { apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+            { apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+              { apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
+                { apply: (leq_trans (size_segment_poly _ _)). exact: H_nb. }
+                { exact: size_mul_segment_poly_le. } }
+              { apply: (leq_trans (size_segment_poly _ _)). exact: H_nb. } }
+            { apply: (leq_trans (size_segment_poly _ _)). exact: H_nb. } }
+          { exact: size_mul_segment_poly_le. } }
+        { apply: (leq_trans (size_segment_poly _ _)). exact: H_nb. } }
+      { exact: size_mul_segment_poly_le. } }
     have [deltas [H_deltas [H_sz H_all]]] := combine_poly_ker_decompose P_diff H_comb.
-    pose deltas_pad := deltas ++ nseq (2 * nblocks - size deltas) 0%R.
-    have H_deltas_sz : (size deltas <= 2 * nblocks)%N.
-    { rewrite H_sz. case: (size P_diff <= 1)%N.
-      - exact: Hsz_Pdiff.
-      - apply: leq_trans (leq_pred _) Hsz_Pdiff. }
-    have H_pad_sz : size deltas_pad = (2 * nblocks)%N
+    pose deltas_pad := deltas ++ nseq (2 * nblocks - 2 - size deltas) 0%R.
+    have H_deltas_sz : (size deltas <= 2 * nblocks - 2)%N.
+    { rewrite H_sz. case: ifP => Hcond.
+      - apply: (leq_trans Hcond).
+        exact: H_deltas_sz_bound.
+      - have -> : (2 * nblocks - 2)%N = ((2 * nblocks).-1 - 1)%N by rewrite subnS !subn1.
+        have -> : (size P_diff).-1 = (size P_diff - 1)%N by rewrite subn1.
+        apply: leq_sub2r.
+        exact: Hsz_Pdiff. }
+    have H_pad_sz : size deltas_pad = (2 * nblocks - 2)%N
       by rewrite /deltas_pad size_cat size_nseq addnC subnK.
     have H_nseq_zero : forall k0, ker_chain (nseq k0 0) = 0.
     { elim=> [|k0 IH] /=; first done.
@@ -1309,17 +1332,16 @@ Module HQCTiny (P : HQCTinyParams).
     have H_pad_eq : ker_chain deltas_pad = ker_chain deltas
       by exact: H_pad_eq_gen.
     have H_deltas_el : forall idx, (idx < size deltas)%N ->
-        (size (nth 0%R deltas idx) <= W)%N.
+        (size (nth 0%R deltas idx) <= d - W)%N.
     { move=> idx Hidx.
       have /allP H_all' := H_all.
       have H_in : nth 0%R deltas idx \in deltas by exact: mem_nth.
       have H_sz_el' := H_all' (nth 0%R deltas idx) H_in.
-      have H_tmp : (size (nth 0%R deltas idx) + W <= 2 * W)%N
-        by exact: leq_trans H_sz_el' d_le_W2.
-      rewrite mul2n in H_tmp. rewrite -addnn in H_tmp.
-      by rewrite leq_add2r in H_tmp. }
-    have H_pad_el : forall idx, (idx < 2 * nblocks)%N ->
-        (size (nth 0%R deltas_pad idx) <= W)%N.
+      rewrite leq_subRL.
+      - exact: W_le_d.
+      - by rewrite addnC. }
+    have H_pad_el : forall idx, (idx < 2 * nblocks - 2)%N ->
+        (size (nth 0%R deltas_pad idx) <= d - W)%N.
     { move=> idx Hidx.
       rewrite /deltas_pad nth_cat.
       case: ifPn => Hcond.
@@ -1330,7 +1352,7 @@ Module HQCTiny (P : HQCTinyParams).
     move=> k_v_ker_val t_val.
     have H_f_v_eq : fin_to_deltas (f_v_ker (deltas_to_fin deltas_pad) k_v_ker_val) =
       [seq ((fin_to_deltas k_v_ker_val)`_idx + deltas_pad`_idx)%R
-       | idx <- iota 0 (2 * nblocks)].
+       | idx <- iota 0 (2 * nblocks - 2)].
     { rewrite /f_v_ker.
       have H_deltas_padK : fin_to_deltas (deltas_to_fin deltas_pad) = deltas_pad
         by rewrite deltas_to_finK.
@@ -1353,7 +1375,7 @@ Module HQCTiny (P : HQCTinyParams).
     rewrite -H_pk2_eq -H_split_s /eval_pts_n.
     rewrite -!eval_points_mul -!H_test.
     rewrite H_f_v_eq.
-    have -> : (2 * nblocks)%nat = size (fin_to_deltas k_v_ker_val)
+    have -> : (2 * nblocks - 2)%nat = size (fin_to_deltas k_v_ker_val)
       by rewrite /fin_to_deltas size_map size_enum_ord.
     rewrite (ker_chain_add (fin_to_deltas k_v_ker_val) deltas_pad H_sz_eq).
     rewrite H_pad_eq -H_deltas /P_diff.
