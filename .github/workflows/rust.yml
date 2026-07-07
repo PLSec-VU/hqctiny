@@ -1,0 +1,47 @@
+name: Rust
+
+on:
+  push:
+    branches: [main, rewrite]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'rust-toolchain.toml'
+      - 'hqctiny-cli/**'
+      - 'tests/**'
+      - 'benches/**'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'rust-toolchain.toml'
+      - 'hqctiny-cli/**'
+      - 'tests/**'
+      - 'benches/**'
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml is read automatically; this just ensures the
+      # toolchain is installed before Swatinem/rust-cache keyed on it.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings

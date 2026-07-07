@@ -1,0 +1,53 @@
+name: Coq
+
+on:
+  push:
+    branches: [main, rewrite]
+    paths:
+      - 'ssprove/**'
+  pull_request:
+    paths:
+      - 'ssprove/**'
+
+env:
+  # Bump this string to force a fresh opam install (e.g. when upgrading SSProve).
+  OPAM_CACHE_KEY: coq-ssprove-v1
+
+jobs:
+  verify:
+    name: Verify proofs
+    runs-on: ubuntu-latest
+    # opam + SSProve install is slow on a cold cache.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install opam
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y opam
+
+      # Cache the entire opam switch including the installed SSProve .vo files.
+      # opam install builds from source, so a warm cache is critical.
+      - name: Restore opam cache
+        id: opam-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.opam
+          key: opam-${{ runner.os }}-${{ env.OPAM_CACHE_KEY }}
+
+      - name: Set up opam switch and install SSProve
+        if: steps.opam-cache.outputs.cache-hit != 'true'
+        run: |
+          opam init --bare --no-setup --disable-sandboxing -y
+          opam switch create default --empty -y
+          opam repo add coq-released https://coq.inria.fr/opam/released --set-default
+          opam install --yes coq-ssprove
+
+      # Makefile.conf has local paths hardcoded; regenerate for the CI environment.
+      - name: Verify proofs
+        run: |
+          eval $(opam env --switch=default)
+          cd ssprove
+          rocq makefile -f _CoqProject -o Makefile
+          make -j$(nproc)
