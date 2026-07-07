@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - 'ssprove/**'
+  workflow_dispatch:
 
 env:
   # Bump this string to force a fresh opam install (e.g. when upgrading SSProve).
@@ -24,8 +25,11 @@ jobs:
 
       - name: Install opam
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y opam
+          # apt opam is often outdated; install the current release directly.
+          sudo curl -fsSL \
+            https://github.com/ocaml/opam/releases/download/2.3.0/opam-2.3.0-x86_64-linux \
+            -o /usr/local/bin/opam
+          sudo chmod +x /usr/local/bin/opam
 
       # Cache the entire opam switch including the installed SSProve .vo files.
       # opam install builds from source, so a warm cache is critical.
@@ -41,7 +45,8 @@ jobs:
         run: |
           opam init --bare --no-setup --disable-sandboxing -y
           opam switch create default --empty -y
-          opam repo add coq-released https://coq.inria.fr/opam/released --set-default
+          opam repo add coq-released https://coq.inria.fr/opam/released
+          opam update
           opam install --yes coq-ssprove
 
       # Makefile.conf has local paths hardcoded; regenerate for the CI environment.
