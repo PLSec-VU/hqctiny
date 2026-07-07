@@ -1364,9 +1364,49 @@ Module HQCTiny (P : HQCTinyParams).
       by rewrite /fin_to_deltas size_map size_enum_ord.
     rewrite (ker_chain_add (fin_to_deltas k_v_ker_val) deltas_pad H_sz_eq).
     rewrite H_pad_eq -H_deltas /P_diff.
-    (* Algebraic rearrangement — admitted *)
-    admit.
-  Admitted.
+    f_equal.
+    rewrite /f_t.
+    change (drop_poly n1n2 (p_v %% Ring.gen)) with q_trunc.
+    rewrite /fin_to_poly /poly_to_fin /= polyF2_takeK.
+    rewrite polyF2_takeK.
+    rewrite (polyF2_takeK (polyF2_of_nat t_val 0 (n - n1n2) + q_trunc) (n - n1n2)).
+    have Hsz : (size (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) <= P.n)%N.
+    { have H_monic : mk_monic Ring.gen \is monic by apply: monic_mk_monic.
+      have H_lt := ltn_modpN0 _ (monic_neq0 H_monic).
+      rewrite Ring.size_mk_monic_gen in H_lt.
+      move=> p.
+      rewrite -Pdiv.IdomainMonic.modpE //.
+      exact: H_lt. }
+    rewrite (take_poly_id (Hsz _)).
+    have Hsz_sum : (size (polyF2_of_nat t_val 0 (n - n1n2) + q_trunc)%R <= n - n1n2)%N.
+    { apply: (leq_trans (size_polyD _ _)).
+      rewrite geq_max.
+      apply/andP; split; [exact: size_polyF2_of_nat | exact: Hsz_q_trunc]. }
+    rewrite (take_poly_id Hsz_sum).
+    rewrite mulrDr split_poly_add.
+    rewrite split_poly_add.
+    rewrite -!addrA.
+    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly m_poly nblocks + _)]addrCA.
+    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly s_poly nblocks * _ + _)]addrCA.
+    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly e nblocks + _)]addrCA.
+    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly (polyF2_of_nat k_v_val 0 n) nblocks * _ + _)]addrCA.
+    rewrite [split_poly ('X^n1n2 * polyF2_of_nat t_val 0 (n - n1n2)) nblocks + split_poly ('X^n1n2 * q_trunc) nblocks]addrC.
+    rewrite [split_poly ('X^n1n2 * q_trunc) nblocks + (split_poly ('X^n1n2 * q_trunc) nblocks + _)]addrA.
+    rewrite H_char_polyK add0r.
+    rewrite [ker_chain (fin_to_deltas k_v_ker_val) + (split_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrCA.
+    rewrite [split_poly (polyF2_of_nat _ 0 n) nblocks * _ + (split_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrCA.
+    rewrite [split_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + (split_poly (Pdiv.CommonRing.rmodp _ (mk_monic Ring.gen)) nblocks + _)]addrA.
+    rewrite H_char_polyK add0r.
+    rewrite [ker_chain (fin_to_deltas k_v_ker_val) + (_ + _)]addrCA.
+    rewrite [split_poly (polyF2_of_nat _ 0 n) nblocks * _ + (split_poly (polyF2_of_nat _ 0 n) nblocks * _ + _)]addrA.
+    rewrite H_char_polyK add0r.
+    change (P.encode msg) with m_poly.
+    rewrite [split_poly (polyF2_of_nat k_v_val 0 n) nblocks * _ + (ker_chain _ + _)]addrCA.
+    rewrite [split_poly e nblocks + (ker_chain _ + _)]addrCA.
+    rewrite [split_poly s_poly nblocks * _ + (ker_chain _ + _)]addrCA.
+    rewrite [split_poly m_poly nblocks + (ker_chain _ + _)]addrCA.
+    done.
+  Qed.
 
   (** Main theorem *)
   Theorem hqctiny_indistinguishable :
