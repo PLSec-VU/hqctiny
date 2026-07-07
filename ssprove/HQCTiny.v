@@ -137,6 +137,7 @@ Module HQCTiny (P : HQCTinyParams).
     apply: leq_sub2r.
     by rewrite mulnC muln2 -addnn; apply: leq_add; exact: size_segment_poly.
   Qed.
+
   Lemma H_deltas_sz_bound : (1 <= 2 * nblocks - 2)%N.
   Proof.
     have H_ge2 := nblocks_ge2.
@@ -147,10 +148,11 @@ Module HQCTiny (P : HQCTinyParams).
     - by apply: (leq_trans (n := 2)).
     - exact: leq_addl.
   Qed.
+
   (** Guard predicate for valid point sequences *)
   Definition valid_pk_b (pts : seq K) : bool :=
     let iph := interpolate_n pts in
-    (size iph <= nblocks)%N && all_coeffs_smallb iph && (size (combine_poly iph) <= n)%N.
+    all_coeffs_smallb iph && (size (combine_poly iph) <= n)%N.
 
   Definition valid_pk (pts : seq K) : Prop :=
     exists h : Ring.Rq, eval_pts_n (segment_poly (h : {poly F2}) nblocks) = pts.
@@ -372,6 +374,10 @@ Module HQCTiny (P : HQCTinyParams).
         let '(pk, msg) := args in
         let h_pts := unpack_points pk.1 in
         let s_pts := unpack_points pk.2 in
+        (* The guard ensures the public key is a valid and complete trace of the
+        protocol. It validates if the input public key's points are valid, which
+        is a fine assumption since an attacker has nothing to gain attacking
+        ciphertexts meant for them by sending a malformed public key. *)
         if valid_pk_b h_pts && valid_pk_b s_pts then
           let m := P.encode msg in
           t_fin ← sample (uniform ('C(n, we) ^ 3)) ;;
@@ -921,6 +927,37 @@ Module HQCTiny (P : HQCTinyParams).
         by rewrite (set_nth_default (Ordinal (expn_gt0 2 (d-W)))) ?size_tuple.
   Qed.
 
+  Lemma size_combine_poly_le : forall (q : {poly K}) (nb : nat),
+    all_coeffs_small q ->
+    (size (combine_poly q) <= nb * W)%N ->
+    (size q <= nb)%N.
+  Proof.
+    move=> q nb Hsmall Hsz.
+    apply/leq_sizeP => k Hk.
+    pose nb_max := maxn (size q) nb.
+    have Hsz_max : (size q <= nb_max)%N by rewrite leq_maxl.
+    have H_self : segment_poly (combine_poly q) nb_max = q by apply: segment_poly_combine_poly; [exact: Hsz_max | exact: Hsmall].
+    have -> : q`_k = (segment_poly (combine_poly q) nb_max)`_k by rewrite H_self.
+    rewrite coef_segment_poly.
+    case: ifP => Hk_nbmax.
+    - rewrite /segment_block.
+      have H_drop : drop_poly (k * W) (combine_poly q) = 0.
+      { apply/polyP => i.
+        rewrite coef_drop_poly coef0.
+        apply: nth_default.
+        apply: (leq_trans Hsz).
+        rewrite addnC.
+        apply: (leq_trans (n := k * W)).
+        + rewrite leq_mul2r. apply/orP; right. exact: Hk.
+        + exact: leq_addr. }
+      rewrite H_drop.
+      have H_take0 : take_poly W (0 : {poly 'F_2}) = 0.
+      { apply/polyP => c. by rewrite coef_take_poly !coef0; case: ifP. }
+      rewrite H_take0.
+      by rewrite in_qpoly0.
+    - by [].
+  Qed.
+
   Lemma hqctiny_u_eq : forall (pk1 : PointSeqCt) (t_fin : 'I_('C(n, we) ^ 3)) (k_u_val : 'I_(2^n)),
     let r1 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 0))) in
     let r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 1))) in
@@ -944,8 +981,12 @@ Module HQCTiny (P : HQCTinyParams).
              (eval_pts_n (ker_chain (fin_to_deltas (f_u_ker diff k_u_ker_val))))).
   Proof.
     intros pk1 t_fin k_u_val r1 r2 h_poly h_rq p_u Hpk1.
-    move/andP: Hpk1 => [/andP [H1 H2] H3].
+    move/andP: Hpk1 => [H2 H3].
     have H2_small : all_coeffs_small (interpolate_n (unpack_points pk1)) by move/all_coeffs_smallbP: H2.
+    have H1 : (size (interpolate_n (unpack_points pk1)) <= nblocks)%N.
+    { apply: (size_combine_poly_le _ _ H2_small).
+      apply: (leq_trans H3).
+      exact: (ltnW nblocks_bound). }
     have Hsz_pk1 : size (unpack_points pk1) = npoints by rewrite /unpack_points /points_tuple_to_seq size_tuple.
     have H_pk1_eq : eval_pts_n (interpolate_n (unpack_points pk1)) = unpack_points pk1 by apply: eval_interpolate_id.
     have H_h_eq : fin_to_poly n (poly_to_fin n h_poly) = h_poly.
@@ -1136,9 +1177,13 @@ Module HQCTiny (P : HQCTinyParams).
              (eval_pts_n (segment_poly ('X^n1n2 * fin_to_poly (n - n1n2) (f_t p_v t_val)) nblocks))).
   Proof.
     intros pk2 msg t_fin k_v_val r2 e s_poly s_rq m_poly p_v Hpk2.
-    move/andP: Hpk2 => [/andP [H1 H2] H3].
+    move/andP: Hpk2 => [H2 H3].
     have H2_small : all_coeffs_small (interpolate_n (unpack_points pk2))
       by move/all_coeffs_smallbP: H2.
+    have H1 : (size (interpolate_n (unpack_points pk2)) <= nblocks)%N.
+    { apply: (size_combine_poly_le _ _ H2_small).
+      apply: (leq_trans H3).
+      exact: (ltnW nblocks_bound). }
     have Hsz_pk2 : size (unpack_points pk2) = npoints
       by rewrite /unpack_points /points_tuple_to_seq size_tuple.
     have H_pk2_eq : eval_pts_n (interpolate_n (unpack_points pk2)) = unpack_points pk2
