@@ -88,23 +88,10 @@ pub fn combine(blocks: &[Gf2_9009]) -> Vec<u64> {
 /// Evaluate a segmented polynomial at a generator point generator^idx.
 pub fn evaluate_at_generator(blocks: &[Gf2_9009], idx: u8, out: &mut Gf2_9009) {
     *out = Gf2_9009::zero();
-    let generator = {
-        let mut d = [0u64; GF29009_NUM_U64];
-        d[0] = 2; // bit 1 is generator a = x^1
-        Gf2_9009::new(d)
-    };
+    let mut term = Gf2_9009::zero();
 
-    // point = generator^idx
-    let mut point = Gf2_9009::one();
-    for _ in 0..idx {
-        point.mul(&generator);
-    }
-
-    let mut term_pow = Gf2_9009::one();
-    for coeff in blocks {
-        let mut term = *coeff;
-        term.mul(&term_pow);
+    for (j, coeff) in blocks.iter().enumerate() {
+        coeff.mul_by_x_pow((idx as usize) * j, &mut term);
         out.add(&term);
-        term_pow.mul(&point);
     }
 }
