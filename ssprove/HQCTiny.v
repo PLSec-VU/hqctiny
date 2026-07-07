@@ -1233,8 +1233,7 @@ Module HQCTiny (P : HQCTinyParams).
       have H_rq_eq : m_poly + s_rq * r2 + e
         = in_qpoly Ring.gen p_s.
       { apply/val_inj; rewrite /p_s.
-        have := in_qpoly_rq_eq3 m_poly s_rq r2 e.
-        admit. }
+        rewrite -H_s_rq_eq; exact: in_qpoly_rq_eq3 m_poly s_rq r2 e. }
       rewrite H_rq_eq.
       rewrite -[Pdiv.CommonRing.rmodp (R:=fintype_ordinal__canonical__GRing_NzRing
         (Zp_trunc (pdiv 2))) (polyF2_of_nat (nat_of_polyF2 s_poly 0 n)
