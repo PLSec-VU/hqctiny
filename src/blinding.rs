@@ -22,20 +22,21 @@ pub fn reduce_mod_xn_minus_1<'o>(poly: &[u64], n: usize, out: &'o mut [u64]) -> 
     let copy_len = poly.len().min(max_words);
     padded[..copy_len].copy_from_slice(&poly[..copy_len]);
 
+    // Zero the output and copy the base polynomial
     out[..n_words].fill(0);
+    let out_copy_len = copy_len.min(n_words);
+    out[..out_copy_len].copy_from_slice(&padded[..out_copy_len]);
 
-    for (wi, padded_word) in padded.iter().enumerate() {
-        let word = *padded_word; // unconditional read
-        let base = wi * 64;
-        // Process each bit position (deterministic inner loop)
-        for bi in 0..64 {
-            let bit = (word >> bi) & 1;
-            let pos = base + bi;
-            let reduced = pos % n;
-            let rw = reduced / 64;
-            let rb = reduced % 64;
-            out[rw] ^= bit << rb;
+    let word_offset = n / 64;
+    let bit_offset = n % 64;
+
+    // Shift-and-XOR pass: fold the words above bit n back down
+    for i in 0..n_words {
+        let mut w = padded[word_offset + i] >> bit_offset;
+        if bit_offset != 0 {
+            w ^= padded[word_offset + i + 1] << (64 - bit_offset);
         }
+        out[i] ^= w;
     }
 
     // Truncate final word to exactly n bits
