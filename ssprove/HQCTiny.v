@@ -1127,7 +1127,60 @@ Module HQCTiny (P : HQCTinyParams).
       split_poly s_poly nblocks * split_poly (r2 : {poly F2}) nblocks +
       split_poly (e : {poly F2}) nblocks +
       split_poly (fin_to_poly n k_v_val) nblocks * split_poly Ring.gen nblocks.
-    have H_comb : combine_poly P_diff = 0. { admit. }
+    have H_comb : combine_poly P_diff = 0.
+    { rewrite /P_diff !combine_poly_add.
+      have H_sz_f1 : (size (fin_to_poly n (rq_to_fin (HQC_Sec.truncate (m_poly + s_rq * r2 + e)%R))) <= nblocks * W)%N
+        by (apply: leq_trans Hn_le; rewrite /fin_to_poly; exact: size_polyF2_of_nat).
+      have H_sz_f2 : (size (fin_to_poly n (f_v p_v k_v_val)) <= nblocks * W)%N
+        by (apply: leq_trans Hn_le; rewrite /fin_to_poly; exact: size_polyF2_of_nat).
+      have H_sz_f3 : (size (fin_to_poly n k_v_val) <= nblocks * W)%N
+        by (apply: leq_trans Hn_le; rewrite /fin_to_poly; exact: size_polyF2_of_nat).
+      have H_sz_gen : (size Ring.gen <= nblocks * W)%N
+        by (rewrite Ring.size_gen; change P.RingP.n with n;
+          apply: (leq_trans _ nblocks_bound);
+          rewrite mulnC muln2 -addnn -{1}(add0n n) ltn_add2r;
+          apply: (ltn_trans _ n_gt1); done).
+      have H_sz_m_poly : (size (m_poly : {poly F2}) <= nblocks * W)%N
+        by (apply: (leq_trans _ Hn_le); exact: size_Rq_val).
+      have H_sz_r2 : (size (r2 : {poly F2}) <= nblocks * W)%N
+        by (apply: (leq_trans _ Hn_le); exact: size_Rq_val).
+      have H_sz_e : (size (e : {poly F2}) <= nblocks * W)%N
+        by (apply: (leq_trans _ Hn_le); exact: size_Rq_val).
+      have H_sz_s : (size s_poly <= nblocks * W)%N
+        by (apply: (leq_trans _ Hn_le); exact: H3).
+      pose X_q : {poly F2} := ('X^n1n2 * q_trunc)%R.
+      have H_sz_X_q : (size X_q <= nblocks * W)%N.
+      { rewrite /X_q.
+        admit. }
+      rewrite (combine_poly_split _ _ H_sz_f1)
+              (combine_poly_split _ _ H_sz_m_poly)
+              (combine_poly_mul_split_poly _ _ _ H_sz_f2 H_sz_gen)
+              (combine_poly_mul_split_poly _ _ _ H_sz_s H_sz_r2)
+              (combine_poly_split _ _ H_sz_e)
+              (combine_poly_mul_split_poly _ _ _ H_sz_f3 H_sz_gen)
+              (combine_poly_split X_q nblocks H_sz_X_q)
+              /X_q.
+      rewrite /p_v.
+      have H_char2 : forall p : {poly F2}, (p + p = 0)%R.
+      { move=> p. apply/polyP => i. rewrite coefD coef0.
+        rewrite -[p`_i + _]/(p`_i *+ 2).
+        rewrite -mulr_natr.
+        have Hchar : 2 \in [char 'F_2] by exact: pchar_Fp 2 PointFieldHelpers.prime2.
+        by rewrite (pcharf0 Hchar) mulr0. }
+      set t_val := poly_to_fin (n - n1n2) q_trunc.
+      have H_t_val_eq : fin_to_poly (n - n1n2) t_val = q_trunc.
+      { rewrite /t_val /fin_to_poly /poly_to_fin /= polyF2_takeK.
+        apply: take_poly_id. exact: Hsz_q_trunc. }
+      have H_f_t_zero : fin_to_poly (n - n1n2) (f_t
+        ((m_poly : {poly F2}) + s_poly * (r2 : {poly F2}) + (e : {poly F2}))
+        t_val) = 0.
+      { rewrite /f_t H_t_val_eq /q_trunc.
+        admit. }
+      have H_sz_pv_s : (size s_poly <= n)%N by exact: H3.
+      have H_veq := v_eq (r2 : {poly F2}) (e : {poly F2}) s_poly
+        (m_poly : {poly F2}) k_v_val t_val
+        (size_Rq_val r2) (size_Rq_val e) H_sz_pv_s (size_Rq_val m_poly).
+      admit. }
     have Hsz_Pdiff : (size P_diff <= 2 * nblocks)%N.
     { rewrite /P_diff.
       apply: (leq_trans (size_polyD _ _)). rewrite geq_max. apply/andP; split.
