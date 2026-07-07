@@ -1151,7 +1151,27 @@ Module HQCTiny (P : HQCTinyParams).
       pose X_q : {poly F2} := ('X^n1n2 * q_trunc)%R.
       have H_sz_X_q : (size X_q <= nblocks * W)%N.
       { rewrite /X_q.
-        admit. }
+        have [-> | H_neq0] := eqVneq q_trunc 0.
+        - by rewrite mulr0 size_poly0.
+        - have Hpos : (0 < size q_trunc)%N by rewrite size_poly_gt0.
+          have H_n1n2_le_n : (n1n2 <= n)%N.
+          { have H_gt0 : (0 < n - n1n2)%N.
+            { case: (n - n1n2)%N Hsz_q_trunc => [| m] Hsz.
+              - exfalso. move: Hpos. apply/negP.
+                rewrite -ltnNge. exact: Hsz.
+              - by []. }
+            have H_lt : (n1n2 < n)%N by rewrite -subn_gt0.
+            exact: ltnW H_lt. }
+          have := size_polyMleq 'X^n1n2 q_trunc.
+          rewrite size_polyXn.
+          move=> H_bound.
+          apply: (leq_trans H_bound).
+          rewrite addSn /=.
+          have Htmp: (n1n2 + size q_trunc <= n1n2 + (n - n1n2))%N
+            by rewrite leq_add2l.
+          have Hfinal: (n1n2 + (n - n1n2) <= nblocks * W)%N
+            by rewrite subnKC.
+          exact: (leq_trans Htmp Hfinal). }
       rewrite (combine_poly_split _ _ H_sz_f1)
               (combine_poly_split _ _ H_sz_m_poly)
               (combine_poly_mul_split_poly _ _ _ H_sz_f2 H_sz_gen)
