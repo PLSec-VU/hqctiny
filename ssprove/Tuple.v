@@ -14,7 +14,6 @@ From SSProve.Crypt Require Import Axioms ChoiceAsOrd SubDistr Couplings
 
 From Stdlib Require Import Utf8.
 From extructures Require Import ord fset fmap.
-From Hammer Require Import Tactics.
 
 Set Bullet Behavior "Strict Subproofs".
 Set Default Goal Selector "!".
