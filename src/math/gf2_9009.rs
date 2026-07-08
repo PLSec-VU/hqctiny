@@ -119,7 +119,24 @@ impl Gf2_9009 {
         // The shifted element can have bits up to (DEGREE - 1 + pow).
         let max_word = GF29009_NUM_U64 + word_shift + 1;
         debug_assert!(max_word <= 512, "max_word {} exceeds buffer size", max_word);
-        let mut buf = [0u64; 512];
+
+        // Dispatch on buffer size so small shifts (the common case in
+        // point evaluation) don't pay for zero-initializing 512 words.
+        match max_word {
+            ..=160 => self.shift_reduce::<160>(word_shift, bit_shift, max_word, out),
+            161..=256 => self.shift_reduce::<256>(word_shift, bit_shift, max_word, out),
+            _ => self.shift_reduce::<512>(word_shift, bit_shift, max_word, out),
+        }
+    }
+
+    fn shift_reduce<const N: usize>(
+        &self,
+        word_shift: usize,
+        bit_shift: usize,
+        max_word: usize,
+        out: &mut Gf2_9009,
+    ) {
+        let mut buf = [0u64; N];
 
         if bit_shift == 0 {
             buf[word_shift..(GF29009_NUM_U64 + word_shift)]
@@ -135,7 +152,7 @@ impl Gf2_9009 {
             }
         }
 
-        reduce(&buf[..max_word], out);
+        reduce(&mut buf[..max_word], out);
     }
 }
 
@@ -149,43 +166,30 @@ impl Gf2_9009 {
 
 /// Multiply two field elements and reduce modulo the field polynomial.
 fn multiply(a: &[u64; GF29009_NUM_U64], b: &[u64; GF29009_NUM_U64], out: &mut Gf2_9009) {
-    let mut prod = [0u64; 512];
-    karatsuba_mul(a, b, &mut prod);
-    let n = a.len().max(b.len());
-    let padded = n.next_power_of_two();
-    reduce(&prod[..2 * padded], out);
+    let mut prod = [0u64; 2 * GF29009_NUM_U64];
+    let mut scratch = [0u64; POLY_MUL_SCRATCH];
+    poly_mul(a, b, &mut prod, &mut scratch);
+    reduce(&mut prod, out);
 }
 
 // ---------------------------------------------------------------------------
-// Karatsuba multiplication for GF(2) polynomials
+// Toom-3 / Karatsuba multiplication for GF(2) polynomials
 // ---------------------------------------------------------------------------
 
-/// Multiply two slices of u64 representing GF(2) polynomials.
-/// Returns the product in a fixed-size array on the stack.
-fn karatsuba_mul(a: &[u64], b: &[u64], out: &mut [u64; 512]) {
-    let n = a.len().max(b.len());
+/// Scratch for `poly_mul`: the Toom-3 level at n = 141 reserves 8k+12 = 388
+/// words (k = 47), and its children are Karatsuba multiplies of 49 words
+/// needing 4*(25 + 13 + 7) = 180 more along the deepest path; rounded up.
+const POLY_MUL_SCRATCH: usize = 768;
 
-    let padded = n.next_power_of_two();
-    debug_assert!(padded <= 256, "padded size {} exceeds 256", padded);
+/// Below this operand size (in words), Karatsuba splitting is used instead
+/// of Toom-3.
+const TOOM3_THRESHOLD: usize = 100;
 
-    let mut a_padded = [0u64; 256];
-    let mut b_padded = [0u64; 256];
-    a_padded[..a.len()].copy_from_slice(a);
-    b_padded[..b.len()].copy_from_slice(b);
-
-    let mut scratch = [0u64; 1024];
-    karatsuba_recursive(
-        &a_padded[..padded],
-        &b_padded[..padded],
-        &mut out[..2 * padded],
-        &mut scratch,
-    );
-}
-
-/// Recursive Karatsuba for two equal-length slices (length is power of 2).
-fn karatsuba_recursive(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
+/// Multiply two equal-length slices of u64 representing GF(2) polynomials.
+///
+/// `out[..2n]` must be zero-filled on entry; the product is XORed into it.
+fn poly_mul(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
     debug_assert_eq!(a.len(), b.len());
-    debug_assert!(a.len().is_power_of_two());
     let n = a.len();
     debug_assert!(out.len() >= 2 * n);
 
@@ -193,37 +197,203 @@ fn karatsuba_recursive(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64
 
     if n <= BASE_THRESHOLD {
         schoolbook_mul(a, b, out);
-        return;
+    } else if n < TOOM3_THRESHOLD {
+        karatsuba_step(a, b, out, scratch);
+    } else {
+        toom3_step(a, b, out, scratch);
     }
+}
 
-    let m = n / 2;
+/// One Karatsuba level. The halves are split at ceil(n/2), so no
+/// power-of-two padding is needed.
+fn karatsuba_step(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
+    let n = a.len();
+    let m = n.div_ceil(2);
     let (a_lo, a_hi) = a.split_at(m);
     let (b_lo, b_hi) = b.split_at(m);
 
-    let (z1, scratch) = scratch.split_at_mut(n);
+    let (z1, scratch) = scratch.split_at_mut(2 * m);
     let (a_sum, scratch) = scratch.split_at_mut(m);
     let (b_sum, scratch) = scratch.split_at_mut(m);
 
+    // z0 = a_lo*b_lo and z2 = a_hi*b_hi land in disjoint ranges of out,
+    // which is zero on entry, so they need no scratch buffers.
+    {
+        let (out_z0, out_z2) = out[..2 * n].split_at_mut(2 * m);
+        poly_mul(a_lo, b_lo, out_z0, scratch);
+        poly_mul(a_hi, b_hi, out_z2, scratch);
+    }
+
+    // a_hi/b_hi have floor(n/2) limbs, one fewer than the low halves
+    // when n is odd.
+    a_sum.copy_from_slice(a_lo);
+    b_sum.copy_from_slice(b_lo);
+    for i in 0..n - m {
+        a_sum[i] ^= a_hi[i];
+        b_sum[i] ^= b_hi[i];
+    }
+
     z1.fill(0);
+    poly_mul(a_sum, b_sum, z1, scratch);
 
-    let (out_lo, out_hi) = out.split_at_mut(n);
-    karatsuba_recursive(a_lo, b_lo, out_lo, scratch);
-    karatsuba_recursive(a_hi, b_hi, out_hi, scratch);
+    // Fold z0 and z2 into the middle term before touching out[m..], since
+    // the write range overlaps both of their positions.
+    for (i, z) in z1.iter_mut().enumerate() {
+        *z ^= out[i];
+    }
+    for i in 0..2 * (n - m) {
+        z1[i] ^= out[2 * m + i];
+    }
+    for (i, z) in z1.iter().enumerate() {
+        out[m + i] ^= z;
+    }
+}
 
-    for i in 0..m {
-        a_sum[i] = a_lo[i] ^ a_hi[i];
-        b_sum[i] = b_lo[i] ^ b_hi[i];
+/// One word-aligned Toom-3 level (Bodrato's TC3W).
+///
+/// The operands are split into three parts of k = ceil(n/3) words in the
+/// outer variable y = x^(64k), and C(y) = A(y)*B(y) is recovered from five
+/// evaluations at y = 0, 1, W, W+1, and infinity, where W = x^64. With
+/// these points every interpolation step is a word shift, an XOR, or an
+/// exact division by W^2 + W (a prefix scan), and the five sub-products
+/// have ~n/3 words each:
+///
+///   E1 = C(1) + c0 + c4                    = c1 + c2 + c3
+///   E2 = C(W) + c0 + W^4*c4                = W*c1 + W^2*c2 + W^3*c3
+///   E3 = C(W+1) + c0 + (W^4+1)*c4          = (W+1)*c1 + (W+1)^2*c2 + (W+1)^3*c3
+///   U  = (E2 + W*E1) / (W^2 + W)           = c2 + (W+1)*c3
+///   V  = (E3 + (W+1)*E1) / (W^2 + W)       = c2 + W*c3
+///   c3 = U + V,  c2 = V + W*c3,  c1 = E1 + c2 + c3
+fn toom3_step(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
+    let n = a.len();
+    let k = n.div_ceil(3);
+    let n2 = n - 2 * k;
+
+    let (a0, rest) = a.split_at(k);
+    let (a1, a2) = rest.split_at(k);
+    let (b0, rest) = b.split_at(k);
+    let (b1, b2) = rest.split_at(k);
+
+    let (ta, scratch) = scratch.split_at_mut(k + 2);
+    let (tb, scratch) = scratch.split_at_mut(k + 2);
+    let (e1, scratch) = scratch.split_at_mut(2 * k);
+    let (e2, scratch) = scratch.split_at_mut(2 * k + 4);
+    let (e3, scratch) = scratch.split_at_mut(2 * k + 4);
+
+    // c0 = a0*b0 and c4 = a2*b2 land in disjoint ranges of out, which is
+    // zero on entry, so they need no scratch buffers.
+    {
+        let (out_c0, rest) = out[..2 * n].split_at_mut(2 * k);
+        let (_, out_c4) = rest.split_at_mut(2 * k);
+        poly_mul(a0, b0, out_c0, scratch);
+        poly_mul(a2, b2, out_c4, scratch);
     }
 
-    karatsuba_recursive(a_sum, b_sum, z1, scratch);
+    // C(1) = (a0 + a1 + a2)(b0 + b1 + b2)
+    ta[..k].copy_from_slice(a0);
+    tb[..k].copy_from_slice(b0);
+    for i in 0..k {
+        ta[i] ^= a1[i];
+        tb[i] ^= b1[i];
+    }
+    for i in 0..n2 {
+        ta[i] ^= a2[i];
+        tb[i] ^= b2[i];
+    }
+    e1.fill(0);
+    poly_mul(&ta[..k], &tb[..k], e1, scratch);
 
-    for i in 0..n {
-        z1[i] ^= out[i] ^ out[n + i];
+    // C(W): A(W) = a0 + W*a1 + W^2*a2 spans k + 2 words
+    ta.fill(0);
+    tb.fill(0);
+    ta[..k].copy_from_slice(a0);
+    tb[..k].copy_from_slice(b0);
+    for i in 0..k {
+        ta[i + 1] ^= a1[i];
+        tb[i + 1] ^= b1[i];
+    }
+    for i in 0..n2 {
+        ta[i + 2] ^= a2[i];
+        tb[i + 2] ^= b2[i];
+    }
+    e2.fill(0);
+    poly_mul(ta, tb, e2, scratch);
+
+    // C(W+1): A(W+1) = A(W) + a1 + a2
+    for i in 0..k {
+        ta[i] ^= a1[i];
+        tb[i] ^= b1[i];
+    }
+    for i in 0..n2 {
+        ta[i] ^= a2[i];
+        tb[i] ^= b2[i];
+    }
+    e3.fill(0);
+    poly_mul(ta, tb, e3, scratch);
+
+    // Strip the known c0 and c4 contributions from the three evaluations.
+    for i in 0..2 * k {
+        let c0_i = out[i];
+        e1[i] ^= c0_i;
+        e2[i] ^= c0_i;
+        e3[i] ^= c0_i;
+    }
+    for i in 0..2 * n2 {
+        let c4_i = out[4 * k + i];
+        e1[i] ^= c4_i;
+        e2[4 + i] ^= c4_i;
+        e3[i] ^= c4_i;
+        e3[4 + i] ^= c4_i;
     }
 
-    for i in 0..n {
-        out[m + i] ^= z1[i];
+    // U = (E2 + W*E1) / (W^2 + W), placed at e2[1..2k+2]
+    for i in 0..2 * k {
+        e2[1 + i] ^= e1[i];
     }
+    exact_div_w2_plus_w(e2);
+
+    // V = (E3 + (W+1)*E1) / (W^2 + W), placed at e3[1..2k+2]
+    for i in 0..2 * k {
+        e3[i] ^= e1[i];
+        e3[1 + i] ^= e1[i];
+    }
+    exact_div_w2_plus_w(e3);
+
+    // c3 = U + V, overwriting U's slot: c3[j] = e2[1 + j]
+    for i in 1..2 * k + 2 {
+        e2[i] ^= e3[i];
+    }
+    debug_assert_eq!(e2[2 * k + 1], 0, "c3 exceeds 2k words");
+
+    // c2 = V + W*c3, overwriting V's slot: c2[j] = e3[1 + j]
+    for i in 1..2 * k + 1 {
+        e3[1 + i] ^= e2[i];
+    }
+
+    // Recompose out += c1*y + c2*y^2 + c3*y^3, with c1 = E1 + c2 + c3.
+    for i in 0..2 * k {
+        let c2_i = e3[1 + i];
+        let c3_i = e2[1 + i];
+        out[k + i] ^= e1[i] ^ c2_i ^ c3_i;
+        out[2 * k + i] ^= c2_i;
+        out[3 * k + i] ^= c3_i;
+    }
+}
+
+/// Exact division by W^2 + W = x^128 + x^64, in place. The quotient ends
+/// up shifted down one word: q[j] = buf[1 + j].
+fn exact_div_w2_plus_w(buf: &mut [u64]) {
+    // The bottom word is the W-division remainder and must be zero.
+    debug_assert_eq!(buf[0], 0, "division by W^2 + W is not exact");
+    // Division by W + 1 is the prefix scan q[j] = r[j] + q[j-1].
+    for i in 2..buf.len() {
+        buf[i] ^= buf[i - 1];
+    }
+    debug_assert_eq!(
+        buf[buf.len() - 1],
+        0,
+        "division by W^2 + W left a remainder"
+    );
 }
 
 /// Schoolbook polynomial multiplication using CLMUL for u64 words.
@@ -248,20 +418,20 @@ fn schoolbook_mul(a: &[u64], b: &[u64], out: &mut [u64]) {
 // Reduction modulo x^9009 + x^29 + 1
 // ---------------------------------------------------------------------------
 
-fn reduce(poly: &[u64], result: &mut Gf2_9009) {
-    let min_len = GF29009_NUM_U64 + 2;
-    let len = poly.len().max(min_len);
-    debug_assert!(len <= 512, "reduce len {} exceeds buffer size", len);
-
-    let mut buf = [0u64; 512];
-    buf[..poly.len()].copy_from_slice(poly);
+/// Reduce a polynomial modulo the field polynomial, in place.
+///
+/// `buf` is used as scratch and is clobbered. It must hold at least
+/// GF29009_NUM_U64 + 1 words so the folding writes stay in bounds.
+fn reduce(buf: &mut [u64], result: &mut Gf2_9009) {
+    debug_assert!(buf.len() > GF29009_NUM_U64, "reduce buffer too small");
 
     const START_WORD: usize = 140;
     const START_BIT: usize = 49;
 
-    for wi in (141..len).rev() {
+    // Descending, so each word above the boundary is folded exactly once
+    // and its targets (always strictly lower) are folded in later passes.
+    for wi in (141..buf.len()).rev() {
         let w = buf[wi];
-        buf[wi] = 0;
 
         let target_idx = wi - 141;
 
@@ -275,16 +445,12 @@ fn reduce(poly: &[u64], result: &mut Gf2_9009) {
     }
 
     // Finally, reduce the start_word (140)
-    let w = buf[START_WORD];
-    let w_high = w >> START_BIT;
-    buf[START_WORD] = w & ((1u64 << START_BIT) - 1);
+    let w_high = buf[START_WORD] >> START_BIT;
 
     // For off = 0 and off = 29:
     buf[0] ^= w_high ^ (w_high << 29);
 
-    let copy_len = GF29009_NUM_U64.min(len);
-    result.data.fill(0);
-    result.data[..copy_len].copy_from_slice(&buf[..copy_len]);
+    result.data.copy_from_slice(&buf[..GF29009_NUM_U64]);
     result.normalize();
 }
 
@@ -374,6 +540,78 @@ mod tests {
     use super::*;
     use serde::Deserialize;
     use std::fs;
+
+    /// Deterministic xorshift64* so failures are reproducible.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545F4914F6CDD1D)
+        }
+    }
+
+    /// Multiply via `poly_mul` and via `schoolbook_mul` and compare.
+    /// Schoolbook is the ground truth: one CLMUL per word pair, no
+    /// splitting logic to share bugs with.
+    fn check_poly_mul(a: &[u64], b: &[u64], context: &str) {
+        let n = a.len();
+        let mut expected = vec![0u64; 2 * n];
+        schoolbook_mul(a, b, &mut expected);
+
+        let mut got = vec![0u64; 2 * n];
+        let mut scratch = vec![0u64; 4096];
+        poly_mul(a, b, &mut got, &mut scratch);
+
+        assert_eq!(got, expected, "poly_mul mismatch: {}", context);
+    }
+
+    /// Cross-check the Karatsuba and Toom-3 paths against schoolbook on
+    /// random operands. Sizes cover the dispatch thresholds (8, 100), odd
+    /// and even splits, the field element size (141), and sizes above 200
+    /// where Toom-3 recurses into itself.
+    #[test]
+    fn test_poly_mul_matches_schoolbook_random() {
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        let sizes = [
+            1, 2, 3, 7, 8, 9, 10, 15, 16, 17, 31, 47, 48, 49, 64, 71, 99, 100, 101, 140, 141, 142,
+            150, 200, 300,
+        ];
+        for &n in &sizes {
+            for trial in 0..5 {
+                let a: Vec<u64> = (0..n).map(|_| rng.next()).collect();
+                let b: Vec<u64> = (0..n).map(|_| rng.next()).collect();
+                check_poly_mul(&a, &b, &format!("n={n} trial={trial}"));
+            }
+        }
+    }
+
+    /// Structured edge patterns that random operands are unlikely to hit:
+    /// all-ones (maximal carries into every interpolation step), single
+    /// bits at the extremes of each Toom-3 part, and sparse words.
+    #[test]
+    fn test_poly_mul_matches_schoolbook_edge_patterns() {
+        let mut rng = XorShift(0x0DD0_BEEF_CAFE_F00D);
+        for &n in &[100usize, 141, 300] {
+            let ones = vec![u64::MAX; n];
+            check_poly_mul(&ones, &ones, &format!("n={n} all-ones"));
+
+            let mut lo = vec![0u64; n];
+            lo[0] = 1;
+            let mut hi = vec![0u64; n];
+            hi[n - 1] = 1u64 << 63;
+            check_poly_mul(&lo, &hi, &format!("n={n} lo*hi"));
+            check_poly_mul(&hi, &hi, &format!("n={n} hi*hi"));
+
+            let random: Vec<u64> = (0..n).map(|_| rng.next()).collect();
+            let zero = vec![0u64; n];
+            check_poly_mul(&random, &zero, &format!("n={n} rand*zero"));
+            check_poly_mul(&random, &ones, &format!("n={n} rand*ones"));
+            check_poly_mul(&random, &hi, &format!("n={n} rand*hi"));
+        }
+    }
 
     #[derive(Deserialize)]
     struct TestVectors {
