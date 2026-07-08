@@ -2,7 +2,7 @@ use crate::blinding;
 use crate::error::{Error, Result};
 use crate::hqc::{HqcMessageParameters, HqcScheme, HqcSharedSecretParameters};
 use crate::math::gf2_9009::Gf2_9009;
-use crate::math::segmentation::{evaluate_at_generator, split};
+use crate::math::segmentation::evaluate_poly_at_generator;
 use crate::protocol::*;
 use crate::traits::*;
 use chacha20poly1305::{
@@ -141,7 +141,7 @@ where
         // Validate Merkle proof for the public evaluation point
         let leaf_bytes = serialize_point_leaf(req.point_index, req.point_type, &req.public_eval);
         let leaf_hash = Blake3Algorithm::hash(&leaf_bytes);
-        let proof = rs_merkle::MerkleProof::<Blake3Algorithm>::try_from(req.witness.clone())
+        let proof = rs_merkle::MerkleProof::<Blake3Algorithm>::from_bytes(&req.witness)
             .map_err(|_| Error::InvalidWitness)?;
 
         let index = match req.point_type {
@@ -157,35 +157,28 @@ where
         theta.copy_from_slice(&plaintext[..32]);
         let m = &plaintext[32..];
 
-        let msg_params = SCHEME::partial_message_encaps(m, &theta);
-        let r2_poly = msg_params.r2();
-        let e_poly = msg_params.e();
-        let r1_poly = msg_params.r1();
-
         let n = SCHEME::PARAM_N;
         let n_words = n.div_ceil(64);
         let num_deltas = blinding::num_kernel_deltas(n);
-
-        let r2_blocks = split(r2_poly);
-
         let power = req.point_index;
-        let mut r2_xi = Gf2_9009::zero();
-        evaluate_at_generator(&r2_blocks, power, &mut r2_xi);
 
         // The quotient masks and kernel deltas of u and v must be mutually
         // independent (HQCTiny.v samples them separately); a shared mask
         // would cancel in u XOR v and leak the message.
         let eval = match req.point_type {
             PointType::U => {
+                let msg_params = SCHEME::partial_message_encaps(m, &theta);
+
+                let mut r2_xi = Gf2_9009::zero();
+                evaluate_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
+
                 let mut mask_poly = vec![0u64; n_words];
                 blinding::generate_quotient_mask(&theta, b"quotient mask u", n, &mut mask_poly);
-                let mask_blocks = split(&mask_poly);
                 let mut mask_xi = Gf2_9009::zero();
-                evaluate_at_generator(&mask_blocks, power, &mut mask_xi);
+                evaluate_poly_at_generator(&mask_poly, power, &mut mask_xi);
 
-                let r1_blocks = split(r1_poly);
                 let mut r1_xi = Gf2_9009::zero();
-                evaluate_at_generator(&r1_blocks, power, &mut r1_xi);
+                evaluate_poly_at_generator(msg_params.r1(), power, &mut r1_xi);
 
                 let mut u_xi = r1_xi;
                 let mut term_u = req.public_eval;
@@ -205,24 +198,26 @@ where
                 u_xi
             }
             PointType::V => {
+                // partial_message_encaps_v samples only r2 and e; r1 is last in the XOF
+                // stream and unused for V-type responses.
+                let msg_params = SCHEME::partial_message_encaps_v(m, &theta);
+
+                let mut r2_xi = Gf2_9009::zero();
+                evaluate_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
+
                 let mut mask_poly = vec![0u64; n_words];
                 blinding::generate_quotient_mask(&theta, b"quotient mask v", n, &mut mask_poly);
-                let mask_blocks = split(&mask_poly);
                 let mut mask_xi = Gf2_9009::zero();
-                evaluate_at_generator(&mask_blocks, power, &mut mask_xi);
+                evaluate_poly_at_generator(&mask_poly, power, &mut mask_xi);
 
                 let mut k_encoded = vec![0u64; SCHEME::VEC_N_SIZE_64];
                 SCHEME::code_encode(&mut k_encoded, m);
-
-                let k_blocks = split(&k_encoded);
                 let mut k_xi = Gf2_9009::zero();
-                evaluate_at_generator(&k_blocks, power, &mut k_xi);
+                evaluate_poly_at_generator(&k_encoded, power, &mut k_xi);
 
-                let e_blocks = split(e_poly);
                 let mut e_xi = Gf2_9009::zero();
-                evaluate_at_generator(&e_blocks, power, &mut e_xi);
+                evaluate_poly_at_generator(msg_params.e(), power, &mut e_xi);
 
-                // Generate truncate mask polynomial
                 let mut t_poly = vec![0u64; n_words];
                 blinding::generate_truncate_mask(
                     &theta,
@@ -231,10 +226,8 @@ where
                     SCHEME::PARAM_N1N2,
                     &mut t_poly,
                 );
-
-                let t_blocks = split(&t_poly);
                 let mut t_xi = Gf2_9009::zero();
-                evaluate_at_generator(&t_blocks, power, &mut t_xi);
+                evaluate_poly_at_generator(&t_poly, power, &mut t_xi);
 
                 let mut v_xi = k_xi;
                 let mut term_v = req.public_eval;

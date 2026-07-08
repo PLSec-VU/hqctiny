@@ -154,6 +154,67 @@ impl Gf2_9009 {
 
         reduce(&mut buf[..max_word], out);
     }
+
+    /// Shift `self` left by `x^pow`, reduce, and XOR the result into `out`.
+    ///
+    /// `eff_words`: number of significant limbs in `self` (limbs at indices
+    /// `eff_words..GF29009_NUM_U64` must be zero).  Using a tighter bound
+    /// avoids shifting zero limbs, keeping the intermediate buffer small and
+    /// the dispatch in the fastest bucket.
+    #[inline]
+    pub fn mul_by_x_pow_xor_into(&self, pow: usize, eff_words: usize, out: &mut Gf2_9009) {
+        debug_assert!(eff_words <= GF29009_NUM_U64);
+
+        if pow == 0 {
+            for i in 0..eff_words {
+                out.data[i] ^= self.data[i];
+            }
+            return;
+        }
+
+        let word_shift = pow / 64;
+        let bit_shift = pow % 64;
+        let max_word = eff_words + word_shift + 1;
+        debug_assert!(max_word <= 512, "max_word {} exceeds buffer size", max_word);
+
+        match max_word {
+            ..=160 => self.shift_xor_into::<160>(eff_words, word_shift, bit_shift, max_word, out),
+            161..=256 => {
+                self.shift_xor_into::<256>(eff_words, word_shift, bit_shift, max_word, out)
+            }
+            _ => self.shift_xor_into::<512>(eff_words, word_shift, bit_shift, max_word, out),
+        }
+    }
+
+    fn shift_xor_into<const N: usize>(
+        &self,
+        eff_words: usize,
+        word_shift: usize,
+        bit_shift: usize,
+        max_word: usize,
+        out: &mut Gf2_9009,
+    ) {
+        let mut buf = [0u64; N];
+
+        if bit_shift == 0 {
+            buf[word_shift..word_shift + eff_words].copy_from_slice(&self.data[..eff_words]);
+        } else {
+            let inv_shift = 64 - bit_shift;
+            for i in 0..eff_words {
+                let val = self.data[i];
+                buf[i + word_shift] ^= val << bit_shift;
+                // i + word_shift + 1 <= eff_words + word_shift = max_word - 1 < N
+                buf[i + word_shift + 1] ^= val >> inv_shift;
+            }
+        }
+
+        // reduce requires buf.len() > GF29009_NUM_U64; N >= 160 > 141 satisfies this.
+        // Zeros beyond max_word are harmless for reduction.
+        let reduce_len = max_word.max(GF29009_NUM_U64 + 1);
+        let mut temp = Gf2_9009::zero();
+        reduce(&mut buf[..reduce_len], &mut temp);
+        out.add(&temp);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +240,7 @@ fn multiply(a: &[u64; GF29009_NUM_U64], b: &[u64; GF29009_NUM_U64], out: &mut Gf
 /// Scratch for `poly_mul`: the Toom-3 level at n = 141 reserves 8k+12 = 388
 /// words (k = 47), and its children are Karatsuba multiplies of 49 words
 /// needing 4*(25 + 13 + 7) = 180 more along the deepest path; rounded up.
-const POLY_MUL_SCRATCH: usize = 768;
+pub(crate) const POLY_MUL_SCRATCH: usize = 768;
 
 /// Below this operand size (in words), Karatsuba splitting is used instead
 /// of Toom-3.
@@ -188,7 +249,7 @@ const TOOM3_THRESHOLD: usize = 100;
 /// Multiply two equal-length slices of u64 representing GF(2) polynomials.
 ///
 /// `out[..2n]` must be zero-filled on entry; the product is XORed into it.
-fn poly_mul(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
+pub(crate) fn poly_mul(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
     debug_assert_eq!(a.len(), b.len());
     let n = a.len();
     debug_assert!(out.len() >= 2 * n);
@@ -398,18 +459,13 @@ fn exact_div_w2_plus_w(buf: &mut [u64]) {
 
 /// Schoolbook polynomial multiplication using CLMUL for u64 words.
 fn schoolbook_mul(a: &[u64], b: &[u64], out: &mut [u64]) {
-    let result_len = a.len() + b.len();
+    debug_assert!(out.len() >= a.len() + b.len());
     for i in 0..a.len() {
         let ai = a[i];
         for j in 0..b.len() {
-            let bj = b[j];
-            let prod = clmul(ai, bj);
-            let lo = prod as u64;
-            let hi = (prod >> 64) as u64;
-            out[i + j] ^= lo;
-            if i + j + 1 < result_len {
-                out[i + j + 1] ^= hi;
-            }
+            let prod = clmul(ai, b[j]);
+            out[i + j] ^= prod as u64;
+            out[i + j + 1] ^= (prod >> 64) as u64;
         }
     }
 }
@@ -422,7 +478,7 @@ fn schoolbook_mul(a: &[u64], b: &[u64], out: &mut [u64]) {
 ///
 /// `buf` is used as scratch and is clobbered. It must hold at least
 /// GF29009_NUM_U64 + 1 words so the folding writes stay in bounds.
-fn reduce(buf: &mut [u64], result: &mut Gf2_9009) {
+pub(crate) fn reduce(buf: &mut [u64], result: &mut Gf2_9009) {
     debug_assert!(buf.len() > GF29009_NUM_U64, "reduce buffer too small");
 
     const START_WORD: usize = 140;

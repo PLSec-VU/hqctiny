@@ -10,6 +10,9 @@ use super::gf2_9009::{DEGREE, GF29009_NUM_U64, Gf2_9009};
 /// residues; hence ceiling division, giving 4505 rather than 4504.
 pub const W: usize = DEGREE.div_ceil(2); // 4505
 
+/// Number of significant limbs in a split block (block width is W bits = 71 u64s).
+pub const EFF_WORDS: usize = W.div_ceil(64); // 71
+
 #[inline(always)]
 fn get_64_bits(poly: &[u64], bit_idx: usize) -> u64 {
     let word_idx = bit_idx / 64;
@@ -93,5 +96,38 @@ pub fn evaluate_at_generator(blocks: &[Gf2_9009], idx: u8, out: &mut Gf2_9009) {
     for (j, coeff) in blocks.iter().enumerate() {
         coeff.mul_by_x_pow((idx as usize) * j, &mut term);
         out.add(&term);
+    }
+}
+
+/// Split a packed GF(2) polynomial and evaluate it at generator^idx in one pass.
+///
+/// Equivalent to `evaluate_at_generator(&split(poly), idx, out)` but avoids
+/// allocating the intermediate `Vec<Gf2_9009>` and processes each block with
+/// the narrow-width shift variant (EFF_WORDS limbs instead of GF29009_NUM_U64).
+pub fn evaluate_poly_at_generator(poly: &[u64], idx: u8, out: &mut Gf2_9009) {
+    *out = Gf2_9009::zero();
+    if poly.is_empty() {
+        return;
+    }
+
+    let total_bits = poly.len() * 64;
+    let num_blocks = total_bits.div_ceil(W).max(1);
+    let full_words = W / 64; // 70
+    let remaining_bits = W % 64; // 25
+    let mask = (1u64 << remaining_bits) - 1;
+
+    for j in 0..num_blocks {
+        let block_start_bit = j * W;
+        let mut coeff_data = [0u64; GF29009_NUM_U64];
+
+        for (w_out, coeff_word) in coeff_data[..full_words].iter_mut().enumerate() {
+            *coeff_word = get_64_bits(poly, block_start_bit + w_out * 64);
+        }
+        // remaining_bits is always > 0 (W % 64 = 25)
+        let last_word = get_64_bits(poly, block_start_bit + full_words * 64);
+        coeff_data[full_words] = last_word & mask;
+
+        let coeff = Gf2_9009 { data: coeff_data };
+        coeff.mul_by_x_pow_xor_into((idx as usize) * j, EFF_WORDS, out);
     }
 }

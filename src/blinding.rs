@@ -1,7 +1,7 @@
 //! Blinding mask generation and stripping operations.
 //!
 //! This module provides functions to:
-use crate::math::gf2_9009::{DEGREE, GF29009_NUM_U64, Gf2_9009};
+use crate::math::gf2_9009::{DEGREE, Gf2_9009};
 use crate::math::segmentation::W;
 
 /// Reduce a polynomial modulo x^n - 1 (constant-time for fixed `n`).
@@ -15,35 +15,30 @@ pub fn reduce_mod_xn_minus_1<'o>(poly: &[u64], n: usize, out: &'o mut [u64]) -> 
         "reduce_mod_xn_minus_1 output buffer too small"
     );
 
-    // The masked polynomial (u + m·(xⁿ-1)) has degree < 2n after
-    // interpolation + combine - 2·n_words words is an upper bound.
-    let max_words = 2 * n_words;
-    let mut padded = vec![0u64; max_words];
-    let copy_len = poly.len().min(max_words);
-    padded[..copy_len].copy_from_slice(&poly[..copy_len]);
-
-    // Zero the output and copy the base polynomial
+    // Base: low n_words of poly (poly may be shorter for mask polys of length n_words).
     out[..n_words].fill(0);
-    let out_copy_len = copy_len.min(n_words);
-    out[..out_copy_len].copy_from_slice(&padded[..out_copy_len]);
+    let base = poly.len().min(n_words);
+    out[..base].copy_from_slice(&poly[..base]);
+
+    // Reads from poly beyond its length return 0 — the polynomial is zero there.
+    let read = |idx: usize| -> u64 { if idx < poly.len() { poly[idx] } else { 0 } };
 
     let word_offset = n / 64;
     let bit_offset = n % 64;
 
-    // Shift-and-XOR pass: fold the words above bit n back down
-    for i in 0..n_words {
-        let mut w = padded[word_offset + i] >> bit_offset;
+    // Fold the words above bit n back down.
+    for (i, out_word) in out[..n_words].iter_mut().enumerate() {
+        let mut w = read(word_offset + i) >> bit_offset;
         if bit_offset != 0 {
-            w ^= padded[word_offset + i + 1] << (64 - bit_offset);
+            w ^= read(word_offset + i + 1) << (64 - bit_offset);
         }
-        out[i] ^= w;
+        *out_word ^= w;
     }
 
-    // Truncate final word to exactly n bits
+    // Truncate final word to exactly n bits.
     let last_bits = n % 64;
     if last_bits != 0 {
-        let mask = (1u64 << last_bits) - 1;
-        out[n_words - 1] &= mask;
+        out[n_words - 1] &= (1u64 << last_bits) - 1;
     }
 
     &mut out[..n_words]
@@ -138,36 +133,35 @@ pub fn num_kernel_deltas(n: usize) -> usize {
 
 pub fn generate_kernel_deltas(theta: &[u8], context: &[u8], count: usize) -> Vec<Gf2_9009> {
     let delta_words = KER_DELTA_BITS.div_ceil(64);
-    let mut words = vec![0u64; count * delta_words];
+    let rem_bits = KER_DELTA_BITS % 64;
+    let mask = if rem_bits > 0 {
+        (1u64 << rem_bits) - 1
+    } else {
+        u64::MAX
+    };
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(theta);
     hasher.update(context);
     let mut xof = hasher.finalize_xof();
-    xof.fill(bytemuck::cast_slice_mut::<u64, u8>(&mut words));
 
-    let rem_bits = KER_DELTA_BITS % 64;
-    (0..count)
-        .map(|k| {
-            let mut data = [0u64; GF29009_NUM_U64];
-            data[..delta_words].copy_from_slice(&words[k * delta_words..(k + 1) * delta_words]);
-            if rem_bits > 0 {
-                data[delta_words - 1] &= (1u64 << rem_bits) - 1;
-            }
-            Gf2_9009::new(data)
-        })
-        .collect()
+    let mut deltas = vec![Gf2_9009::zero(); count];
+    for delta in &mut deltas {
+        xof.fill(bytemuck::cast_slice_mut::<u64, u8>(
+            &mut delta.data[..delta_words],
+        ));
+        delta.data[delta_words - 1] &= mask;
+    }
+    deltas
 }
 
 /// Evaluate the kernel chain of `deltas` at the point a^power.
 pub fn evaluate_ker_chain(deltas: &[Gf2_9009], power: usize) -> Gf2_9009 {
     let mut acc = Gf2_9009::zero();
-    let mut term = Gf2_9009::zero();
+    let eff_words = KER_DELTA_BITS.div_ceil(64); // 71 — deltas have no significant bits beyond this
     for (j, delta) in deltas.iter().enumerate() {
-        delta.mul_by_x_pow(W + power * j, &mut term);
-        acc.add(&term);
-        delta.mul_by_x_pow(power * (j + 1), &mut term);
-        acc.add(&term);
+        delta.mul_by_x_pow_xor_into(W + power * j, eff_words, &mut acc);
+        delta.mul_by_x_pow_xor_into(power * (j + 1), eff_words, &mut acc);
     }
     acc
 }

@@ -2,10 +2,9 @@ use crate::blinding;
 use crate::error::{Error, Result};
 use crate::hqc::{HqcPublicKeyParameters, HqcScheme};
 use crate::math::gf2_9009::Gf2_9009;
-use crate::math::segmentation::{combine, evaluate_at_generator, split};
+use crate::math::segmentation::{combine, evaluate_poly_at_generator};
 use crate::protocol::*;
 use crate::traits::*;
-use std::collections::HashMap;
 
 // --- States ---
 pub struct Initial;
@@ -23,8 +22,8 @@ pub struct CollectingPoints {
     pub cookie: Vec<u8>,
     pub salt: [u8; 16],
     pub key_index: u8,
-    pub points_u: HashMap<u8, Gf2_9009>,
-    pub points_v: HashMap<u8, Gf2_9009>,
+    pub points_u: Vec<Option<Gf2_9009>>,
+    pub points_v: Vec<Option<Gf2_9009>>,
     pub sk: Vec<u8>,
 }
 
@@ -45,28 +44,24 @@ where
 }
 
 fn build_merkle_tree<SCHEME: HqcScheme>(
-    pk: &[u8],
+    pk_params: &SCHEME::PublicKeyParameters,
 ) -> (
     rs_merkle::MerkleTree<Blake3Algorithm>,
     Vec<(u8, PointType, Gf2_9009)>,
 ) {
-    let pk_params = SCHEME::partial_public_key_encaps(pk);
-    let h_blocks = split(pk_params.h());
-    let s_blocks = split(pk_params.s());
     let points_num = SCHEME::POINTS_NUM;
-
     let mut leaves = Vec::with_capacity(points_num * 2);
     let mut point_data = Vec::with_capacity(points_num * 2);
 
     for i in 0..points_num as u8 {
         let mut h_xi = Gf2_9009::zero();
-        evaluate_at_generator(&h_blocks, i + 1, &mut h_xi);
+        evaluate_poly_at_generator(pk_params.h(), i + 1, &mut h_xi);
         let leaf_bytes = serialize_point_leaf(i + 1, PointType::U, &h_xi);
         leaves.push(Blake3Algorithm::hash(&leaf_bytes));
         point_data.push((i + 1, PointType::U, h_xi));
 
         let mut s_xi = Gf2_9009::zero();
-        evaluate_at_generator(&s_blocks, i + 1, &mut s_xi);
+        evaluate_poly_at_generator(pk_params.s(), i + 1, &mut s_xi);
         let leaf_bytes = serialize_point_leaf(i + 1, PointType::V, &s_xi);
         leaves.push(Blake3Algorithm::hash(&leaf_bytes));
         point_data.push((i + 1, PointType::V, s_xi));
@@ -112,8 +107,8 @@ where
         let pk_params = SCHEME::partial_public_key_encaps(&pk);
         let hash_ek_kem = *pk_params.hash_ek_kem();
 
-        // Build Merkle tree to get the root hash
-        let (tree, point_data) = build_merkle_tree::<SCHEME>(&pk);
+        // Build Merkle tree — reuse pk_params already computed above.
+        let (tree, point_data) = build_merkle_tree::<SCHEME>(&pk_params);
         let merkle_root = tree.root().expect("Merkle tree has leaves");
 
         let request = HandshakeRequest {
@@ -174,6 +169,7 @@ where
             });
         }
 
+        let points_num = SCHEME::POINTS_NUM;
         let next_state = Client {
             session_store: self.session_store,
             entropy_provider: self.entropy_provider,
@@ -182,8 +178,8 @@ where
                 cookie: res.cookie,
                 salt: res.salt,
                 key_index: res.key_index,
-                points_u: HashMap::new(),
-                points_v: HashMap::new(),
+                points_u: vec![None; points_num],
+                points_v: vec![None; points_num],
                 sk: self.state.sk,
             },
             _phantom: std::marker::PhantomData,
@@ -225,29 +221,22 @@ where
 
         match res.point_type {
             PointType::U => {
-                self.state.points_u.insert(res.point_index, res.eval);
+                self.state.points_u[res.point_index as usize - 1] = Some(res.eval);
             }
             PointType::V => {
-                self.state.points_v.insert(res.point_index, res.eval);
+                self.state.points_v[res.point_index as usize - 1] = Some(res.eval);
             }
         }
 
-        if self.state.points_u.len() >= points_num && self.state.points_v.len() >= points_num {
+        if self.state.points_u.iter().all(|x| x.is_some())
+            && self.state.points_v.iter().all(|x| x.is_some())
+        {
             // Build ordered arrays of evaluations
             let mut u_evals = vec![Gf2_9009::zero(); points_num];
             let mut v_evals = vec![Gf2_9009::zero(); points_num];
             for i in 0..points_num {
-                let idx = (i + 1) as u8;
-                u_evals[i] = *self
-                    .state
-                    .points_u
-                    .get(&idx)
-                    .ok_or(Error::InterpolationFailed)?;
-                v_evals[i] = *self
-                    .state
-                    .points_v
-                    .get(&idx)
-                    .ok_or(Error::InterpolationFailed)?;
+                u_evals[i] = self.state.points_u[i].ok_or(Error::InterpolationFailed)?;
+                v_evals[i] = self.state.points_v[i].ok_or(Error::InterpolationFailed)?;
             }
 
             // Interpolate u and v in K[z] space
@@ -258,22 +247,14 @@ where
             let u_masked_poly = combine(&u_blocks);
             let v_masked_poly = combine(&v_blocks);
 
-            // Reduce modulo x^n - 1 to vanish the mask
+            // Reduce modulo x^n - 1 to vanish the mask.
+            // VEC_N_SIZE_64 == n.div_ceil(64) for all parameter sets, so
+            // reduce directly into the final word buffers without an extra copy.
             let n = SCHEME::PARAM_N;
-            let n_words = n.div_ceil(64);
-            let mut u_poly_buf = vec![0u64; n_words];
-            let u_poly = blinding::reduce_mod_xn_minus_1(&u_masked_poly, n, &mut u_poly_buf);
-
-            let mut v_poly_buf = vec![0u64; n_words];
-            let v_poly = blinding::reduce_mod_xn_minus_1(&v_masked_poly, n, &mut v_poly_buf);
-
-            // Pack u and v into the expected word arrays
             let mut u_words = vec![0u64; SCHEME::VEC_N_SIZE_64];
             let mut v_words = vec![0u64; SCHEME::VEC_N_SIZE_64];
-            u_words[..u_poly.len().min(SCHEME::VEC_N_SIZE_64)]
-                .copy_from_slice(&u_poly[..u_poly.len().min(SCHEME::VEC_N_SIZE_64)]);
-            v_words[..v_poly.len().min(SCHEME::VEC_N_SIZE_64)]
-                .copy_from_slice(&v_poly[..v_poly.len().min(SCHEME::VEC_N_SIZE_64)]);
+            blinding::reduce_mod_xn_minus_1(&u_masked_poly, n, &mut u_words);
+            blinding::reduce_mod_xn_minus_1(&v_masked_poly, n, &mut v_words);
 
             // Serialize HQC ciphertext
             let mut ct = vec![0u8; SCHEME::CIPHERTEXT_BYTES];

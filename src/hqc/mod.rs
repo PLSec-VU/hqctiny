@@ -81,6 +81,13 @@ pub trait HqcScheme {
     /// * `theta` - Input seed byte array. Must have length `Self::SEED_BYTES` (32 bytes).
     fn partial_message_encaps(m: &[u8], theta: &[u8]) -> Self::MessageParameters;
 
+    /// Like `partial_message_encaps` but skips sampling r1 (only r2 and e are needed
+    /// for V-type point responses; r1 is always last in the XOF stream so skipping it
+    /// leaves r2 and e unchanged).
+    fn partial_message_encaps_v(m: &[u8], theta: &[u8]) -> Self::MessageParameters {
+        Self::partial_message_encaps(m, theta)
+    }
+
     /// Performs the PKE encryption step to reconstruct ciphertext components `u` and `v`.
     ///
     /// # Arguments
@@ -270,18 +277,8 @@ macro_rules! define_hqc_variant {
 
                 fn interpolate(evals: &[crate::math::gf2_9009::Gf2_9009]) -> Vec<crate::math::gf2_9009::Gf2_9009> {
                     assert_eq!(evals.len(), Self::POINTS_NUM);
-                    let matrix = &*MATRIX;
-                    let mut result = vec![crate::math::gf2_9009::Gf2_9009::zero(); Self::POINTS_NUM];
-                    for j in 0..Self::POINTS_NUM {
-                        let mut sum = crate::math::gf2_9009::Gf2_9009::zero();
-                        for i in 0..Self::POINTS_NUM {
-                            let mut term = matrix[j][i];
-                            term.mul(&evals[i]);
-                            sum.add(&term);
-                        }
-                        result[j] = sum;
-                    }
-                    result
+                    let evals_arr: &[crate::math::gf2_9009::Gf2_9009; $points_num] = evals.try_into().unwrap();
+                    crate::math::interpolate::interpolate::<$points_num>(&*MATRIX, evals_arr).into()
                 }
 
                 fn code_encode(em: &mut [u64], m: &[u8]) {
@@ -400,6 +397,29 @@ macro_rules! define_hqc_variant {
                     m_arr.copy_from_slice(m);
 
                     MessageParameters { m: m_arr, r1, r2, e }
+                }
+
+                fn partial_message_encaps_v(m: &[u8], theta: &[u8]) -> Self::MessageParameters {
+                    assert_eq!(m.len(), PARAM_SECURITY_BYTES);
+                    assert_eq!(theta.len(), SEED_BYTES);
+                    let mut theta_xof_ctx = crate::hqc::ffi::shake256_xof_ctx { ctx: [0; 26] };
+                    unsafe {
+                        c_xof_init(&mut theta_xof_ctx, theta.as_ptr(), SEED_BYTES as u32);
+                    }
+
+                    let mut r2 = [0u64; VEC_N_SIZE_64];
+                    let mut e = [0u64; VEC_N_SIZE_64];
+
+                    unsafe {
+                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
+                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
+                        // r1 is last in the XOF stream and unused for V-type responses.
+                    }
+
+                    let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
+                    m_arr.copy_from_slice(m);
+
+                    MessageParameters { m: m_arr, r1: [0u64; VEC_N_SIZE_64], r2, e }
                 }
 
 

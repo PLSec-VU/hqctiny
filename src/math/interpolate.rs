@@ -1,6 +1,6 @@
 //! Interpolation via precomputed inverse Vandermonde matrices.
 
-use super::gf2_9009::{GF29009_NUM_U64, Gf2_9009};
+use super::gf2_9009::{GF29009_NUM_U64, Gf2_9009, POLY_MUL_SCRATCH, poly_mul, reduce};
 
 /// Load a precomputed matrix from embedded binary data.
 ///
@@ -43,16 +43,25 @@ pub fn load_matrix<const M: usize>(data: &[u8]) -> Box<[[Gf2_9009; M]; M]> {
 }
 
 /// Multiply an m×m matrix by a length-m vector over GF(2^9009).
+///
+/// Accumulates all M unreduced products per row in a single 2n-word buffer,
+/// then reduces once per row — saving M²−M reduction passes vs. the naive
+/// reduce-after-each-mul approach.
 fn mat_vec_mul<const M: usize>(matrix: &[[Gf2_9009; M]; M], vec: &[Gf2_9009; M]) -> [Gf2_9009; M] {
     let mut result = [Gf2_9009::zero(); M];
+    let mut prod = [0u64; 2 * GF29009_NUM_U64];
+    let mut scratch = [0u64; POLY_MUL_SCRATCH];
+
     for j in 0..M {
-        let mut sum = Gf2_9009::zero();
+        let mut acc = [0u64; 2 * GF29009_NUM_U64];
         for i in 0..M {
-            let mut term = matrix[j][i];
-            term.mul(&vec[i]);
-            sum.add(&term);
+            prod.fill(0);
+            poly_mul(&matrix[j][i].data, &vec[i].data, &mut prod, &mut scratch);
+            for (a, p) in acc.iter_mut().zip(prod.iter()) {
+                *a ^= *p;
+            }
         }
-        result[j] = sum;
+        reduce(&mut acc, &mut result[j]);
     }
     result
 }
