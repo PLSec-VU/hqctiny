@@ -5,7 +5,6 @@ use HQCTiny::server::Server;
 use HQCTiny::traits::*;
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::RngCore;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -21,26 +20,20 @@ impl EntropyProvider for OsEntropy {
 
 #[derive(Clone)]
 struct InMemorySessionStore {
-    sessions: Arc<Mutex<HashMap<[u8; 32], [u8; 32]>>>,
+    sessions: Arc<Mutex<Vec<[u8; 32]>>>,
 }
 
 impl InMemorySessionStore {
     fn new() -> Self {
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
 
 impl SessionStore for InMemorySessionStore {
-    fn save_session(&self, hash_ek_kem: &[u8; 32], k_session: [u8; 32]) {
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(*hash_ek_kem, k_session);
-    }
-    fn get_session(&self, hash_ek_kem: &[u8; 32]) -> Option<[u8; 32]> {
-        self.sessions.lock().unwrap().get(hash_ek_kem).copied()
+    fn save_session(&self, k_session: [u8; 32]) {
+        self.sessions.lock().unwrap().push(k_session);
     }
 }
 

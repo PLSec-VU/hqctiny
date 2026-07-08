@@ -2,24 +2,17 @@ use std::fmt;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
-    InvalidSignature,
-    TimestampTooOld,
     SessionExpired,
     InvalidCookie,
     InvalidCookieLength,
     SerializationError,
     EncryptionError,
     DecryptionError,
-    UnexpectedResponse,
-    InvalidThetaLength,
     InvalidPointIndex,
-    InvalidStateTransition,
     InterpolationFailed,
-    MacVerificationFailed,
     DecodingFailed,
     MerkleVerificationFailed,
     InvalidWitness,
-    NetworkError(String),
     Other(&'static str),
 }
 
