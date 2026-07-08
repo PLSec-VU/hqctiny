@@ -6,6 +6,7 @@ pub mod encoding;
 pub mod error;
 pub mod hqc;
 pub mod math;
+pub mod merkle;
 pub mod protocol;
 pub mod server;
 pub mod traits;

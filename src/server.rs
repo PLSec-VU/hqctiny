@@ -142,15 +142,19 @@ where
         // Validate Merkle proof for the public evaluation point
         let leaf_bytes = serialize_point_leaf(req.point_index, req.point_type, &req.public_eval);
         let leaf_hash = Blake3Algorithm::hash(&leaf_bytes);
-        let proof = rs_merkle::MerkleProof::<Blake3Algorithm>::from_bytes(&req.witness)
-            .map_err(|_| Error::InvalidWitness)?;
 
         let index = match req.point_type {
             PointType::U => (req.point_index as usize - 1) * 2,
             PointType::V => (req.point_index as usize - 1) * 2 + 1,
         };
         let total_leaves = SCHEME::POINTS_NUM * 2;
-        if !proof.verify(req.merkle_root, &[index], &[leaf_hash], total_leaves) {
+        if !crate::merkle::verify_proof(
+            &req.merkle_root,
+            index,
+            leaf_hash,
+            &req.witness,
+            total_leaves,
+        ) {
             return Err(Error::MerkleVerificationFailed);
         }
 

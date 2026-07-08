@@ -18,6 +18,7 @@ pub trait HqcScheme {
     type PublicKeyParameters: HqcPublicKeyParameters;
     type SharedSecretParameters: HqcSharedSecretParameters;
     type MessageParameters: HqcMessageParameters;
+    type Tree: crate::merkle::MerkleOps;
 
     /// Generates a public and secret keypair.
     ///
@@ -170,6 +171,7 @@ macro_rules! define_hqc_variant {
         $param_omega_e:expr,
         $param_n:expr,
         $points_num:expr,
+        $merkle_nodes:expr,
         $newton_weights_file:literal
     ) => {
         pub mod $mod_name {
@@ -279,6 +281,7 @@ macro_rules! define_hqc_variant {
                 type PublicKeyParameters = PublicKeyParameters;
                 type SharedSecretParameters = SharedSecretParameters;
                 type MessageParameters = MessageParameters;
+                type Tree = crate::merkle::MerkleTree<{$merkle_nodes}>;
 
                 fn interpolate(evals: &[crate::math::gf2_9009::Gf2_9009]) -> Vec<crate::math::gf2_9009::Gf2_9009> {
                     assert_eq!(evals.len(), Self::POINTS_NUM);
@@ -552,6 +555,7 @@ define_hqc_variant!(
     75,
     17669,
     7,
+    32,
     "../math/newton_weights_17669.bin"
 );
 define_hqc_variant!(
@@ -571,6 +575,7 @@ define_hqc_variant!(
     114,
     35851,
     15,
+    64,
     "../math/newton_weights_35851.bin"
 );
 define_hqc_variant!(
@@ -590,6 +595,7 @@ define_hqc_variant!(
     149,
     57637,
     25,
+    128,
     "../math/newton_weights_57637.bin"
 );
 

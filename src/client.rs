@@ -3,6 +3,7 @@ use crate::error::{Error, Result};
 use crate::hqc::{HqcPublicKeyParameters, HqcScheme};
 use crate::math::gf2_9009::Gf2_9009;
 use crate::math::segmentation::{combine, evaluate_poly_at_generator};
+use crate::merkle::MerkleOps;
 use crate::protocol::*;
 use crate::traits::*;
 use zeroize::{Zeroize, Zeroizing};
@@ -10,11 +11,11 @@ use zeroize::{Zeroize, Zeroizing};
 // --- States ---
 pub struct Initial;
 
-pub struct AwaitingHandshake {
+pub struct AwaitingHandshake<T> {
     pub request: HandshakeRequest,
     pub pk: Vec<u8>,
     pub sk: Zeroizing<Vec<u8>>,
-    pub tree: rs_merkle::MerkleTree<Blake3Algorithm>,
+    pub tree: T,
     pub point_data: Vec<(u8, PointType, Gf2_9009)>,
 }
 
@@ -46,10 +47,7 @@ where
 
 fn build_merkle_tree<SCHEME: HqcScheme>(
     pk_params: &SCHEME::PublicKeyParameters,
-) -> (
-    rs_merkle::MerkleTree<Blake3Algorithm>,
-    Vec<(u8, PointType, Gf2_9009)>,
-) {
+) -> (SCHEME::Tree, Vec<(u8, PointType, Gf2_9009)>) {
     let points_num = SCHEME::POINTS_NUM;
     let mut leaves = Vec::with_capacity(points_num * 2);
     let mut point_data = Vec::with_capacity(points_num * 2);
@@ -68,10 +66,7 @@ fn build_merkle_tree<SCHEME: HqcScheme>(
         point_data.push((i + 1, PointType::V, s_xi));
     }
 
-    (
-        rs_merkle::MerkleTree::<Blake3Algorithm>::from_leaves(&leaves),
-        point_data,
-    )
+    (SCHEME::Tree::build(&leaves), point_data)
 }
 
 impl<SCHEME, SStore, E> Client<SCHEME, SStore, E, Initial>
@@ -90,10 +85,11 @@ where
     }
 
     /// Generate an ephemeral HQC keypair and create the handshake request.
+    #[allow(clippy::type_complexity)]
     pub fn initialize(
         self,
     ) -> (
-        Client<SCHEME, SStore, E, AwaitingHandshake>,
+        Client<SCHEME, SStore, E, AwaitingHandshake<SCHEME::Tree>>,
         HandshakeRequest,
     ) {
         let mut entropy = [0u8; 48];
@@ -111,7 +107,7 @@ where
 
         // Build Merkle tree — reuse pk_params already computed above.
         let (tree, point_data) = build_merkle_tree::<SCHEME>(&pk_params);
-        let merkle_root = tree.root().expect("Merkle tree has leaves");
+        let merkle_root = tree.root();
 
         let request = HandshakeRequest {
             hash_ek_kem,
@@ -135,7 +131,7 @@ where
     }
 }
 
-impl<SCHEME, SStore, E> Client<SCHEME, SStore, E, AwaitingHandshake>
+impl<SCHEME, SStore, E> Client<SCHEME, SStore, E, AwaitingHandshake<SCHEME::Tree>>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
@@ -152,14 +148,12 @@ where
     )> {
         let tree = self.state.tree;
         let point_data = self.state.point_data;
-        let merkle_root = tree
-            .root()
-            .ok_or(Error::Other("Merkle tree root missing"))?;
+        let merkle_root = tree.root();
 
         let mut point_requests = Vec::with_capacity(point_data.len());
         for (idx, (point_index, point_type, public_eval)) in point_data.into_iter().enumerate() {
-            let proof = tree.proof(&[idx]);
-            let witness = proof.to_bytes();
+            let mut witness = Vec::with_capacity(tree.proof_len());
+            tree.write_proof(idx, &mut witness);
             point_requests.push(PointRequest {
                 cookie: res.cookie.clone(),
                 key_index: res.key_index,

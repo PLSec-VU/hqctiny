@@ -10,14 +10,6 @@ impl Blake3Algorithm {
     }
 }
 
-impl rs_merkle::Hasher for Blake3Algorithm {
-    type Hash = [u8; 32];
-
-    fn hash(data: &[u8]) -> [u8; 32] {
-        Self::hash(data)
-    }
-}
-
 pub fn serialize_point_leaf(
     point_index: u8,
     point_type: PointType,
