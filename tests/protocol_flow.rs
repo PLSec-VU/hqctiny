@@ -4,12 +4,11 @@ use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
 use HQCTiny::server::Server;
 mod test_utils;
 use HQCTiny::traits::*;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use test_utils::{InMemoryKeyProvider, MockEntropy, SharedSessionStore};
 
 fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
-    let sessions = Arc::new(Mutex::new(HashMap::new()));
+    let sessions = Arc::new(Mutex::new(Vec::new()));
     let store = SharedSessionStore {
         sessions: sessions.clone(),
     };
@@ -21,7 +20,7 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
 
     let client = Client::<SCHEME, _, _, _>::new(
         SharedSessionStore {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(Vec::new())),
         },
         MockEntropy,
     );
@@ -156,7 +155,7 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
     // 5. Verify server has saved the identical session key
     let saved = sessions.lock().unwrap();
     assert_eq!(saved.len(), 1);
-    let (_, server_key) = saved.iter().next().unwrap();
+    let server_key = saved.iter().next().unwrap();
 
     assert_eq!(client_key.as_slice(), &server_key[..client_key.len()]);
 
@@ -183,7 +182,7 @@ fn test_protocol_flow_hqc5() {
 
 #[test]
 fn test_cookie_key_rotation() {
-    let sessions = Arc::new(Mutex::new(HashMap::new()));
+    let sessions = Arc::new(Mutex::new(Vec::new()));
     let store = SharedSessionStore {
         sessions: sessions.clone(),
     };
@@ -195,7 +194,7 @@ fn test_cookie_key_rotation() {
 
     let client = Client::<Hqc1, _, _, _>::new(
         SharedSessionStore {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(Vec::new())),
         },
         MockEntropy,
     );
@@ -225,7 +224,7 @@ fn test_cookie_key_rotation() {
 
 #[test]
 fn test_invalid_merkle_witness_rejected() {
-    let sessions = Arc::new(Mutex::new(HashMap::new()));
+    let sessions = Arc::new(Mutex::new(Vec::new()));
     let store = SharedSessionStore {
         sessions: sessions.clone(),
     };
@@ -237,7 +236,7 @@ fn test_invalid_merkle_witness_rejected() {
 
     let client = Client::<Hqc1, _, _, _>::new(
         SharedSessionStore {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(Vec::new())),
         },
         MockEntropy,
     );
@@ -272,7 +271,7 @@ fn test_invalid_merkle_witness_rejected() {
 
 #[test]
 fn test_invalid_merkle_root_rejected() {
-    let sessions = Arc::new(Mutex::new(HashMap::new()));
+    let sessions = Arc::new(Mutex::new(Vec::new()));
     let store = SharedSessionStore {
         sessions: sessions.clone(),
     };
@@ -284,7 +283,7 @@ fn test_invalid_merkle_root_rejected() {
 
     let client = Client::<Hqc1, _, _, _>::new(
         SharedSessionStore {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(Vec::new())),
         },
         MockEntropy,
     );

@@ -4,7 +4,6 @@ use std::fmt;
 pub enum Error {
     InvalidSignature,
     TimestampTooOld,
-    TimestampNotIncreasing,
     SessionExpired,
     InvalidCookie,
     InvalidCookieLength,

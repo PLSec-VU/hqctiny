@@ -2,12 +2,11 @@
 
 use HQCTiny::traits::*;
 use rand::Rng;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Default)]
 pub struct SharedSessionStore {
-    pub sessions: Arc<Mutex<HashMap<[u8; 32], [u8; 32]>>>,
+    pub sessions: Arc<Mutex<Vec<[u8; 32]>>>,
 }
 
 impl SharedSessionStore {
@@ -17,14 +16,8 @@ impl SharedSessionStore {
 }
 
 impl SessionStore for SharedSessionStore {
-    fn save_session(&self, hash_ek_kem: &[u8; 32], k_session: [u8; 32]) {
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(*hash_ek_kem, k_session);
-    }
-    fn get_session(&self, hash_ek_kem: &[u8; 32]) -> Option<[u8; 32]> {
-        self.sessions.lock().unwrap().get(hash_ek_kem).cloned()
+    fn save_session(&self, k_session: [u8; 32]) {
+        self.sessions.lock().unwrap().push(k_session);
     }
 }
 

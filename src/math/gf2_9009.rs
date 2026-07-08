@@ -33,7 +33,7 @@ impl serde::Serialize for Gf2_9009 {
 impl<'de> serde::Deserialize<'de> for Gf2_9009 {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let hex_str = String::deserialize(deserializer)?;
-        Ok(Gf2_9009::from_hex(&hex_str))
+        Gf2_9009::try_from_hex(&hex_str).map_err(serde::de::Error::custom)
     }
 }
 
@@ -58,6 +58,39 @@ impl Gf2_9009 {
     pub fn mul(&mut self, rhs: &Self) {
         let mut out = Gf2_9009::zero();
         multiply(&self.data, &rhs.data, &mut out);
+        *self = out;
+    }
+
+    /// Multiply by a `rhs` known to have no significant bits at or beyond
+    /// `eff_words` (e.g. both operands are bounded-degree evaluation
+    /// results). Runs `poly_mul` on `eff_words` limbs instead of all 141,
+    /// which is asymptotically cheaper since Toom-3/Karatsuba cost is
+    /// superlinear in operand size.
+    pub fn mul_bounded(&mut self, rhs: &Self, eff_words: usize) {
+        debug_assert!(eff_words > 0 && eff_words <= GF29009_NUM_U64);
+        debug_assert!(
+            2 * eff_words > GF29009_NUM_U64,
+            "product of {eff_words}-word operands is too small for reduce's buffer contract"
+        );
+        debug_assert!(
+            self.data[eff_words..].iter().all(|&w| w == 0),
+            "self has significant bits beyond eff_words"
+        );
+        debug_assert!(
+            rhs.data[eff_words..].iter().all(|&w| w == 0),
+            "rhs has significant bits beyond eff_words"
+        );
+
+        let mut prod = [0u64; 2 * GF29009_NUM_U64];
+        let mut scratch = [0u64; POLY_MUL_SCRATCH];
+        let mut out = Gf2_9009::zero();
+        poly_mul(
+            &self.data[..eff_words],
+            &rhs.data[..eff_words],
+            &mut prod[..2 * eff_words],
+            &mut scratch,
+        );
+        reduce(&mut prod[..2 * eff_words], &mut out);
         *self = out;
     }
 
@@ -536,7 +569,16 @@ impl Gf2_9009 {
         hex::encode(&bytes[..num_bytes])
     }
 
+    /// Parse a hex string into a field element.
+    ///
+    /// # Panics
+    /// Panics if `hex_str` is not valid hex. Use `try_from_hex` for
+    /// untrusted input (e.g. deserialization).
     pub fn from_hex(hex_str: &str) -> Self {
+        Self::try_from_hex(hex_str).expect("Invalid hex string")
+    }
+
+    pub fn try_from_hex(hex_str: &str) -> Result<Self, hex::FromHexError> {
         let num_bytes = DEGREE.div_ceil(8);
         let hex_str = hex_str.trim();
         let required_hex = num_bytes * 2;
@@ -546,14 +588,14 @@ impl Gf2_9009 {
             hex_str.to_string()
         };
 
-        let bytes = hex::decode(&padded).expect("Invalid hex string");
+        let bytes = hex::decode(&padded)?;
         let mut data = [0u64; GF29009_NUM_U64];
 
         for (i, d) in data.iter_mut().enumerate() {
             let mut val: u64 = 0;
             for b in (0..8).rev() {
                 let offset_from_end = i * 8 + b;
-                if offset_from_end < num_bytes {
+                if offset_from_end < num_bytes && offset_from_end < bytes.len() {
                     let byte_idx = num_bytes - 1 - offset_from_end;
                     val = (val << 8) | (bytes[byte_idx] as u64);
                 }
@@ -563,7 +605,7 @@ impl Gf2_9009 {
 
         let mut result = Self { data };
         result.normalize();
-        result
+        Ok(result)
     }
 
     pub fn to_bytes(&self) -> [u8; GF29009_NUM_U64 * 8] {
@@ -785,6 +827,32 @@ mod tests {
             let mut zero_copy = zero;
             zero_copy.mul(&a);
             assert_eq!(zero_copy, zero, "0 * a != 0");
+        }
+    }
+
+    #[test]
+    fn test_mul_bounded_matches_mul() {
+        let mut rng = XorShift(0x1357_9BDF_2468_ACE0);
+        for &eff_words in &[71usize, 73, 76, 141] {
+            for _ in 0..10 {
+                let mut a_data = [0u64; GF29009_NUM_U64];
+                let mut b_data = [0u64; GF29009_NUM_U64];
+                for w in a_data[..eff_words].iter_mut() {
+                    *w = rng.next();
+                }
+                for w in b_data[..eff_words].iter_mut() {
+                    *w = rng.next();
+                }
+                let a = Gf2_9009::new(a_data);
+                let b = Gf2_9009::new(b_data);
+
+                let mut expected = a;
+                expected.mul(&b);
+
+                let mut got = a;
+                got.mul_bounded(&b, eff_words.max(71));
+                assert_eq!(got, expected, "mismatch eff_words={eff_words}");
+            }
         }
     }
 

@@ -1,6 +1,5 @@
 pub trait SessionStore {
-    fn save_session(&self, hash_ek_kem: &[u8; 32], k_session: [u8; 32]);
-    fn get_session(&self, hash_ek_kem: &[u8; 32]) -> Option<[u8; 32]>;
+    fn save_session(&self, k_session: [u8; 32]);
 }
 
 pub trait EntropyProvider {

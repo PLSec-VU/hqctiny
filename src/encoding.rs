@@ -149,6 +149,9 @@ pub fn encode_point_request<'o, T: HqcScheme>(
     req: &PointRequest,
     out: &'o mut [u8],
 ) -> Result<&'o mut [u8]> {
+    if req.point_index == 0 {
+        return Err(Error::InvalidPointIndex);
+    }
     let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
     if req.cookie.len() != cookie_len {
         return Err(Error::SerializationError);
@@ -161,7 +164,7 @@ pub fn encode_point_request<'o, T: HqcScheme>(
         return Err(Error::SerializationError);
     }
     let mut pos = 0;
-    let idx = req.point_index.max(1);
+    let idx = req.point_index;
     let mut tag = idx & KIND_MASK;
     if req.key_index == 1 {
         tag |= KEY_BIT;
@@ -252,12 +255,15 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
 }
 
 pub fn encode_point_response<'o>(res: &PointResponse, out: &'o mut [u8]) -> Result<&'o mut [u8]> {
+    if res.point_index == 0 {
+        return Err(Error::InvalidPointIndex);
+    }
     let total = 1 + GF2_9009_BYTES;
     if out.len() < total {
         return Err(Error::SerializationError);
     }
     let mut pos = 0;
-    let idx = res.point_index.max(1);
+    let idx = res.point_index;
     let mut tag = DIR_BIT | (idx & KIND_MASK);
     if res.point_type == PointType::V {
         tag |= TYPE_BIT;

@@ -5,6 +5,7 @@ use crate::math::gf2_9009::Gf2_9009;
 use crate::math::segmentation::{combine, evaluate_poly_at_generator};
 use crate::protocol::*;
 use crate::traits::*;
+use zeroize::{Zeroize, Zeroizing};
 
 // --- States ---
 pub struct Initial;
@@ -12,7 +13,7 @@ pub struct Initial;
 pub struct AwaitingHandshake {
     pub request: HandshakeRequest,
     pub pk: Vec<u8>,
-    pub sk: Vec<u8>,
+    pub sk: Zeroizing<Vec<u8>>,
     pub tree: rs_merkle::MerkleTree<Blake3Algorithm>,
     pub point_data: Vec<(u8, PointType, Gf2_9009)>,
 }
@@ -24,11 +25,11 @@ pub struct CollectingPoints {
     pub key_index: u8,
     pub points_u: Vec<Option<Gf2_9009>>,
     pub points_v: Vec<Option<Gf2_9009>>,
-    pub sk: Vec<u8>,
+    pub sk: Zeroizing<Vec<u8>>,
 }
 
 pub struct Completed {
-    pub session_key: Vec<u8>,
+    pub session_key: Zeroizing<Vec<u8>>,
 }
 
 pub struct Client<SCHEME, SStore, E, State>
@@ -99,10 +100,11 @@ where
         self.entropy_provider.random_bytes(&mut entropy);
 
         let mut pk = vec![0u8; SCHEME::PUBLIC_KEY_BYTES];
-        let mut sk = vec![0u8; SCHEME::SECRET_KEY_BYTES];
+        let mut sk = Zeroizing::new(vec![0u8; SCHEME::SECRET_KEY_BYTES]);
         unsafe {
             SCHEME::keypair(&entropy, &mut pk, &mut sk);
         }
+        entropy.zeroize();
 
         let pk_params = SCHEME::partial_public_key_encaps(&pk);
         let hash_ek_kem = *pk_params.hash_ek_kem();
@@ -271,7 +273,7 @@ where
                 session_store: self.session_store,
                 entropy_provider: self.entropy_provider,
                 state: Completed {
-                    session_key: ss.clone(),
+                    session_key: Zeroizing::new(ss.clone()),
                 },
                 _phantom: std::marker::PhantomData,
             };

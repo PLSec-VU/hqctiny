@@ -1,14 +1,16 @@
 use crate::blinding;
+use crate::encoding::public_eval_limbs;
 use crate::error::{Error, Result};
 use crate::hqc::{HqcMessageParameters, HqcScheme, HqcSharedSecretParameters};
 use crate::math::gf2_9009::Gf2_9009;
-use crate::math::segmentation::evaluate_poly_at_generator;
+use crate::math::segmentation::{evaluate_poly_at_generator, evaluate_sparse_poly_at_generator};
 use crate::protocol::*;
 use crate::traits::*;
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit},
 };
+use zeroize::Zeroize;
 
 pub struct Server<SCHEME, SStore, E, KProvider>
 where
@@ -91,10 +93,6 @@ where
     }
 
     pub fn handle_handshake(&self, req: HandshakeRequest) -> Result<HandshakeResponse> {
-        if self.session_store.get_session(&req.hash_ek_kem).is_some() {
-            return Err(Error::TimestampNotIncreasing);
-        }
-
         let mut m = vec![0u8; SCHEME::PARAM_SECURITY_BYTES];
         self.entropy_provider.random_bytes(&mut m);
 
@@ -109,20 +107,23 @@ where
         let copy_len = k_session.len().min(32);
         k_session_32[..copy_len].copy_from_slice(&k_session[..copy_len]);
 
-        self.session_store
-            .save_session(&req.hash_ek_kem, k_session_32);
+        self.session_store.save_session(k_session_32);
+        k_session_32.zeroize();
 
         let mut plaintext = vec![0u8; 32 + SCHEME::PARAM_SECURITY_BYTES];
         plaintext[..32].copy_from_slice(theta);
         plaintext[32..].copy_from_slice(&m);
+        m.zeroize();
 
-        let (cookie, key_index) = self.encrypt_cookie(&plaintext, &req.merkle_root)?;
-
-        Ok(HandshakeResponse {
-            cookie,
-            salt,
-            key_index,
-        })
+        let result =
+            self.encrypt_cookie(&plaintext, &req.merkle_root)
+                .map(|(cookie, key_index)| HandshakeResponse {
+                    cookie,
+                    salt,
+                    key_index,
+                });
+        plaintext.zeroize();
+        result
     }
 
     pub fn handle_point_request(&self, req: PointRequest) -> Result<PointResponse> {
@@ -133,7 +134,7 @@ where
         }
 
         // Validate merkle_root using cookie's AAD
-        let plaintext = self.decrypt_cookie(&req.cookie, req.key_index, &req.merkle_root)?;
+        let mut plaintext = self.decrypt_cookie(&req.cookie, req.key_index, &req.merkle_root)?;
         if plaintext.len() != 32 + SCHEME::PARAM_SECURITY_BYTES {
             return Err(Error::InvalidCookie);
         }
@@ -161,6 +162,11 @@ where
         let n_words = n.div_ceil(64);
         let num_deltas = blinding::num_kernel_deltas(n);
         let power = req.point_index;
+        // Bound shared by public_eval (wire-limited) and every evaluation
+        // result below (degree < w + POINTS_NUM*(num_blocks-1), see
+        // `evaluate_poly_at_generator`'s doc comment) — lets the one full
+        // field multiply per branch run on ~eff_words limbs instead of 141.
+        let eff_words = public_eval_limbs::<SCHEME>();
 
         // The quotient masks and kernel deltas of u and v must be mutually
         // independent (HQCTiny.v samples them separately); a shared mask
@@ -169,8 +175,10 @@ where
             PointType::U => {
                 let msg_params = SCHEME::partial_message_encaps(m, &theta);
 
+                // r1/r2 are fixed-weight (omega_r ones out of n bits): scanning
+                // set bits is cheaper than a dense block-by-block evaluation.
                 let mut r2_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
+                evaluate_sparse_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
 
                 let mut mask_poly = vec![0u64; n_words];
                 blinding::generate_quotient_mask(&theta, b"quotient mask u", n, &mut mask_poly);
@@ -178,11 +186,11 @@ where
                 evaluate_poly_at_generator(&mask_poly, power, &mut mask_xi);
 
                 let mut r1_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(msg_params.r1(), power, &mut r1_xi);
+                evaluate_sparse_poly_at_generator(msg_params.r1(), power, &mut r1_xi);
 
                 let mut u_xi = r1_xi;
                 let mut term_u = req.public_eval;
-                term_u.mul(&r2_xi);
+                term_u.mul_bounded(&r2_xi, eff_words);
                 u_xi.add(&term_u);
 
                 let mut term_mask = mask_xi;
@@ -192,9 +200,12 @@ where
                 );
                 u_xi.add(&term_mask);
 
-                let deltas =
-                    blinding::generate_kernel_deltas(&theta, b"kernel deltas u", num_deltas);
-                u_xi.add(&blinding::evaluate_ker_chain(&deltas, power as usize));
+                u_xi.add(&blinding::evaluate_kernel_deltas_at_generator(
+                    &theta,
+                    b"kernel deltas u",
+                    num_deltas,
+                    power as usize,
+                ));
                 u_xi
             }
             PointType::V => {
@@ -203,7 +214,7 @@ where
                 let msg_params = SCHEME::partial_message_encaps_v(m, &theta);
 
                 let mut r2_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
+                evaluate_sparse_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
 
                 let mut mask_poly = vec![0u64; n_words];
                 blinding::generate_quotient_mask(&theta, b"quotient mask v", n, &mut mask_poly);
@@ -215,23 +226,23 @@ where
                 let mut k_xi = Gf2_9009::zero();
                 evaluate_poly_at_generator(&k_encoded, power, &mut k_xi);
 
+                // e is fixed-weight (omega_e ones), same sparse fast path as r1/r2.
                 let mut e_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(msg_params.e(), power, &mut e_xi);
+                evaluate_sparse_poly_at_generator(msg_params.e(), power, &mut e_xi);
 
-                let mut t_poly = vec![0u64; n_words];
-                blinding::generate_truncate_mask(
+                let mut t_xi = Gf2_9009::zero();
+                blinding::evaluate_truncate_mask_at_generator(
                     &theta,
                     b"truncate mask",
                     n,
                     SCHEME::PARAM_N1N2,
-                    &mut t_poly,
+                    power,
+                    &mut t_xi,
                 );
-                let mut t_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(&t_poly, power, &mut t_xi);
 
                 let mut v_xi = k_xi;
                 let mut term_v = req.public_eval;
-                term_v.mul(&r2_xi);
+                term_v.mul_bounded(&r2_xi, eff_words);
                 v_xi.add(&term_v);
                 v_xi.add(&e_xi);
                 v_xi.add(&t_xi);
@@ -243,12 +254,18 @@ where
                 );
                 v_xi.add(&term_mask);
 
-                let deltas =
-                    blinding::generate_kernel_deltas(&theta, b"kernel deltas v", num_deltas);
-                v_xi.add(&blinding::evaluate_ker_chain(&deltas, power as usize));
+                v_xi.add(&blinding::evaluate_kernel_deltas_at_generator(
+                    &theta,
+                    b"kernel deltas v",
+                    num_deltas,
+                    power as usize,
+                ));
                 v_xi
             }
         };
+
+        theta.zeroize();
+        plaintext.zeroize();
 
         Ok(PointResponse {
             point_index: req.point_index,

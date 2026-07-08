@@ -176,6 +176,7 @@ macro_rules! define_hqc_variant {
             #[cfg(test)]
             use crate::hqc::{HqcPublicKeyParameters, HqcMessageParameters};
             use crate::hqc::ffi::hqc_ffi_decls;
+            use zeroize::Zeroize;
 
             lazy_static::lazy_static! {
                 static ref NEWTON_WEIGHTS: Box<[crate::math::gf2_9009::Gf2_9009]> =
@@ -214,6 +215,8 @@ macro_rules! define_hqc_variant {
                 }
             }
 
+            #[derive(zeroize::Zeroize)]
+            #[zeroize(drop)]
             pub struct SharedSecretParameters {
                 pub K: [u8; SHARED_SECRET_BYTES],
                 pub theta: [u8; SEED_BYTES],
@@ -228,6 +231,8 @@ macro_rules! define_hqc_variant {
                 }
             }
 
+            #[derive(zeroize::Zeroize)]
+            #[zeroize(drop)]
             pub struct MessageParameters {
                 pub m: [u8; PARAM_SECURITY_BYTES],
                 pub r1: [u64; VEC_N_SIZE_64],
