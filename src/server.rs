@@ -118,7 +118,7 @@ where
         let result =
             self.encrypt_cookie(&plaintext, &req.merkle_root)
                 .map(|(cookie, key_index)| HandshakeResponse {
-                    cookie,
+                    cookie: std::sync::Arc::new(cookie),
                     salt,
                     key_index,
                 });
@@ -159,7 +159,7 @@ where
         let m = &plaintext[32..];
 
         let n = SCHEME::PARAM_N;
-        let n_words = n.div_ceil(64);
+        let n_words = SCHEME::VEC_N_SIZE_64;
         let num_deltas = blinding::num_kernel_deltas(n);
         let power = req.point_index;
         // Bound shared by public_eval (wire-limited) and every evaluation
@@ -216,15 +216,17 @@ where
                 let mut r2_xi = Gf2_9009::zero();
                 evaluate_sparse_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
 
-                let mut mask_poly = vec![0u64; n_words];
-                blinding::generate_quotient_mask(&theta, b"quotient mask v", n, &mut mask_poly);
+                let mut scratch = vec![0u64; n_words];
+                blinding::generate_quotient_mask(&theta, b"quotient mask v", n, &mut scratch);
                 let mut mask_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(&mask_poly, power, &mut mask_xi);
+                evaluate_poly_at_generator(&scratch, power, &mut mask_xi);
 
-                let mut k_encoded = vec![0u64; SCHEME::VEC_N_SIZE_64];
-                SCHEME::code_encode(&mut k_encoded, m);
+                // Reuse the scratch buffer for k_encoded: mask_poly evaluation is
+                // complete so the buffer contents no longer matter.
+                scratch.fill(0);
+                SCHEME::code_encode(&mut scratch, m);
                 let mut k_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(&k_encoded, power, &mut k_xi);
+                evaluate_poly_at_generator(&scratch, power, &mut k_xi);
 
                 // e is fixed-weight (omega_e ones), same sparse fast path as r1/r2.
                 let mut e_xi = Gf2_9009::zero();

@@ -1,4 +1,5 @@
 use crate::math::gf2_9009::Gf2_9009;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Blake3Algorithm;
@@ -42,7 +43,7 @@ pub struct HandshakeRequest {
 
 #[derive(Debug, Clone)]
 pub struct HandshakeResponse {
-    pub cookie: Vec<u8>,
+    pub cookie: Arc<Vec<u8>>,
     pub salt: [u8; 16],
     pub key_index: u8,
 }
@@ -55,7 +56,7 @@ pub enum PointType {
 
 #[derive(Debug, Clone)]
 pub struct PointRequest {
-    pub cookie: Vec<u8>,
+    pub cookie: Arc<Vec<u8>>,
     pub key_index: u8,
     pub point_index: u8,
     pub point_type: PointType,

@@ -20,7 +20,7 @@ pub struct AwaitingHandshake {
 
 pub struct CollectingPoints {
     pub request: HandshakeRequest,
-    pub cookie: Vec<u8>,
+    pub cookie: std::sync::Arc<Vec<u8>>,
     pub salt: [u8; 16],
     pub key_index: u8,
     pub points_u: Vec<Option<Gf2_9009>>,

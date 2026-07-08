@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::hqc::HqcScheme;
 use crate::math::gf2_9009::{GF29009_NUM_U64, Gf2_9009};
 use crate::protocol::*;
+use std::sync::Arc;
 
 // ── Packet type enum ───────────────────────────────────────────────
 
@@ -132,7 +133,7 @@ pub fn decode_handshake_response<T: HqcScheme>(data: &[u8]) -> Result<HandshakeR
     pos += cookie_len;
     let salt = get_array::<16>(data, &mut pos)?;
     Ok(HandshakeResponse {
-        cookie,
+        cookie: Arc::new(cookie),
         salt,
         key_index,
     })
@@ -244,7 +245,7 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
     witness.copy_from_slice(&data[pos..]);
 
     Ok(PointRequest {
-        cookie,
+        cookie: Arc::new(cookie),
         key_index,
         point_index,
         point_type,
@@ -360,7 +361,7 @@ mod tests {
     fn test_handshake_response_roundtrip() {
         use crate::hqc::Hqc1;
         let res = HandshakeResponse {
-            cookie: vec![0xaa; 88],
+            cookie: Arc::new(vec![0xaa; 88]),
             salt: [9; 16],
             key_index: 1,
         };
@@ -376,7 +377,7 @@ mod tests {
     fn test_point_request_roundtrip() {
         use crate::hqc::Hqc1;
         let req = PointRequest {
-            cookie: vec![0xaa; 88],
+            cookie: Arc::new(vec![0xaa; 88]),
             key_index: 0,
             point_index: 1,
             point_type: PointType::U,
