@@ -56,9 +56,10 @@ impl Gf2_9009 {
 
     #[inline]
     pub fn mul(&mut self, rhs: &Self) {
-        let mut out = Gf2_9009::zero();
-        multiply(&self.data, &rhs.data, &mut out);
-        *self = out;
+        let mut prod = [0u64; 2 * GF29009_NUM_U64];
+        let mut scratch = [0u64; POLY_MUL_SCRATCH];
+        poly_mul(&self.data, &rhs.data, &mut prod, &mut scratch);
+        reduce(&mut prod, self);
     }
 
     /// Multiply by a `rhs` known to have no significant bits at or beyond
@@ -83,15 +84,13 @@ impl Gf2_9009 {
 
         let mut prod = [0u64; 2 * GF29009_NUM_U64];
         let mut scratch = [0u64; POLY_MUL_SCRATCH];
-        let mut out = Gf2_9009::zero();
         poly_mul(
             &self.data[..eff_words],
             &rhs.data[..eff_words],
             &mut prod[..2 * eff_words],
             &mut scratch,
         );
-        reduce(&mut prod[..2 * eff_words], &mut out);
-        *self = out;
+        reduce(&mut prod[..2 * eff_words], self);
     }
 
     #[inline]
@@ -244,9 +243,7 @@ impl Gf2_9009 {
         // reduce requires buf.len() > GF29009_NUM_U64; N >= 160 > 141 satisfies this.
         // Zeros beyond max_word are harmless for reduction.
         let reduce_len = max_word.max(GF29009_NUM_U64 + 1);
-        let mut temp = Gf2_9009::zero();
-        reduce(&mut buf[..reduce_len], &mut temp);
-        out.add(&temp);
+        reduce_xor(&mut buf[..reduce_len], out);
     }
 }
 
@@ -257,14 +254,6 @@ impl Gf2_9009 {
 // ---------------------------------------------------------------------------
 // Multiplication
 // ---------------------------------------------------------------------------
-
-/// Multiply two field elements and reduce modulo the field polynomial.
-fn multiply(a: &[u64; GF29009_NUM_U64], b: &[u64; GF29009_NUM_U64], out: &mut Gf2_9009) {
-    let mut prod = [0u64; 2 * GF29009_NUM_U64];
-    let mut scratch = [0u64; POLY_MUL_SCRATCH];
-    poly_mul(a, b, &mut prod, &mut scratch);
-    reduce(&mut prod, out);
-}
 
 // ---------------------------------------------------------------------------
 // Toom-3 / Karatsuba multiplication for GF(2) polynomials
@@ -540,6 +529,35 @@ pub(crate) fn reduce(buf: &mut [u64], result: &mut Gf2_9009) {
     buf[0] ^= w_high ^ (w_high << 29);
 
     result.data.copy_from_slice(&buf[..GF29009_NUM_U64]);
+    result.normalize();
+}
+
+/// Like `reduce`, but XORs the reduced result into `result` instead of
+/// overwriting it. Avoids an intermediate `Gf2_9009` copy when the caller
+/// wants to accumulate (e.g. `shift_xor_into`).
+pub(crate) fn reduce_xor(buf: &mut [u64], result: &mut Gf2_9009) {
+    debug_assert!(buf.len() > GF29009_NUM_U64, "reduce buffer too small");
+
+    const START_WORD: usize = 140;
+    const START_BIT: usize = 49;
+
+    for wi in (141..buf.len()).rev() {
+        let w = buf[wi];
+        let target_idx = wi - 141;
+        buf[target_idx] ^= w << 15;
+        buf[target_idx + 1] ^= w >> 49;
+        buf[target_idx] ^= w << 44;
+        buf[target_idx + 1] ^= w >> 20;
+    }
+
+    let w_high = buf[START_WORD] >> START_BIT;
+    buf[0] ^= w_high ^ (w_high << 29);
+
+    // XOR the reduced low limbs into result instead of overwriting.
+    for (dst, &src) in result.data.iter_mut().zip(&buf[..GF29009_NUM_U64]) {
+        *dst ^= src;
+    }
+    // Clear any bits >= DEGREE that leaked from the XOR.
     result.normalize();
 }
 
