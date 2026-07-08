@@ -170,7 +170,7 @@ macro_rules! define_hqc_variant {
         $param_omega_e:expr,
         $param_n:expr,
         $points_num:expr,
-        $matrix_file:literal
+        $newton_weights_file:literal
     ) => {
         pub mod $mod_name {
             #[cfg(test)]
@@ -178,8 +178,8 @@ macro_rules! define_hqc_variant {
             use crate::hqc::ffi::hqc_ffi_decls;
 
             lazy_static::lazy_static! {
-                static ref MATRIX: Box<[[crate::math::gf2_9009::Gf2_9009; $points_num]; $points_num]> =
-                    crate::math::interpolate::load_matrix::<$points_num>(include_bytes!($matrix_file));
+                static ref NEWTON_WEIGHTS: Box<[crate::math::gf2_9009::Gf2_9009]> =
+                    crate::math::interpolate::load_newton_weights::<$points_num>(include_bytes!($newton_weights_file));
             }
 
             pub const PUBLIC_KEY_BYTES: usize = $pk_bytes;
@@ -278,7 +278,7 @@ macro_rules! define_hqc_variant {
                 fn interpolate(evals: &[crate::math::gf2_9009::Gf2_9009]) -> Vec<crate::math::gf2_9009::Gf2_9009> {
                     assert_eq!(evals.len(), Self::POINTS_NUM);
                     let evals_arr: &[crate::math::gf2_9009::Gf2_9009; $points_num] = evals.try_into().unwrap();
-                    crate::math::interpolate::interpolate::<$points_num>(&*MATRIX, evals_arr).into()
+                    crate::math::interpolate::interpolate_newton::<$points_num>(&*NEWTON_WEIGHTS, evals_arr).into()
                 }
 
                 fn code_encode(em: &mut [u64], m: &[u8]) {
@@ -547,7 +547,7 @@ define_hqc_variant!(
     75,
     17669,
     7,
-    "../math/interpolate_matrix_17669.bin"
+    "../math/newton_weights_17669.bin"
 );
 define_hqc_variant!(
     hqc3,
@@ -566,7 +566,7 @@ define_hqc_variant!(
     114,
     35851,
     15,
-    "../math/interpolate_matrix_35851.bin"
+    "../math/newton_weights_35851.bin"
 );
 define_hqc_variant!(
     hqc5,
@@ -585,7 +585,7 @@ define_hqc_variant!(
     149,
     57637,
     25,
-    "../math/interpolate_matrix_57637.bin"
+    "../math/newton_weights_57637.bin"
 );
 
 pub use hqc1::Hqc1;
