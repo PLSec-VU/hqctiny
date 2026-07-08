@@ -116,8 +116,7 @@ pub fn verify_proof(
     let mut current = leaf_hash;
     let mut pos = capacity + leaf_idx;
 
-    for chunk in witness.chunks_exact(32) {
-        let sibling: &[u8; 32] = chunk.try_into().unwrap();
+    for sibling in witness.as_chunks::<32>().0 {
         current = if pos.is_multiple_of(2) {
             hash_pair(&current, sibling)
         } else {
