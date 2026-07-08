@@ -7,6 +7,16 @@ We use the following primitives:
 - Hash / MAC / KDF: BLAKE3
 - AEAD: XChaCha20-Poly1305
 
+## Project Structure
+
+| Path | Contents |
+|------|----------|
+| `src/` | The Rust protocol implementation (client, server, wire encoding, HQC bindings, field math) |
+| `hqc/` | The [official HQC reference implementation](https://gitlab.com/pqc-hqc/hqc.git), built by `build.rs` |
+| `hqctiny-cli/` | A standalone example binary implementing a UDP client/server for the protocol |
+| `sagemath/` | SageMath scripts used for precomputation artifacts |
+| `ssprove/` | A mechanized Coq/SSProve security proof for the protocol |
+
 # Phase 1: Entropy establishment (Handshake)
 ```
 [CLIENT]                                                                   [SERVER]
@@ -58,14 +68,15 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
                                                     1. Parse key_index from Tag.
                                                     2. Decrypt Cookie using key at key_index and AAD = merkle_root → extract theta and m. If key was rotated/overwritten or decryption fails, DROP.
                                                     3. Verify that h(x_i) or s(x_i) belongs to the Merkle tree with root merkle_root using Witness. If verification fails, DROP.
-                                                    4. Gen random quotient-blinding mask.
+                                                    4. Derive quotient-blinding mask(x) from theta (shared across all points of this type in the session).
+                                                    5. Derive kernel-delta chain K(x) from theta (independent per type; vanishes once all points are combined, see Phase 3).
                                                     For Type u:
-                                                     5. Load r1(x_i), r2(x_i) from theta, m.
-                                                     6. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1).
+                                                     6. Load r1(x_i), r2(x_i) from theta, m.
+                                                     7. Compute: u_eval = r1 + [h(x_i)]*r2 + mask*(x_i^d_i + 1) + K_u(x_i).
                                                     For Type v:
-                                                     5. Load e(x_i), r2(x_i) from theta, m.
-                                                     6. Gen random truncate-blinding mask T(x) over [n1n2, n-1] from theta.
-                                                     7. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1).
+                                                     6. Load e(x_i), r2(x_i) from theta, m.
+                                                     7. Derive truncate-blinding mask T(x) over [n1n2, n-1] from theta.
+                                                     8. Compute: v_eval = encode(m) + [s(x_i)]*r2 + e + T(x_i) + mask*(x_i^d_i + 1) + K_v(x_i).
 
      [Packet 4: Point Response] 
      <--------------------------------------------------------------------
@@ -78,10 +89,11 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
 
 # Phase 3: Client-side decapsulation
 ```
-  1. Interpolate the collected 'u' and 'v' evaluations.
-  2. Reduce modulo (x^n - 1) to vanish the blinding mask polynomials.
-  3. Truncate the resulting v(x) modulo x^n1n2 (discarding the randomized truncate mask coefficients).
-  4. Decode HQC ciphertext -> Extract K_session.
+  1. Interpolate the collected 'u' and 'v' evaluations (Newton divided differences) into segmented block coefficients.
+  2. Combine the blocks back into F2[x] polynomials u(x), v(x) — the kernel-delta blinding terms cancel out here.
+  3. Reduce u(x), v(x) modulo (x^n - 1) to vanish the quotient-blinding mask polynomials.
+  4. Truncate the resulting v(x) modulo x^n1n2 (discarding the randomized truncate-mask coefficients).
+  5. Decode HQC ciphertext -> Extract K_session.
 ```
 
 ## Cookie Key Rotation
