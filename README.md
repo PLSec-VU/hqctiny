@@ -150,7 +150,7 @@ All fields are packed sequentially after the tag byte.
 | 57 + SecParam | 16 B | auth_tag | Poly1305 authentication tag |
 | 73 + SecParam | limbs * 8 B | public_eval | Segmented public key evaluation result |
 | 73 + SecParam + limbs*8 | 32 B | merkle_root | Merkle tree root for verification |
-| 105 + SecParam + limbs*8 | Variable | witness | Merkle proof (at most 160-192 B) |
+| 105 + SecParam + limbs*8 | Variable | witness | Merkle proof (at most 128-192 B) |
 
 **Limbs calculation:**
 
@@ -180,7 +180,7 @@ This yields:
 |-------------|-----------------|-----------------|-----------------|---------------------------|
 | **HandshakeRequest** | 65 B | 65 B | 65 B | `1 + 32 (hash_ek_kem) + 32 (merkle_root)` |
 | **HandshakeResponse** | 105 B | 113 B | 121 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + 16 (salt)` |
-| **PointRequest** (Max) | 817 B | 865 B | 937 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + (limbs * 8) (public_eval) + 32 (merkle_root) + Witness` |
+| **PointRequest** (Max) | 817 B | 873 B | 937 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + (limbs * 8) (public_eval) + 32 (merkle_root) + Witness` |
 | **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_9009)` |
 
 **Size key:**
@@ -193,9 +193,9 @@ The table below shows the total number of round trips (request-response pairs) a
 
 | Variant | Total Round Trips | Total Sent (Client) | Total Received (Client) |
 |---------|-------------------|---------------------|-------------------------|
-| **HQC-1** | 15 | 11,439 B (~11.4 KB) | 15,911 B (~15.9 KB) |
-| **HQC-3** | 31 | 25,951 B (~26.0 KB) | 33,983 B (~34.0 KB) |
-| **HQC-5** | 51 | 46,675 B (~46.7 KB) | 56,571 B (~56.6 KB) |
+| **HQC-1** | 15 | 11,503 B (~11.5 KB) | 15,911 B (~15.9 KB) |
+| **HQC-3** | 31 | 26,255 B (~26.3 KB) | 33,983 B (~34.0 KB) |
+| **HQC-5** | 51 | 46,915 B (~46.9 KB) | 56,571 B (~56.6 KB) |
 
 *Note: Since the point-on-demand stream is asynchronous and stateless, the client can stream all point requests concurrently once it receives the handshake cookie. Under parallel execution, the entire protocol (handshake + streaming) completes in exactly **2 network round-trip times (RTT)**.*
 
