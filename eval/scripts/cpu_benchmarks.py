@@ -71,19 +71,19 @@ def print_cycles_per_byte(results: list[tuple[str, int]], bandwidth_json: Path) 
     bw = {v["variant"]: v for v in json.loads(bandwidth_json.read_text())}
     for variant, v in bw.items():
         req_bytes = v["packet_bytes"]["handshake_request"]
-        for name, cycles in results:
-            if variant in name and "handshake" in name:
-                print(
-                    f"{variant} handshake handler: {cycles / req_bytes:.1f} cycles/byte "
-                    f"(of the {req_bytes}B request)"
-                )
         pt_bytes = v["packet_bytes"]["point_request_max"]
-        for name, cycles in results:
-            if variant in name and "point_request_u" in name:
-                print(
-                    f"{variant} point_request(U) handler: {cycles / pt_bytes:.1f} cycles/byte "
-                    f"(of the {pt_bytes}B request)"
-                )
+        handlers = [
+            ("handshake", "handshake", req_bytes),
+            ("point_request_u", "point_request(U)", pt_bytes),
+            ("point_request_v", "point_request(V)", pt_bytes),
+        ]
+        for name_substr, label, byte_count in handlers:
+            for name, cycles in results:
+                if variant in name and name_substr in name:
+                    print(
+                        f"{variant} {label} handler: {cycles / byte_count:.1f} cycles/byte "
+                        f"(of the {byte_count}B request)"
+                    )
 
 
 def main() -> None:
