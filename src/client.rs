@@ -21,7 +21,7 @@ pub struct AwaitingHandshake<T> {
 
 pub struct CollectingPoints {
     pub request: HandshakeRequest,
-    pub cookie: std::sync::Arc<Vec<u8>>,
+    pub cookie: CookieBuf,
     pub salt: [u8; 16],
     pub key_index: u8,
     pub points_u: Vec<Option<Gf2_9009>>,
@@ -154,8 +154,9 @@ where
         for (idx, (point_index, point_type, public_eval)) in point_data.into_iter().enumerate() {
             let mut witness = Vec::with_capacity(tree.proof_len());
             tree.write_proof(idx, &mut witness);
+            let witness = WitnessBuf::from_slice(&witness, Error::InvalidWitness)?;
             point_requests.push(PointRequest {
-                cookie: res.cookie.clone(),
+                cookie: res.cookie,
                 key_index: res.key_index,
                 point_index,
                 point_type,

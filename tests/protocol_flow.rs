@@ -3,9 +3,8 @@ use HQCTiny::error::Error;
 use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
 use HQCTiny::server::Server;
 mod test_utils;
-use HQCTiny::traits::*;
 use std::sync::{Arc, Mutex};
-use test_utils::{InMemoryKeyProvider, MockEntropy, SharedSessionStore};
+use test_utils::{MockEntropy, SharedSessionStore};
 
 fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
     let sessions = Arc::new(Mutex::new(Vec::new()));
@@ -13,10 +12,7 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
         sessions: sessions.clone(),
     };
 
-    let entropy = MockEntropy;
-    let key_provider = InMemoryKeyProvider::new(&entropy);
-
-    let server = Server::<SCHEME, _, _, _>::new(store, MockEntropy, key_provider);
+    let server = Server::<SCHEME, _, _>::new(store, MockEntropy);
 
     let client = Client::<SCHEME, _, _, _>::new(
         SharedSessionStore {
@@ -187,10 +183,7 @@ fn test_cookie_key_rotation() {
         sessions: sessions.clone(),
     };
 
-    let entropy = MockEntropy;
-    let key_provider = InMemoryKeyProvider::new(&entropy);
-
-    let server = Server::<Hqc1, _, _, _>::new(store, MockEntropy, key_provider);
+    let server = Server::<Hqc1, _, _>::new(store, MockEntropy);
 
     let client = Client::<Hqc1, _, _, _>::new(
         SharedSessionStore {
@@ -203,16 +196,13 @@ fn test_cookie_key_rotation() {
     let (client, req) = client.initialize();
     let res = server.handle_handshake(req).unwrap();
 
-    // 2. Rotate keys in server twice (overwriting both keys so the old key is erased)
-    let mut new_k = [0u8; 32];
-    entropy.random_bytes(&mut new_k);
-    *server.key_provider.keys[0].write().unwrap() = Some(new_k);
-    entropy.random_bytes(&mut new_k);
-    *server.key_provider.keys[1].write().unwrap() = Some(new_k);
+    // 2. Rotate keys in server twice (overwriting both slots so the old key is erased)
+    server.rotate();
+    server.rotate();
 
     // 3. Client attempts to process response and send point request
     let (_client, point_reqs) = client.handle_handshake_response(res).unwrap();
-    let req = point_reqs[0].clone();
+    let req = point_reqs[0];
 
     // 4. Server should fail to decrypt cookie (returns SessionExpired because key was overwritten/erased)
     let res = server.handle_point_request(req);
@@ -229,10 +219,7 @@ fn test_invalid_merkle_witness_rejected() {
         sessions: sessions.clone(),
     };
 
-    let entropy = MockEntropy;
-    let key_provider = InMemoryKeyProvider::new(&entropy);
-
-    let server = Server::<Hqc1, _, _, _>::new(store, MockEntropy, key_provider);
+    let server = Server::<Hqc1, _, _>::new(store, MockEntropy);
 
     let client = Client::<Hqc1, _, _, _>::new(
         SharedSessionStore {
@@ -249,7 +236,7 @@ fn test_invalid_merkle_witness_rejected() {
     let (_client, point_reqs) = client.handle_handshake_response(res).unwrap();
 
     // Test Case 1: Corrupted public evaluation point
-    let mut req_corrupted_val = point_reqs[0].clone();
+    let mut req_corrupted_val = point_reqs[0];
     req_corrupted_val.public_eval.data[0] ^= 1; // flip a bit
     let res_corrupted_val = server.handle_point_request(req_corrupted_val);
     assert_eq!(
@@ -258,7 +245,7 @@ fn test_invalid_merkle_witness_rejected() {
     );
 
     // Test Case 2: Corrupted witness bytes
-    let mut req_corrupted_witness = point_reqs[0].clone();
+    let mut req_corrupted_witness = point_reqs[0];
     if !req_corrupted_witness.witness.is_empty() {
         req_corrupted_witness.witness[0] ^= 1;
     }
@@ -276,10 +263,7 @@ fn test_invalid_merkle_root_rejected() {
         sessions: sessions.clone(),
     };
 
-    let entropy = MockEntropy;
-    let key_provider = InMemoryKeyProvider::new(&entropy);
-
-    let server = Server::<Hqc1, _, _, _>::new(store, MockEntropy, key_provider);
+    let server = Server::<Hqc1, _, _>::new(store, MockEntropy);
 
     let client = Client::<Hqc1, _, _, _>::new(
         SharedSessionStore {
@@ -296,7 +280,7 @@ fn test_invalid_merkle_root_rejected() {
     let (_client, point_reqs) = client.handle_handshake_response(res).unwrap();
 
     // Corrupt merkle_root in the point request
-    let mut req_corrupted_root = point_reqs[0].clone();
+    let mut req_corrupted_root = point_reqs[0];
     req_corrupted_root.merkle_root[0] ^= 1;
 
     // Since merkle_root is used as AAD, changing it should make decryption fail

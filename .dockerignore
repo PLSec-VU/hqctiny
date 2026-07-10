@@ -1,0 +1,8 @@
+target/
+target-linux/
+.git/
+ssprove/
+sagemath/*.json
+sagemath/*.bin
+__pycache__/
+eval/results/

@@ -2,104 +2,186 @@ use crate::blinding;
 use crate::encoding::public_eval_limbs;
 use crate::error::{Error, Result};
 use crate::hqc::{HqcMessageParameters, HqcScheme, HqcSharedSecretParameters};
+use crate::limits::{MAX_COOKIE_PLAINTEXT_BYTES, MAX_PARAM_SECURITY_BYTES, MAX_VEC_N_SIZE_64};
 use crate::math::gf2_9009::Gf2_9009;
 use crate::math::segmentation::{evaluate_poly_at_generator, evaluate_sparse_poly_at_generator};
 use crate::protocol::*;
 use crate::traits::*;
 use chacha20poly1305::{
-    XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit},
+    Tag, XChaCha20Poly1305, XNonce,
+    aead::{AeadInPlace, KeyInit},
 };
+use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
 
-pub struct Server<SCHEME, SStore, E, KProvider>
+/// Two-slot cookie-key ring. Rotating writes a fresh key into the inactive
+/// slot and flips the active pointer, so a cookie issued under the previous
+/// key stays decryptable for exactly one more rotation before its slot is
+/// overwritten.
+struct CookieKeys {
+    current_idx: RwLock<u8>,
+    keys: [RwLock<Option<[u8; 32]>>; 2],
+}
+
+pub struct Server<SCHEME, SStore, E>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    KProvider: CookieKeyProvider,
 {
     pub session_store: SStore,
     pub entropy_provider: E,
-    pub key_provider: KProvider,
-    _phantom: std::marker::PhantomData<SCHEME>,
+    cookie_keys: Arc<CookieKeys>,
+    // `fn() -> SCHEME` rather than `SCHEME` so PhantomData's Send/Sync stay
+    // unconditional — SCHEME is a zero-sized marker type, never touched by
+    // value, but a bare `PhantomData<SCHEME>` would still force SCHEME: Send
+    // onto the rotation thread in hqctiny-server that clones Server across it.
+    _phantom: std::marker::PhantomData<fn() -> SCHEME>,
 }
 
-impl<SCHEME, SStore, E, KProvider> Server<SCHEME, SStore, E, KProvider>
+impl<SCHEME, SStore, E> Clone for Server<SCHEME, SStore, E>
+where
+    SCHEME: HqcScheme,
+    SStore: SessionStore + Clone,
+    E: EntropyProvider + Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            session_store: self.session_store.clone(),
+            entropy_provider: self.entropy_provider.clone(),
+            cookie_keys: self.cookie_keys.clone(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<SCHEME, SStore, E> Server<SCHEME, SStore, E>
 where
     SCHEME: HqcScheme,
     SStore: SessionStore,
     E: EntropyProvider,
-    KProvider: CookieKeyProvider,
 {
-    pub fn new(session_store: SStore, entropy_provider: E, key_provider: KProvider) -> Self {
+    pub fn new(session_store: SStore, entropy_provider: E) -> Self {
+        let mut k0 = [0u8; 32];
+        let mut k1 = [0u8; 32];
+        entropy_provider.random_bytes(&mut k0);
+        entropy_provider.random_bytes(&mut k1);
         Self {
             session_store,
             entropy_provider,
-            key_provider,
+            cookie_keys: Arc::new(CookieKeys {
+                current_idx: RwLock::new(0),
+                keys: [RwLock::new(Some(k0)), RwLock::new(Some(k1))],
+            }),
             _phantom: std::marker::PhantomData,
         }
     }
 
-    fn encrypt_cookie(&self, plaintext: &[u8], merkle_root: &[u8; 32]) -> Result<(Vec<u8>, u8)> {
-        let key_index = self.key_provider.current_key_index();
-        let key = self
-            .key_provider
-            .get_key(key_index)
-            .ok_or(Error::EncryptionError)?;
+    /// Rotates the cookie-encryption key: generates a fresh key, writes it
+    /// into the currently-inactive slot, and makes that slot active. Call
+    /// this on a fixed interval (every 90 seconds) from the deployment's
+    /// own timer/thread — it's the only key-management API the server
+    /// exposes.
+    pub fn rotate(&self) -> u8 {
+        let mut idx_guard = self.cookie_keys.current_idx.write().unwrap();
+        let next_idx = (*idx_guard + 1) % 2;
+        let mut new_key = [0u8; 32];
+        self.entropy_provider.random_bytes(&mut new_key);
+        *self.cookie_keys.keys[next_idx as usize].write().unwrap() = Some(new_key);
+        *idx_guard = next_idx;
+        next_idx
+    }
 
-        let mut nonce = [0u8; 24];
-        self.entropy_provider.random_bytes(&mut nonce);
+    fn current_key_index(&self) -> u8 {
+        *self.cookie_keys.current_idx.read().unwrap()
+    }
+
+    fn get_key(&self, index: u8) -> Option<[u8; 32]> {
+        if index > 1 {
+            return None;
+        }
+        *self.cookie_keys.keys[index as usize].read().unwrap()
+    }
+
+    /// Builds `nonce(24) || AEAD-ciphertext(plaintext) || tag(16)` directly
+    /// in a stack buffer via `AeadInPlace`, rather than the `Aead` trait's
+    /// `Vec`-returning `encrypt`, so encrypting a cookie never allocates.
+    fn encrypt_cookie(&self, plaintext: &[u8], merkle_root: &[u8; 32]) -> Result<(CookieBuf, u8)> {
+        let key_index = self.current_key_index();
+        let key = self.get_key(key_index).ok_or(Error::EncryptionError)?;
+
+        let mut nonce_bytes = [0u8; 24];
+        self.entropy_provider.random_bytes(&mut nonce_bytes);
+
+        let total = 24 + plaintext.len() + 16;
+        let mut buf = [0u8; crate::limits::MAX_COOKIE_BYTES];
+        buf[..24].copy_from_slice(&nonce_bytes);
+        buf[24..24 + plaintext.len()].copy_from_slice(plaintext);
 
         let cipher = XChaCha20Poly1305::new(&key.into());
-        let payload = chacha20poly1305::aead::Payload {
-            msg: plaintext,
-            aad: merkle_root,
-        };
-        let ct = cipher
-            .encrypt(XNonce::from_slice(&nonce), payload)
+        let tag = cipher
+            .encrypt_in_place_detached(
+                XNonce::from_slice(&nonce_bytes),
+                merkle_root,
+                &mut buf[24..24 + plaintext.len()],
+            )
             .map_err(|_| Error::EncryptionError)?;
+        buf[24 + plaintext.len()..total].copy_from_slice(&tag);
 
-        let mut cookie = vec![0u8; 24 + ct.len()];
-        cookie[..24].copy_from_slice(&nonce);
-        cookie[24..].copy_from_slice(&ct);
+        let cookie = CookieBuf::from_slice(&buf[..total], Error::EncryptionError)?;
         Ok((cookie, key_index))
     }
 
+    /// Decrypts in place into a fixed-size stack buffer via `AeadInPlace`,
+    /// rather than the `Aead` trait's `Vec`-returning `decrypt`. Returns
+    /// the buffer plus the actual plaintext length (`theta || m`, at most
+    /// `MAX_COOKIE_PLAINTEXT_BYTES`).
     fn decrypt_cookie(
         &self,
         cookie: &[u8],
         key_index: u8,
         merkle_root: &[u8; 32],
-    ) -> Result<Vec<u8>> {
-        if cookie.len() < 24 {
+    ) -> Result<([u8; MAX_COOKIE_PLAINTEXT_BYTES], usize)> {
+        if cookie.len() < 24 + 16 {
+            return Err(Error::InvalidCookieLength);
+        }
+        let pt_len = cookie.len() - 24 - 16;
+        if pt_len > MAX_COOKIE_PLAINTEXT_BYTES {
             return Err(Error::InvalidCookieLength);
         }
 
-        let key = self
-            .key_provider
-            .get_key(key_index)
-            .ok_or(Error::SessionExpired)?;
-        let (nonce_bytes, ct_bytes) = cookie.split_at(24);
+        let key = self.get_key(key_index).ok_or(Error::SessionExpired)?;
+
+        let nonce_bytes = &cookie[..24];
+        let tag_start = 24 + pt_len;
+        let tag = Tag::from_slice(&cookie[tag_start..]);
+
+        let mut buf = [0u8; MAX_COOKIE_PLAINTEXT_BYTES];
+        buf[..pt_len].copy_from_slice(&cookie[24..tag_start]);
+
         let cipher = XChaCha20Poly1305::new(&key.into());
-        let payload = chacha20poly1305::aead::Payload {
-            msg: ct_bytes,
-            aad: merkle_root,
-        };
-        let pt = cipher
-            .decrypt(XNonce::from_slice(nonce_bytes), payload)
+        cipher
+            .decrypt_in_place_detached(
+                XNonce::from_slice(nonce_bytes),
+                merkle_root,
+                &mut buf[..pt_len],
+                tag,
+            )
             .map_err(|_| Error::DecryptionError)?;
-        Ok(pt)
+
+        Ok((buf, pt_len))
     }
 
     pub fn handle_handshake(&self, req: HandshakeRequest) -> Result<HandshakeResponse> {
-        let mut m = vec![0u8; SCHEME::PARAM_SECURITY_BYTES];
-        self.entropy_provider.random_bytes(&mut m);
+        let sec_bytes = SCHEME::PARAM_SECURITY_BYTES;
+        let mut m_buf = [0u8; MAX_PARAM_SECURITY_BYTES];
+        let m = &mut m_buf[..sec_bytes];
+        self.entropy_provider.random_bytes(m);
 
         let mut salt = [0u8; 16];
         self.entropy_provider.random_bytes(&mut salt);
 
-        let ss_params = SCHEME::derive_shared_secret(&m, &salt, &req.hash_ek_kem);
+        let ss_params = SCHEME::derive_shared_secret(m, &salt, &req.hash_ek_kem);
         let theta = ss_params.theta();
         let k_session = ss_params.K();
 
@@ -110,18 +192,19 @@ where
         self.session_store.save_session(k_session_32);
         k_session_32.zeroize();
 
-        let mut plaintext = vec![0u8; 32 + SCHEME::PARAM_SECURITY_BYTES];
+        let pt_len = 32 + sec_bytes;
+        let mut plaintext = [0u8; MAX_COOKIE_PLAINTEXT_BYTES];
         plaintext[..32].copy_from_slice(theta);
-        plaintext[32..].copy_from_slice(&m);
-        m.zeroize();
+        plaintext[32..pt_len].copy_from_slice(m);
+        m_buf.zeroize();
 
-        let result =
-            self.encrypt_cookie(&plaintext, &req.merkle_root)
-                .map(|(cookie, key_index)| HandshakeResponse {
-                    cookie: std::sync::Arc::new(cookie),
-                    salt,
-                    key_index,
-                });
+        let result = self
+            .encrypt_cookie(&plaintext[..pt_len], &req.merkle_root)
+            .map(|(cookie, key_index)| HandshakeResponse {
+                cookie,
+                salt,
+                key_index,
+            });
         plaintext.zeroize();
         result
     }
@@ -134,8 +217,9 @@ where
         }
 
         // Validate merkle_root using cookie's AAD
-        let mut plaintext = self.decrypt_cookie(&req.cookie, req.key_index, &req.merkle_root)?;
-        if plaintext.len() != 32 + SCHEME::PARAM_SECURITY_BYTES {
+        let (mut plaintext, pt_len) =
+            self.decrypt_cookie(&req.cookie, req.key_index, &req.merkle_root)?;
+        if pt_len != 32 + SCHEME::PARAM_SECURITY_BYTES {
             return Err(Error::InvalidCookie);
         }
 
@@ -160,7 +244,7 @@ where
 
         let mut theta = [0u8; 32];
         theta.copy_from_slice(&plaintext[..32]);
-        let m = &plaintext[32..];
+        let m = &plaintext[32..pt_len];
 
         let n = SCHEME::PARAM_N;
         let n_words = SCHEME::VEC_N_SIZE_64;
@@ -184,10 +268,11 @@ where
                 let mut r2_xi = Gf2_9009::zero();
                 evaluate_sparse_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
 
-                let mut mask_poly = vec![0u64; n_words];
-                blinding::generate_quotient_mask(&theta, b"quotient mask u", n, &mut mask_poly);
+                let mut mask_poly_buf = [0u64; MAX_VEC_N_SIZE_64];
+                let mask_poly = &mut mask_poly_buf[..n_words];
+                blinding::generate_quotient_mask(&theta, b"quotient mask u", n, mask_poly);
                 let mut mask_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(&mask_poly, power, &mut mask_xi);
+                evaluate_poly_at_generator(mask_poly, power, &mut mask_xi);
 
                 let mut r1_xi = Gf2_9009::zero();
                 evaluate_sparse_poly_at_generator(msg_params.r1(), power, &mut r1_xi);
@@ -220,17 +305,18 @@ where
                 let mut r2_xi = Gf2_9009::zero();
                 evaluate_sparse_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
 
-                let mut scratch = vec![0u64; n_words];
-                blinding::generate_quotient_mask(&theta, b"quotient mask v", n, &mut scratch);
+                let mut scratch_buf = [0u64; MAX_VEC_N_SIZE_64];
+                let scratch = &mut scratch_buf[..n_words];
+                blinding::generate_quotient_mask(&theta, b"quotient mask v", n, scratch);
                 let mut mask_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(&scratch, power, &mut mask_xi);
+                evaluate_poly_at_generator(scratch, power, &mut mask_xi);
 
                 // Reuse the scratch buffer for k_encoded: mask_poly evaluation is
                 // complete so the buffer contents no longer matter.
                 scratch.fill(0);
-                SCHEME::code_encode(&mut scratch, m);
+                SCHEME::code_encode(scratch, m);
                 let mut k_xi = Gf2_9009::zero();
-                evaluate_poly_at_generator(&scratch, power, &mut k_xi);
+                evaluate_poly_at_generator(scratch, power, &mut k_xi);
 
                 // e is fixed-weight (omega_e ones), same sparse fast path as r1/r2.
                 let mut e_xi = Gf2_9009::zero();

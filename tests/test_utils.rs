@@ -2,7 +2,7 @@
 
 use HQCTiny::traits::*;
 use rand::Rng;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub struct SharedSessionStore {
@@ -25,36 +25,5 @@ pub struct MockEntropy;
 impl EntropyProvider for MockEntropy {
     fn random_bytes(&self, out: &mut [u8]) {
         rand::rng().fill_bytes(out);
-    }
-}
-
-pub struct InMemoryKeyProvider {
-    pub current_idx: RwLock<u8>,
-    pub keys: [RwLock<Option<[u8; 32]>>; 2],
-}
-
-impl InMemoryKeyProvider {
-    pub fn new(entropy: &impl EntropyProvider) -> Self {
-        let mut k0 = [0u8; 32];
-        let mut k1 = [0u8; 32];
-        entropy.random_bytes(&mut k0);
-        entropy.random_bytes(&mut k1);
-        Self {
-            current_idx: RwLock::new(0),
-            keys: [RwLock::new(Some(k0)), RwLock::new(Some(k1))],
-        }
-    }
-}
-
-impl CookieKeyProvider for InMemoryKeyProvider {
-    fn current_key_index(&self) -> u8 {
-        *self.current_idx.read().unwrap()
-    }
-
-    fn get_key(&self, index: u8) -> Option<[u8; 32]> {
-        if index > 1 {
-            return None;
-        }
-        *self.keys[index as usize].read().unwrap()
     }
 }

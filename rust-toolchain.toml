@@ -1,3 +1,8 @@
 [toolchain]
-channel = "nightly"
+# Dated pin, not a floating "nightly" channel: iai-callgrind's "Estimated
+# Cycles" and criterion's timings are used as paper numbers, and rustc
+# codegen changes between nightlies are a real source of drift there. Bump
+# this deliberately (and re-run the full eval suite) rather than letting it
+# silently roll forward on image rebuild.
+channel = "nightly-2026-06-15"
 components = ["rustfmt", "clippy"]

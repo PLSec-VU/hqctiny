@@ -1,0 +1,42 @@
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: eval/Dockerfile
+    image: hqctiny-eval
+    volumes:
+      - ..:/work
+      - cargo-registry:/usr/local/cargo/registry
+    working_dir: /work
+    environment:
+      - CARGO_TARGET_DIR=/work/target-linux
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      # needed to get valgrind/callgrind to work
+      - seccomp:unconfined
+    command: sleep infinity
+    tty: true
+
+  client:
+    image: hqctiny-eval
+    volumes:
+      - ..:/work
+      - cargo-registry:/usr/local/cargo/registry
+    working_dir: /work
+    environment:
+      - CARGO_TARGET_DIR=/work/target-linux
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      # needed to get valgrind/callgrind to work
+      - seccomp:unconfined
+    command: sleep infinity
+    tty: true
+    depends_on:
+      - server
+
+volumes:
+  cargo-registry:

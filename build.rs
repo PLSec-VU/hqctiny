@@ -5,23 +5,54 @@ fn main() {
     fips_build.file("hqc/lib/fips202/fips202.c");
     fips_build.compile("fips202");
 
+    let immintrin_shim = non_x86_immintrin_shim();
+
     // Compile HQC variants
-    compile_variant("1");
-    compile_variant("3");
-    compile_variant("5");
+    compile_variant("1", immintrin_shim.as_deref());
+    compile_variant("3", immintrin_shim.as_deref());
+    compile_variant("5", immintrin_shim.as_deref());
 
     // Re-run build script if any C source/header files change
     println!("cargo:rerun-if-changed=hqc/src");
     println!("cargo:rerun-if-changed=hqc/lib/fips202");
 }
 
-fn compile_variant(v: &str) {
+/// The vendored HQC reference sources unconditionally `#include
+/// <immintrin.h>`, even though this build only ever compiles the portable
+/// `HQC_ARCH_REF` path below (no AVX intrinsics are actually called — the
+/// `#define __IMMINTRIN_H` further down relies on the header being a no-op
+/// once opened, not on skipping the `#include` itself). On x86_64 that
+/// header always exists, so the no-op trick is enough. On other
+/// architectures (e.g. aarch64, as in eval/'s Linux container) the
+/// toolchain doesn't ship the file at all, so the `#include` fails before
+/// the guard is ever reached. This synthesizes an empty stand-in and
+/// places it ahead of the normal search path so it's found instead.
+fn non_x86_immintrin_shim() -> Option<std::path::PathBuf> {
+    if cfg!(any(target_arch = "x86_64", target_arch = "x86")) {
+        return None;
+    }
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    let shim_dir = std::path::Path::new(&out_dir).join("immintrin_shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    std::fs::write(
+        shim_dir.join("immintrin.h"),
+        "// stub: this build never uses x86 intrinsics (see build.rs)\n",
+    )
+    .unwrap();
+    Some(shim_dir)
+}
+
+fn compile_variant(v: &str, immintrin_shim: Option<&std::path::Path>) {
     let mut build = cc::Build::new();
 
     // Set target architecture configuration
     build.define("HQC_ARCH_REF", "1");
     // Disable immintrin.h to avoid compilation errors on non-x86 architectures
     build.define("__IMMINTRIN_H", None);
+
+    if let Some(dir) = immintrin_shim {
+        build.include(dir);
+    }
 
     // Include directories
     build.include("hqc/src/common");

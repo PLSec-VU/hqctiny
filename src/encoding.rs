@@ -4,10 +4,14 @@ use crate::error::{Error, Result};
 use crate::hqc::HqcScheme;
 use crate::math::gf2_9009::{GF29009_NUM_U64, Gf2_9009};
 use crate::protocol::*;
-use std::sync::Arc;
 
 // ── Packet type enum ───────────────────────────────────────────────
 
+// PointRequest's cookie/witness are fixed-size inline arrays rather than
+// Vec/Arc<Vec> (see protocol::FixedBytes) specifically so decoding a packet
+// never heap-allocates; boxing the large variant here to appease the lint
+// would reintroduce the exact heap allocation that exists to avoid.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Packet {
     HandshakeRequest(HandshakeRequest),
@@ -128,12 +132,11 @@ pub fn decode_handshake_response<T: HqcScheme>(data: &[u8]) -> Result<HandshakeR
     }
     let key_index = if header & KEY_BIT != 0 { 1 } else { 0 };
     let mut pos = 1;
-    let mut cookie = vec![0u8; cookie_len];
-    cookie.copy_from_slice(&data[pos..pos + cookie_len]);
+    let cookie = CookieBuf::from_slice(&data[pos..pos + cookie_len], Error::SerializationError)?;
     pos += cookie_len;
     let salt = get_array::<16>(data, &mut pos)?;
     Ok(HandshakeResponse {
-        cookie: Arc::new(cookie),
+        cookie,
         salt,
         key_index,
     })
@@ -221,8 +224,7 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
         return Err(Error::SerializationError);
     }
 
-    let mut cookie = vec![0u8; cookie_len];
-    cookie.copy_from_slice(&data[pos..pos + cookie_len]);
+    let cookie = CookieBuf::from_slice(&data[pos..pos + cookie_len], Error::SerializationError)?;
     pos += cookie_len;
 
     let mut data_limbs = [0u64; GF29009_NUM_U64];
@@ -240,12 +242,10 @@ pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
     merkle_root.copy_from_slice(&data[pos..pos + 32]);
     pos += 32;
 
-    let witness_len = data.len() - pos;
-    let mut witness = vec![0u8; witness_len];
-    witness.copy_from_slice(&data[pos..]);
+    let witness = WitnessBuf::from_slice(&data[pos..], Error::InvalidWitness)?;
 
     Ok(PointRequest {
-        cookie: Arc::new(cookie),
+        cookie,
         key_index,
         point_index,
         point_type,
@@ -361,7 +361,7 @@ mod tests {
     fn test_handshake_response_roundtrip() {
         use crate::hqc::Hqc1;
         let res = HandshakeResponse {
-            cookie: Arc::new(vec![0xaa; 88]),
+            cookie: CookieBuf::from_slice(&[0xaa; 88], Error::SerializationError).unwrap(),
             salt: [9; 16],
             key_index: 1,
         };
@@ -377,13 +377,13 @@ mod tests {
     fn test_point_request_roundtrip() {
         use crate::hqc::Hqc1;
         let req = PointRequest {
-            cookie: Arc::new(vec![0xaa; 88]),
+            cookie: CookieBuf::from_slice(&[0xaa; 88], Error::SerializationError).unwrap(),
             key_index: 0,
             point_index: 1,
             point_type: PointType::U,
             public_eval: Gf2_9009::one(),
             merkle_root: [0x55; 32],
-            witness: vec![9, 8, 7, 6],
+            witness: WitnessBuf::from_slice(&[9, 8, 7, 6], Error::InvalidWitness).unwrap(),
         };
         let mut buf = [0u8; 2000];
         let enc = encode_point_request::<Hqc1>(&req, &mut buf).unwrap();

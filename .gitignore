@@ -27,3 +27,10 @@ rocq_mcp*.v
 # Added by cargo
 
 /target
+/target-linux
+
+# eval/ measurement output
+eval/results/
+
+# dhat heap-profiler output (see profiling/README.md)
+dhat-heap.json

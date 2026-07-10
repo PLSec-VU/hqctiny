@@ -1,5 +1,5 @@
 [workspace]
-members = ["hqctiny-cli"]
+members = ["hqctiny-client", "hqctiny-server"]
 
 [package]
 name = "HQCTiny"
@@ -18,13 +18,62 @@ lazy_static = "1.4"
 subtle = "2.5"
 serde_json = "1.0"
 zeroize = { version = "1.9", features = ["derive"] }
+dhat = { version = "0.3", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+iai-callgrind = "0.14"
 
 [build-dependencies]
 cc = "1.0"
 
+[features]
+dhat-heap = ["dep:dhat"]
+
+[profile.profiling]
+inherits = "release"
+debug = true
+
+[profile.tiny-release]
+inherits = "release"
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+
 [[bench]]
 name = "interpolate"
 harness = false
+
+[[bench]]
+name = "kem_primitives"
+harness = false
+
+[[bench]]
+name = "protocol_phases"
+harness = false
+
+[[bench]]
+name = "callgrind_primitives"
+harness = false
+
+[[bin]]
+name = "dhat-heap"
+path = "profiling/dhat_heap.rs"
+required-features = ["dhat-heap"]
+
+[[bin]]
+name = "flamegraph-workload"
+path = "profiling/flamegraph_workload.rs"
+
+[[bin]]
+name = "timing-breakdown"
+path = "profiling/timing_breakdown.rs"
+
+[[bin]]
+name = "stack-test"
+path = "profiling/stack_test.rs"
+
+[[bin]]
+name = "protocol-breakdown"
+path = "profiling/protocol_breakdown.rs"

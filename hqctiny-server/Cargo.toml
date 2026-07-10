@@ -1,0 +1,28 @@
+[package]
+name = "hqctiny-server"
+version = "0.1.0"
+edition = "2024"
+
+# Deliberately minimal: only the protocol library and the OS RNG binding it
+# already depends on transitively. No clap, no tokio, no async runtime — this
+# binary is the artifact measured for static text/data/bss size and stack
+# depth, so its dependency graph should reflect an actual embedded deployment
+# rather than the full-featured client/tooling binary in hqctiny-client.
+[dependencies]
+HQCTiny = { path = ".." }
+rand = "0.10"
+
+[features]
+# Compiles out the per-session println of the derived key: a true nop (no
+# formatting, no write syscall) rather than a runtime-suppressed print, so
+# benchmark measurements (see eval/scripts/dos_flood.py) aren't perturbed.
+quiet = []
+# Adds an atomic counter of successfully-sent responses, queryable via a
+# magic-byte UDP probe on the same socket the server already listens on
+# (see FLOOD_STATS_QUERY in main.rs). No signal handling, no new
+# dependency, no background thread -- just one extra branch at the top of
+# the existing recv loop -- and it's compiled out entirely (zero size/perf
+# cost) unless this feature is on, so it never touches the tiny-release
+# binary category 1 measures for static size. See
+# eval/scripts/container/dos_flood_variant.py.
+flood-stats = []

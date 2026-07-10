@@ -13,7 +13,11 @@ We use the following primitives:
 |------|----------|
 | `src/` | The Rust protocol implementation (client, server, wire encoding, HQC bindings, field math) |
 | `hqc/` | The [official HQC reference implementation](https://gitlab.com/pqc-hqc/hqc.git), built by `build.rs` |
-| `hqctiny-cli/` | A standalone example binary implementing a UDP client/server for the protocol |
+| `hqctiny-client/` | A UDP client for the protocol with `bandwidth-report`/`flood-client` measurement helpers |
+| `hqctiny-server/` | A UDP server for static-size/stack-depth/strace measurements |
+| `benches/` | Criterion and iai-callgrind benchmarks |
+| `profiling/` | Dev-loop profiling: heap (dhat), CPU flamegraphs, and a stack-depth probe |
+| `eval/` | Infrastructure for evaluation reproduction |
 | `sagemath/` | SageMath scripts used for precomputation artifacts |
 | `ssprove/` | A mechanized Coq/SSProve security proof for the protocol |
 

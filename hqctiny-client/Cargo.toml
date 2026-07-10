@@ -1,0 +1,16 @@
+[package]
+name = "hqctiny-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1.35", features = ["net", "rt-multi-thread", "macros"] }
+rand = "0.9"
+serde_json = "1.0"
+HQCTiny = { path = ".." }
+
+[features]
+# Compiles out the printed session key: a true nop rather than a
+# runtime-suppressed print, so benchmark measurements aren't perturbed.
+quiet = []
