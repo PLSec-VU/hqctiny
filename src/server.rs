@@ -183,14 +183,12 @@ where
 
         let ss_params = SCHEME::derive_shared_secret(m, &salt, &req.hash_ek_kem);
         let theta = ss_params.theta();
-        let k_session = ss_params.K();
 
-        let mut k_session_32 = [0u8; 32];
-        let copy_len = k_session.len().min(32);
-        k_session_32[..copy_len].copy_from_slice(&k_session[..copy_len]);
+        let mut k_session = crate::kdf::derive_session_key(ss_params.K());
+        let mut k_transcript = crate::kdf::derive_transcript_key(ss_params.K());
 
-        self.session_store.save_session(k_session_32);
-        k_session_32.zeroize();
+        self.session_store.save_session(k_session);
+        k_session.zeroize();
 
         let pt_len = 32 + sec_bytes;
         let mut plaintext = [0u8; MAX_COOKIE_PLAINTEXT_BYTES];
@@ -200,12 +198,23 @@ where
 
         let result = self
             .encrypt_cookie(&plaintext[..pt_len], &req.merkle_root)
-            .map(|(cookie, key_index)| HandshakeResponse {
-                cookie,
-                salt,
-                key_index,
+            .map(|(cookie, key_index)| {
+                let transcript = crate::kdf::compute_transcript(
+                    &req.hash_ek_kem,
+                    &req.merkle_root,
+                    &salt,
+                    key_index,
+                );
+                let mac = crate::kdf::confirmation_tag(&k_transcript, &transcript);
+                HandshakeResponse {
+                    cookie,
+                    salt,
+                    key_index,
+                    mac,
+                }
             });
         plaintext.zeroize();
+        k_transcript.zeroize();
         result
     }
 

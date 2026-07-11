@@ -287,3 +287,86 @@ fn test_invalid_merkle_root_rejected() {
     let res_corrupted_root = server.handle_point_request(req_corrupted_root);
     assert_eq!(res_corrupted_root.unwrap_err(), Error::DecryptionError);
 }
+
+/// A silent MITM that forges Phase 2 point responses (injecting its own
+/// ciphertext) makes the client decapsulate a different KEM secret. The
+/// handshake confirmation tag is keyed on the genuine server's secret, so the
+/// client's key confirmation must fail rather than exporting an attacker-known
+/// key. We model the forgery as a one-bit tamper of a single point response.
+#[test]
+fn test_tampered_point_response_fails_key_confirmation() {
+    let sessions = Arc::new(Mutex::new(Vec::new()));
+    let server = Server::<Hqc1, _, _>::new(
+        SharedSessionStore {
+            sessions: sessions.clone(),
+        },
+        MockEntropy,
+    );
+    let client = Client::<Hqc1, _, _, _>::new(
+        SharedSessionStore {
+            sessions: Arc::new(Mutex::new(Vec::new())),
+        },
+        MockEntropy,
+    );
+
+    let (client, req) = client.initialize();
+    let res = server.handle_handshake(req).unwrap();
+    let (mut client, point_reqs) = client.handle_handshake_response(res).unwrap();
+
+    let mut outcome = None;
+    for (i, req) in point_reqs.into_iter().enumerate() {
+        let mut pres = server.handle_point_request(req).unwrap();
+        if i == 0 {
+            // Attacker corrupts one evaluation on the insecure channel.
+            pres.eval.data[0] ^= 1;
+        }
+        match client.handle_point_response(pres) {
+            Ok(PointResult::Collecting(c)) => client = *c,
+            Ok(PointResult::Completed(..)) => panic!("tampered stream must not confirm the key"),
+            Err(e) => {
+                outcome = Some(e);
+                break;
+            }
+        }
+    }
+    assert_eq!(outcome, Some(Error::KeyConfirmationFailed));
+}
+
+/// If the confirmation tag itself is corrupted (which on a real deployment
+/// would require breaking the handshake channel's authentication), the client
+/// must reject even a genuine, untampered point stream.
+#[test]
+fn test_corrupted_handshake_tag_fails_key_confirmation() {
+    let sessions = Arc::new(Mutex::new(Vec::new()));
+    let server = Server::<Hqc1, _, _>::new(
+        SharedSessionStore {
+            sessions: sessions.clone(),
+        },
+        MockEntropy,
+    );
+    let client = Client::<Hqc1, _, _, _>::new(
+        SharedSessionStore {
+            sessions: Arc::new(Mutex::new(Vec::new())),
+        },
+        MockEntropy,
+    );
+
+    let (client, req) = client.initialize();
+    let mut res = server.handle_handshake(req).unwrap();
+    res.mac[0] ^= 1; // corrupt the confirmation tag
+    let (mut client, point_reqs) = client.handle_handshake_response(res).unwrap();
+
+    let mut outcome = None;
+    for req in point_reqs {
+        let pres = server.handle_point_request(req).unwrap();
+        match client.handle_point_response(pres) {
+            Ok(PointResult::Collecting(c)) => client = *c,
+            Ok(PointResult::Completed(..)) => panic!("corrupted tag must not confirm the key"),
+            Err(e) => {
+                outcome = Some(e);
+                break;
+            }
+        }
+    }
+    assert_eq!(outcome, Some(Error::KeyConfirmationFailed));
+}

@@ -102,7 +102,7 @@ pub fn encode_handshake_response<'o, T: HqcScheme>(
     if res.cookie.len() != cookie_len {
         return Err(Error::SerializationError);
     }
-    let total = 1 + cookie_len + 16;
+    let total = 1 + cookie_len + 16 + 32;
     if out.len() < total {
         return Err(Error::SerializationError);
     }
@@ -117,12 +117,14 @@ pub fn encode_handshake_response<'o, T: HqcScheme>(
     pos += cookie_len;
     out[pos..pos + 16].copy_from_slice(&res.salt);
     pos += 16;
+    out[pos..pos + 32].copy_from_slice(&res.mac);
+    pos += 32;
     Ok(&mut out[..pos])
 }
 
 pub fn decode_handshake_response<T: HqcScheme>(data: &[u8]) -> Result<HandshakeResponse> {
     let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
-    let total = 1 + cookie_len + 16;
+    let total = 1 + cookie_len + 16 + 32;
     if data.len() < total {
         return Err(Error::SerializationError);
     }
@@ -135,10 +137,12 @@ pub fn decode_handshake_response<T: HqcScheme>(data: &[u8]) -> Result<HandshakeR
     let cookie = CookieBuf::from_slice(&data[pos..pos + cookie_len], Error::SerializationError)?;
     pos += cookie_len;
     let salt = get_array::<16>(data, &mut pos)?;
+    let mac = get_array::<32>(data, &mut pos)?;
     Ok(HandshakeResponse {
         cookie,
         salt,
         key_index,
+        mac,
     })
 }
 
@@ -364,13 +368,17 @@ mod tests {
             cookie: CookieBuf::from_slice(&[0xaa; 88], Error::SerializationError).unwrap(),
             salt: [9; 16],
             key_index: 1,
+            mac: [0x7c; 32],
         };
         let mut buf = [0u8; 200];
         let enc = encode_handshake_response::<Hqc1>(&res, &mut buf).unwrap();
+        // 1 (tag) + 88 (cookie) + 16 (salt) + 32 (mac)
+        assert_eq!(enc.len(), 137);
         let dec = decode_handshake_response::<Hqc1>(enc).unwrap();
         assert_eq!(dec.cookie, res.cookie);
         assert_eq!(dec.salt, res.salt);
         assert_eq!(dec.key_index, res.key_index);
+        assert_eq!(dec.mac, res.mac);
     }
 
     #[test]

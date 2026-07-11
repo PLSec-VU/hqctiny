@@ -5,6 +5,7 @@ pub mod client;
 pub mod encoding;
 pub mod error;
 pub mod hqc;
+pub mod kdf;
 pub mod limits;
 pub mod math;
 pub mod merkle;

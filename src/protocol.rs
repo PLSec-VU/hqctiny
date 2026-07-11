@@ -109,6 +109,7 @@ pub struct HandshakeResponse {
     pub cookie: CookieBuf,
     pub salt: [u8; 16],
     pub key_index: u8,
+    pub mac: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

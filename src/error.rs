@@ -13,6 +13,7 @@ pub enum Error {
     DecodingFailed,
     MerkleVerificationFailed,
     InvalidWitness,
+    KeyConfirmationFailed,
     Other(&'static str),
 }
 

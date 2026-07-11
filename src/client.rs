@@ -24,6 +24,8 @@ pub struct CollectingPoints {
     pub cookie: CookieBuf,
     pub salt: [u8; 16],
     pub key_index: u8,
+    /// Handshake confirmation tag from the response, checked at completion.
+    pub mac: [u8; 32],
     pub points_u: Vec<Option<Gf2_9009>>,
     pub points_v: Vec<Option<Gf2_9009>>,
     pub sk: Zeroizing<Vec<u8>>,
@@ -175,6 +177,7 @@ where
                 cookie: res.cookie,
                 salt: res.salt,
                 key_index: res.key_index,
+                mac: res.mac,
                 points_u: vec![None; points_num],
                 points_v: vec![None; points_num],
                 sk: self.state.sk,
@@ -257,23 +260,42 @@ where
             let mut ct = vec![0u8; SCHEME::CIPHERTEXT_BYTES];
             SCHEME::serialize_ciphertext(&mut ct, &u_words, &v_words, &self.state.salt);
 
-            // Decapsulate using the HQC KEM secret key
-            let mut ss = vec![0u8; SCHEME::SHARED_SECRET_BYTES];
+            let mut ss = Zeroizing::new(vec![0u8; SCHEME::SHARED_SECRET_BYTES]);
             let ret = SCHEME::dec(&mut ss, &ct, &self.state.sk);
             if ret != 0 {
                 return Err(Error::DecodingFailed);
             }
 
+            let mut k_session = crate::kdf::derive_session_key(&ss);
+            let mut k_transcript = crate::kdf::derive_transcript_key(&ss);
+
+            let transcript = crate::kdf::compute_transcript(
+                &self.state.request.hash_ek_kem,
+                &self.state.request.merkle_root,
+                &self.state.salt,
+                self.state.key_index,
+            );
+            let confirmed =
+                crate::kdf::verify_confirmation_tag(&k_transcript, &transcript, &self.state.mac);
+            k_transcript.zeroize();
+            if !confirmed {
+                k_session.zeroize();
+                return Err(Error::KeyConfirmationFailed);
+            }
+
+            let session_key = k_session.to_vec();
+            k_session.zeroize();
+
             let next_state = Client {
                 session_store: self.session_store,
                 entropy_provider: self.entropy_provider,
                 state: Completed {
-                    session_key: Zeroizing::new(ss.clone()),
+                    session_key: Zeroizing::new(session_key.clone()),
                 },
                 _phantom: std::marker::PhantomData,
             };
 
-            Ok(PointResult::Completed(next_state, ss))
+            Ok(PointResult::Completed(next_state, session_key))
         } else {
             Ok(PointResult::Collecting(Box::new(self)))
         }

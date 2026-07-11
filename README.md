@@ -36,18 +36,20 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
       | 0x00 | hash_ek_kem (32 B) | merkle_root (32 B) |
 
                                                  1. Generate random m (PARAM_SECURITY_BYTES) and salt (16 B).
-                                                 2. K_session, theta <- derive_shared_secret(m, salt, hash_ek_kem).
-                                                 3. K_session is ready for future use.
+                                                 2. K, theta <- derive_shared_secret(m, salt, hash_ek_kem).
+                                                 3. K_session <- KDF(K, "session key"); K_transcript <- KDF(K, "transcript key").
+                                                    K_session is stored for future use.
                                                  4. Fetch current key_index (0 or 1) and active key from pool.
                                                     Encrypt Cookie = AEAD_{ActiveKey}(theta || m) with AAD = merkle_root and a random 24‑byte nonce.
+                                                 5. MAC <- MAC(K_transcript, hash_ek_kem || merkle_root || salt || key_index).
 
      [Packet 2: Handshake Response] 
      <--------------------------------------------------------------------
-      | Tag | Cookie | Salt (16 B)
+      | Tag | Cookie | Salt (16 B) | MAC (32 B)
       
       Tag encodes direction (s→c), handshake kind, and the key_index bit (0x80 or 0xA0).
 
-  1. Store cookie, salt, and key_index.
+  1. Store cookie, salt, key_index, and the confirmation MAC (verified in Phase 3).
 ```
 
 > [!NOTE]
@@ -97,8 +99,35 @@ Generates: Ephemeral HQC Keypair (h, s)                                    Holds
   2. Combine the blocks back into F2[x] polynomials u(x), v(x) — the kernel-delta blinding terms cancel out here.
   3. Reduce u(x), v(x) modulo (x^n - 1) to vanish the quotient-blinding mask polynomials.
   4. Truncate the resulting v(x) modulo x^n1n2 (discarding the randomized truncate-mask coefficients).
-  5. Decode HQC ciphertext -> Extract K_session.
+  5. Decode HQC ciphertext -> recover the raw KEM secret K.
+  6. K_session <- KDF(K, "session key"); K_transcript <- KDF(K, "transcript key").
+  7. Key confirmation: verify MAC(K_transcript, hash_ek_kem || merkle_root || salt || key_index)
+     against the tag from the handshake response. On mismatch, ABORT (do not export K_session).
 ```
+
+## Key Confirmation
+
+The Phase 2 point stream travels over the insecure channel with no per-packet
+authentication. HQC's implicit-rejection decapsulation does **not** protect
+against a man-in-the-middle who substitutes its own *valid* ciphertext: the
+client would silently decapsulate an attacker-chosen message and derive a key
+the attacker knows. To close this, the handshake response — which *is*
+channel-authenticated — carries a confirmation tag:
+
+- The raw KEM secret `K` is never exported. Both peers expand it with a KDF into
+  `K_session = KDF(K, "session key")` and `K_transcript = KDF(K, "transcript key")`.
+  Domain separation keeps `K_session` pseudorandom even though the tag is public.
+- The server MACs the handshake transcript (`hash_ek_kem || merkle_root || salt
+  || key_index`) under `K_transcript` and sends the tag in the authenticated
+  response.
+- The client recomputes `K` by decapsulation, re-derives `K_transcript`, and
+  verifies the tag. Because the tag key is bound to the *genuine server's* `K`,
+  any injected Phase 2 ciphertext yields a different `K` and the tag fails.
+
+This is **deferred** confirmation (checked after decapsulation), so it converts
+an active substitution into a clean abort rather than preventing it — it buys
+integrity/authenticity, not availability. It relies on the handshake response
+being authenticated so the tag cannot be replaced.
 
 ## Cookie Key Rotation
 Time validation is handled implicitly through **Windowed Symmetric Cookie Key Rotation**:
@@ -138,6 +167,7 @@ All fields are packed sequentially after the tag byte.
 | 25 | 32 + SecParam B | ciphertext | AEAD ciphertext (encrypts `theta \|\| m`) |
 | 57 + SecParam | 16 B | auth_tag | Poly1305 authentication tag |
 | 73 + SecParam | 16 B | salt | Random salt for key derivation |
+| 89 + SecParam | 32 B | mac | Confirmation tag `MAC(K_transcript, transcript)` |
 
 **Where SecParam = PARAM_SECURITY_BYTES:**
 - 16 B for HQC-1
@@ -183,7 +213,7 @@ This yields:
 | Packet Type | HQC-1 (128-bit) | HQC-3 (192-bit) | HQC-5 (256-bit) | Size Formula / Components |
 |-------------|-----------------|-----------------|-----------------|---------------------------|
 | **HandshakeRequest** | 65 B | 65 B | 65 B | `1 + 32 (hash_ek_kem) + 32 (merkle_root)` |
-| **HandshakeResponse** | 105 B | 113 B | 121 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + 16 (salt)` |
+| **HandshakeResponse** | 137 B | 145 B | 153 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + 16 (salt) + 32 (mac)` |
 | **PointRequest** (Max) | 817 B | 873 B | 937 B | `1 (tag) + (24 + 32 + SecParam + 16) (cookie) + (limbs * 8) (public_eval) + 32 (merkle_root) + Witness` |
 | **PointResponse** | 1129 B | 1129 B | 1129 B | `1 + 1128 (Gf2_9009)` |
 
@@ -197,9 +227,9 @@ The table below shows the total number of round trips (request-response pairs) a
 
 | Variant | Total Round Trips | Total Sent (Client) | Total Received (Client) |
 |---------|-------------------|---------------------|-------------------------|
-| **HQC-1** | 15 | 11,503 B (~11.5 KB) | 15,911 B (~15.9 KB) |
-| **HQC-3** | 31 | 26,255 B (~26.3 KB) | 33,983 B (~34.0 KB) |
-| **HQC-5** | 51 | 46,915 B (~46.9 KB) | 56,571 B (~56.6 KB) |
+| **HQC-1** | 15 | 11,503 B (~11.5 KB) | 15,943 B (~15.9 KB) |
+| **HQC-3** | 31 | 26,255 B (~26.3 KB) | 34,015 B (~34.0 KB) |
+| **HQC-5** | 51 | 46,915 B (~46.9 KB) | 56,603 B (~56.6 KB) |
 
 *Note: Since the point-on-demand stream is asynchronous and stateless, the client can stream all point requests concurrently once it receives the handshake cookie. Under parallel execution, the entire protocol (handshake + streaming) completes in exactly **2 network round-trip times (RTT)**.*
 
