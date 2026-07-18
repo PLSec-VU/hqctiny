@@ -2,10 +2,11 @@
 """Runs inside the eval container's "client" service. Runs several full
 protocol sessions against a (possibly network-emulated or remote) server,
 each wrapped in /usr/bin/time for real/user/sys wall-clock accounting and
-a `timeout` guard -- the protocol has no retry/timeout of its own (see
-hqclethe-client's run_client, which blocks on socket.recv().await with no
-deadline), so under a lossy netem profile a dropped response packet would
-otherwise hang a rep forever instead of just failing it. Reports
+a `timeout` guard. The client retransmits on loss with an RTT-adaptive
+exponential-backoff RTO and gives up on its own after MAX_RETRIES
+consecutive stalls (see hqclethe-client's run_client), so the guard is
+only a backstop against a hung rep; it must be long enough to let a
+worst-case retry ladder (~10-12 s) play out rather than truncate it. Reports
 median/IQR RTTs across reps rather than a single session's numbers, which
 under jitter+loss aren't representative of anything (see eval/README.md's
 reproducibility notes). RTTs are derived from the client's phase
@@ -23,7 +24,7 @@ import subprocess
 import sys
 
 CLI = "/work/target-linux/release/hqclethe-client"
-REP_TIMEOUT_S = 5
+REP_TIMEOUT_S = 30
 DEFAULT_REPS = 15
 
 
@@ -54,6 +55,8 @@ def run_one(addr: str, variant: str) -> dict | None:
     return {
         "handshake_rtt_s": t_res - t_req,
         "point_request_rtt_s": t_done - t_pts,
+        "session_s": t_done - t_req,
+        "retries": len(re.findall(r"^\[retry\] ", result.stderr, flags=re.M)),
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
@@ -95,7 +98,8 @@ def main() -> None:
             print()
         print(
             f"rep {rep}/{reps}: handshake_rtt_s={r['handshake_rtt_s']:.4f} "
-            f"point_request_rtt_s={r['point_request_rtt_s']:.4f}"
+            f"point_request_rtt_s={r['point_request_rtt_s']:.4f} "
+            f"session_s={r['session_s']:.4f} retries={r['retries']}"
         )
 
     print()
@@ -103,6 +107,12 @@ def main() -> None:
     if results:
         print(f"handshake_rtt_s: {summarize([r['handshake_rtt_s'] for r in results])}")
         print(f"point_request_rtt_s: {summarize([r['point_request_rtt_s'] for r in results])}")
+        print(f"session_s: {summarize([r['session_s'] for r in results])}")
+        with_retries = [r for r in results if r["retries"] > 0]
+        print(
+            f"reps_with_retransmits: {len(with_retries)}/{len(results)} "
+            f"(retry rounds per such rep: {sorted(r['retries'] for r in with_retries)})"
+        )
         print("total_round_trips: 2 (handshake, then all point requests fired in parallel)")
     else:
         print("(all reps failed -- no RTT data)")

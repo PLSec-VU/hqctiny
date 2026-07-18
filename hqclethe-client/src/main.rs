@@ -11,6 +11,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
+// --- Retry tuning (UDP packet-loss recovery, see run_client) ---
+// The base retransmission timeout is seeded from the measured handshake
+// RTT (clamped into [RTO_MIN, RTO_MAX]); each stall doubles it up to
+// RTO_MAX, and we give up after MAX_RETRIES consecutive stalls in a phase.
+const RTO_MIN: Duration = Duration::from_millis(100);
+const RTO_MAX: Duration = Duration::from_secs(2);
+/// Base RTO used for the handshake, before any RTT sample exists.
+const RTO_FALLBACK: Duration = Duration::from_millis(500);
+/// Point-phase base RTO = this multiple of the measured handshake RTT.
+const RTT_RTO_MULTIPLIER: u32 = 3;
+const RTO_BACKOFF: u32 = 2;
+const MAX_RETRIES: u32 = 6;
+
 #[derive(Clone)]
 struct OsEntropy;
 impl EntropyProvider for OsEntropy {
@@ -69,46 +82,125 @@ async fn run_client<SCHEME: HqcScheme>(
 
     let (client, handshake_req) = client.initialize();
     let mut buf = [0u8; 2048];
-    let encoded = encode_packet::<SCHEME>(&Packet::HandshakeRequest(handshake_req), &mut buf)?;
-    socket.send(encoded).await?;
-    phase("handshake_request_sent");
-
+    let hs_bytes =
+        encode_packet::<SCHEME>(&Packet::HandshakeRequest(handshake_req), &mut buf)?.to_vec();
     let mut recv_buf = [0u8; 4096];
-    let len = socket.recv(&mut recv_buf).await?;
-    phase("handshake_response_received");
-    let packet = decode_packet::<SCHEME>(&recv_buf[..len])?;
 
-    let handshake_res = match packet {
-        Packet::HandshakeResponse(res) => res,
-        _ => return Err("Expected HandshakeResponse".into()),
+    // --- Handshake phase, with retransmit on loss ---
+    // A lost HandshakeRequest or HandshakeResponse both surface here as a
+    // recv timeout; the request is idempotent (the server is stateless and
+    // simply issues a fresh cookie), so we just re-send the same bytes.
+    let mut rto = RTO_FALLBACK;
+    let mut attempts = 0u32;
+    let handshake_res = loop {
+        let last_send = Instant::now();
+        socket.send(&hs_bytes).await?;
+        if attempts == 0 {
+            phase("handshake_request_sent");
+        }
+        match tokio::time::timeout(rto, socket.recv(&mut recv_buf)).await {
+            Ok(Ok(len)) => match decode_packet::<SCHEME>(&recv_buf[..len]) {
+                Ok(Packet::HandshakeResponse(res)) => {
+                    // Measure from the last send so the sample is valid even
+                    // after retransmits; used to size the point-phase RTO.
+                    let rtt_sample = last_send.elapsed();
+                    phase("handshake_response_received");
+                    break (res, rtt_sample);
+                }
+                // Stray or undecodable packet: ignore and keep waiting on
+                // the same deadline (does not count as a stall).
+                _ => continue,
+            },
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                attempts += 1;
+                if attempts > MAX_RETRIES {
+                    return Err("handshake timed out".into());
+                }
+                rto = (rto * RTO_BACKOFF).min(RTO_MAX);
+                eprintln!(
+                    "[retry] handshake attempt={attempts} rto={:.3}",
+                    rto.as_secs_f64()
+                );
+            }
+        }
     };
+    let (handshake_res, rtt_sample) = handshake_res;
 
     let (client, point_reqs) = client.handle_handshake_response(handshake_res)?;
     let mut client = client;
 
-    // Send all point requests
-    for req in point_reqs {
+    // Base RTO for the point phase, adapted from the handshake RTT.
+    let base_rto = Duration::from_secs_f64(
+        (rtt_sample.as_secs_f64() * RTT_RTO_MULTIPLIER as f64)
+            .clamp(RTO_MIN.as_secs_f64(), RTO_MAX.as_secs_f64()),
+    );
+
+    // --- Point phase, with a no-progress timer + resend-outstanding ---
+    // `received[j]` tracks whether the response for point_reqs[j] has
+    // arrived; a PointResponse is matched to its request by
+    // (point_index, point_type). On a stall we re-send only the requests
+    // still outstanding (each is idempotent and yields an identical
+    // response), so a single lost response never re-floods the server.
+    let mut received = vec![false; point_reqs.len()];
+    for req in &point_reqs {
         let mut buf = [0u8; 2048];
-        let encoded = encode_packet::<SCHEME>(&Packet::PointRequest(req), &mut buf)?;
+        let encoded = encode_packet::<SCHEME>(&Packet::PointRequest(*req), &mut buf)?;
         socket.send(encoded).await?;
     }
     phase("point_requests_sent");
 
-    // Collect responses
+    let mut rto = base_rto;
+    let mut stalls = 0u32;
     loop {
-        let len = socket.recv(&mut recv_buf).await?;
-        let packet = decode_packet::<SCHEME>(&recv_buf[..len])?;
-        let point_res = match packet {
-            Packet::PointResponse(res) => res,
-            _ => continue,
-        };
+        match tokio::time::timeout(rto, socket.recv(&mut recv_buf)).await {
+            Ok(Ok(len)) => {
+                let res = match decode_packet::<SCHEME>(&recv_buf[..len]) {
+                    Ok(Packet::PointResponse(res)) => res,
+                    _ => continue,
+                };
+                let j = point_reqs.iter().position(|r| {
+                    r.point_index == res.point_index && r.point_type == res.point_type
+                });
+                let Some(j) = j else { continue };
+                if received[j] {
+                    continue; // stray or duplicated response
+                }
+                received[j] = true;
 
-        match client.handle_point_response(point_res)? {
-            PointResult::Collecting(c) => client = *c,
-            PointResult::Completed(_, key) => {
-                phase("session_key_derived");
-                print_shared_secret(&key);
-                return Ok(());
+                match client.handle_point_response(res)? {
+                    PointResult::Collecting(c) => client = *c,
+                    PointResult::Completed(_, key) => {
+                        phase("session_key_derived");
+                        print_shared_secret(&key);
+                        return Ok(());
+                    }
+                }
+                // Progress: reset the deadline and stall counter.
+                rto = base_rto;
+                stalls = 0;
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                stalls += 1;
+                if stalls > MAX_RETRIES {
+                    return Err("point collection timed out".into());
+                }
+                let mut outstanding = 0usize;
+                for (j, req) in point_reqs.iter().enumerate() {
+                    if !received[j] {
+                        let mut buf = [0u8; 2048];
+                        let encoded =
+                            encode_packet::<SCHEME>(&Packet::PointRequest(*req), &mut buf)?;
+                        socket.send(encoded).await?;
+                        outstanding += 1;
+                    }
+                }
+                rto = (rto * RTO_BACKOFF).min(RTO_MAX);
+                eprintln!(
+                    "[retry] point outstanding={outstanding} attempt={stalls} rto={:.3}",
+                    rto.as_secs_f64()
+                );
             }
         }
     }
