@@ -35,7 +35,7 @@ def find_pids(matches: Callable[[list[str]], bool]) -> list[int]:
 
 def find_tiny_server_pids(port: str) -> list[int]:
     def matches(argv: list[str]) -> bool:
-        return any(a.endswith("hqctiny-server") for a in argv) and "--port" in argv and port in argv
+        return any(a.endswith("hqclethe-server") for a in argv) and "--port" in argv and port in argv
 
     return find_pids(matches)
 

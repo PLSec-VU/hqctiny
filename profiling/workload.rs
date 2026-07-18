@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-use HQCTiny::client::{Client, PointResult};
-use HQCTiny::encoding::{Packet, decode_packet, encode_packet};
-use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
-use HQCTiny::server::Server;
-use HQCTiny::traits::*;
+use HQCLethe::client::{Client, PointResult};
+use HQCLethe::encoding::{Packet, decode_packet, encode_packet};
+use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
+use HQCLethe::server::Server;
+use HQCLethe::traits::*;
 use rand::Rng;
 
 #[derive(Clone)]

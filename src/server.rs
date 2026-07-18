@@ -35,7 +35,7 @@ where
     // `fn() -> SCHEME` rather than `SCHEME` so PhantomData's Send/Sync stay
     // unconditional — SCHEME is a zero-sized marker type, never touched by
     // value, but a bare `PhantomData<SCHEME>` would still force SCHEME: Send
-    // onto the rotation thread in hqctiny-server that clones Server across it.
+    // onto the rotation thread in hqclethe-server that clones Server across it.
     _phantom: std::marker::PhantomData<fn() -> SCHEME>,
 }
 
@@ -266,7 +266,7 @@ where
         let eff_words = public_eval_limbs::<SCHEME>();
 
         // The quotient masks and kernel deltas of u and v must be mutually
-        // independent (HQCTiny.v samples them separately); a shared mask
+        // independent (HQCLethe.v samples them separately); a shared mask
         // would cancel in u XOR v and leak the message.
         let eval = match req.point_type {
             PointType::U => {

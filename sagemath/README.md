@@ -1,6 +1,6 @@
 # SageMath Scripts
 
-This directory contains SageMath scripts used to generate mathematical structures and test vectors for HQCTiny.
+This directory contains SageMath scripts used to generate mathematical structures and test vectors for HQCLethe.
 
 ## Scripts
 

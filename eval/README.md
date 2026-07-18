@@ -1,4 +1,4 @@
-# HQCTiny evaluation suite
+# HQCLethe evaluation suite
 
 Reproduces the measurements in the paper.
 

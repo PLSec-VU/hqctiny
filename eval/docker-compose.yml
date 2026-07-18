@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: eval/Dockerfile
-    image: hqctiny-eval
+    image: hqclethe-eval
     volumes:
       - ..:/work
       - cargo-registry:/usr/local/cargo/registry
@@ -20,7 +20,7 @@ services:
     tty: true
 
   client:
-    image: hqctiny-eval
+    image: hqclethe-eval
     volumes:
       - ..:/work
       - cargo-registry:/usr/local/cargo/registry

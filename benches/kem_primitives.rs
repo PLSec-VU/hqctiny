@@ -1,11 +1,11 @@
-//! Microbenchmarks for the raw HQC FFI primitives HQCTiny calls directly:
+//! Microbenchmarks for the raw HQC FFI primitives HQCLethe calls directly:
 //! keypair generation and decapsulation. (There is no standalone `enc`
 //! microbenchmark: the protocol never calls monolithic HQC encryption — see
 //! benches/protocol_phases.rs for the segmented per-point "encryption" work
-//! HQCTiny actually performs instead.)
+//! HQCLethe actually performs instead.)
 
-use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
-use HQCTiny::traits::EntropyProvider;
+use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
+use HQCLethe::traits::EntropyProvider;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
 

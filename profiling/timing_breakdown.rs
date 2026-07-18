@@ -1,8 +1,8 @@
 #[path = "workload.rs"]
 mod workload;
 
-use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
-use HQCTiny::traits::EntropyProvider;
+use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
+use HQCLethe::traits::EntropyProvider;
 use rand::Rng;
 use std::time::Instant;
 

@@ -1,5 +1,5 @@
 (******************************************************************************)
-(*  HQCTiny                                                                   *)
+(*  HQCLethe                                                                   *)
 (*                                                                            *)
 (*  Point-value form of HQC encryption with quotient blinding and             *)
 (*  truncate blinding.                                                        *)
@@ -31,7 +31,7 @@ Import PackageNotation.
 
 From SSProveHQC Require Import Tuple Interpolate HQC.
 
-Module Type HQCTinyParams.
+Module Type HQCLetheParams.
   Include HQCParams.
 
   (** Point-field parameters *)
@@ -58,9 +58,9 @@ Module Type HQCTinyParams.
   Parameter npoints_gt0 : (0 < npoints)%N.
   Parameter npoints_le_card : (npoints <= (2 ^ d))%N.
   Parameter nblocks2_le_npoints : ((2 * nblocks).-1 <= npoints)%N.
-End HQCTinyParams.
+End HQCLetheParams.
 
-Module HQCTiny (P : HQCTinyParams).
+Module HQCLethe (P : HQCLetheParams).
   Include P.
 
   Module HQC_Sec := HQC_Security P.
@@ -361,16 +361,16 @@ Module HQCTiny (P : HQCTinyParams).
   Notation " 'ch ( x ) " := x (in custom pack_type at level 2, x constr).
   Notation " 'ch ( x ) " := x (at level 2) : package_scope.
 
-  Definition HQCTINY_ENC : ident := 0%N.
+  Definition HQCLETHE_ENC : ident := 0%N.
 
-  Definition I_hqctiny_encrypt : Interface :=
+  Definition I_hqclethe_encrypt : Interface :=
     [interface
-      #val #[ HQCTINY_ENC ] : 'ch(chProd PublicKey_t Message_t) → 'ch(Ciphertext_t)
+      #val #[ HQCLETHE_ENC ] : 'ch(chProd PublicKey_t Message_t) → 'ch(Ciphertext_t)
     ].
 
-  Definition hqctiny_encrypt : package emptym I_hqctiny_encrypt :=
+  Definition hqclethe_encrypt : package emptym I_hqclethe_encrypt :=
     [package emptym ;
-      #def #[ HQCTINY_ENC ] (args : 'ch(chProd PublicKey_t Message_t)) : 'ch(Ciphertext_t) {
+      #def #[ HQCLETHE_ENC ] (args : 'ch(chProd PublicKey_t Message_t)) : 'ch(Ciphertext_t) {
         let '(pk, msg) := args in
         let h_pts := unpack_points pk.1 in
         let s_pts := unpack_points pk.2 in
@@ -418,9 +418,9 @@ Module HQCTiny (P : HQCTinyParams).
       }
     ].
 
-  Definition Sim : package HQC_Sec.I_hqc_encrypt I_hqctiny_encrypt :=
+  Definition Sim : package HQC_Sec.I_hqc_encrypt I_hqclethe_encrypt :=
     [package emptym ;
-      #def #[ HQCTINY_ENC ] (args : 'ch(chProd PublicKey_t Message_t)) : 'ch(Ciphertext_t) {
+      #def #[ HQCLETHE_ENC ] (args : 'ch(chProd PublicKey_t Message_t)) : 'ch(Ciphertext_t) {
         #import {sig #[ HQC_Sec.HQC_ENC ] : 'ch(chProd HQC_Sec.PublicKey_t HQC_Sec.Message_t) → 'ch(HQC_Sec.Ciphertext_t)} as HQC_enc_oracle ;;
         let '(pk, msg) := args in
         let h_pts := unpack_points pk.1 in
@@ -571,7 +571,7 @@ Module HQCTiny (P : HQCTinyParams).
   Local Notation " 'ktpt " := (chFin ((2 ^ n) * (2 ^ n) * (2 ^ (n - n1n2))%N))
     (in custom pack_type at level 2).
 
-  (** The main algebraic lemmas from HQCBig.v, adapted to the HQCTiny context.
+  (** The main algebraic lemmas from HQCBig.v, adapted to the HQCLethe context.
       u_eq: the LHS (direct poly computation) equals the RHS (via Rq) after
       applying the bijection f_u to the blinding term k. *)
   Lemma u_eq : forall (r1 r2 h : {poly F2}) (k : 'I_(2^n)),
@@ -958,7 +958,7 @@ Module HQCTiny (P : HQCTinyParams).
     - by [].
   Qed.
 
-  Lemma hqctiny_u_eq : forall (pk1 : PointSeqCt) (t_fin : 'I_('C(n, we) ^ 3)) (k_u_val : 'I_(2^n)),
+  Lemma hqclethe_u_eq : forall (pk1 : PointSeqCt) (t_fin : 'I_('C(n, we) ^ 3)) (k_u_val : 'I_(2^n)),
     let r1 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 0))) in
     let r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 1))) in
     let h_poly := combine_poly (interpolate_n (unpack_points pk1)) in
@@ -1148,7 +1148,7 @@ Module HQCTiny (P : HQCTinyParams).
     by rewrite -!addrA.
   Qed.
 
-  Lemma hqctiny_v_eq : forall (pk2 : PointSeqCt) (msg : Message_t) (t_fin : 'I_('C(n, we) ^ 3)) (k_v_val : 'I_(2^n)),
+  Lemma hqclethe_v_eq : forall (pk2 : PointSeqCt) (msg : Message_t) (t_fin : 'I_('C(n, we) ^ 3)) (k_v_val : 'I_(2^n)),
     let r2 := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 1))) in
     let e := sval (fin_to_rq_we (tnth (fin_to_tuple_fin 'C(n, we) 3 t_fin) (inord 2))) in
     let s_poly := combine_poly (interpolate_n (unpack_points pk2)) in
@@ -1469,8 +1469,8 @@ Module HQCTiny (P : HQCTinyParams).
   Qed.
 
   (** Main theorem *)
-  Theorem hqctiny_indistinguishable :
-    hqctiny_encrypt ≈₀ (Sim ∘ HQC_Sec.hqc_encrypt)%pack.
+  Theorem hqclethe_indistinguishable :
+    hqclethe_encrypt ≈₀ (Sim ∘ HQC_Sec.hqc_encrypt)%pack.
   Proof.
     eapply eq_rel_perf_ind_eq.
     simplify_eq_rel m.
@@ -1503,12 +1503,12 @@ Module HQCTiny (P : HQCTinyParams).
       Unshelve. 3: exact (f_v p_v).
       { apply: f_v_bij. }
       intro k_v_val. simpl.
-      have [diff_u Hdiff_u] := hqctiny_u_eq pk1 t_fin k_u_val Hpk1.
+      have [diff_u Hdiff_u] := hqclethe_u_eq pk1 t_fin k_u_val Hpk1.
       eapply r_uniform_bij.
       Unshelve. 3: exact (f_u_ker diff_u).
       { apply: f_u_ker_bij. }
       intro k_u_ker_val. simpl.
-      have [diff_v Hdiff_v] := hqctiny_v_eq pk2 msg t_fin k_v_val Hpk2.
+      have [diff_v Hdiff_v] := hqclethe_v_eq pk2 msg t_fin k_v_val Hpk2.
       eapply r_uniform_bij.
       Unshelve. 3: exact (f_v_ker diff_v).
       { apply: f_v_ker_bij. }
@@ -1531,7 +1531,7 @@ Module HQCTiny (P : HQCTinyParams).
       apply: r_fail. }
   Qed.
 
-End HQCTiny.
+End HQCLethe.
 
 Open Scope ring_scope.
 
@@ -1568,7 +1568,7 @@ Proof.
       rewrite size_polyXn. by [].
 Qed.
 
-Module HQCTiny1Params <: HQCTinyParams.
+Module HQCLethe1Params <: HQCLetheParams.
   Include HQC1.
 
   Definition d : nat := d_val.
@@ -1608,9 +1608,9 @@ Module HQCTiny1Params <: HQCTinyParams.
     exact: (leq_trans H1 H2).
   Qed.
   Lemma nblocks2_le_npoints : ((2 * nblocks).-1 <= npoints)%N. Proof. done. Qed.
-End HQCTiny1Params.
+End HQCLethe1Params.
 
-Module HQCTiny3Params <: HQCTinyParams.
+Module HQCLethe3Params <: HQCLetheParams.
   Include HQC3.
 
   Definition d : nat := d_val.
@@ -1622,7 +1622,7 @@ Module HQCTiny3Params <: HQCTinyParams.
   Lemma size_gen_K : size gen_K = d.+1.
   Proof. exact: size_gen_K_aux. Qed.
 
-  (* See HQCTiny1Params for explanation. *)
+  (* See HQCLethe1Params for explanation. *)
   Axiom gen_K_irreducible : irreducible_poly gen_K.
 
   Definition W : nat := 4505%N.
@@ -1645,9 +1645,9 @@ Module HQCTiny3Params <: HQCTinyParams.
     exact: (leq_trans H1 H2).
   Qed.
   Lemma nblocks2_le_npoints : ((2 * nblocks).-1 <= npoints)%N. Proof. done. Qed.
-End HQCTiny3Params.
+End HQCLethe3Params.
 
-Module HQCTiny5Params <: HQCTinyParams.
+Module HQCLethe5Params <: HQCLetheParams.
   Include HQC5.
 
   Definition d : nat := d_val.
@@ -1659,7 +1659,7 @@ Module HQCTiny5Params <: HQCTinyParams.
   Lemma size_gen_K : size gen_K = d.+1.
   Proof. exact: size_gen_K_aux. Qed.
 
-  (* See HQCTiny1Params for explanation. *)
+  (* See HQCLethe1Params for explanation. *)
   Axiom gen_K_irreducible : irreducible_poly gen_K.
 
   Definition W : nat := 4505%N.
@@ -1682,4 +1682,4 @@ Module HQCTiny5Params <: HQCTinyParams.
     exact: (leq_trans H1 H2).
   Qed.
   Lemma nblocks2_le_npoints : ((2 * nblocks).-1 <= npoints)%N. Proof. done. Qed.
-End HQCTiny5Params.
+End HQCLethe5Params.

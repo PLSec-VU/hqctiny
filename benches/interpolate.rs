@@ -1,5 +1,5 @@
-use HQCTiny::math::gf2_9009::Gf2_9009;
-use HQCTiny::math::interpolate::{interpolate_newton, load_newton_weights};
+use HQCLethe::math::gf2_9009::Gf2_9009;
+use HQCLethe::math::interpolate::{interpolate_newton, load_newton_weights};
 use criterion::{Criterion, criterion_group, criterion_main};
 
 fn make_evals<const M: usize>(seed: u64) -> [Gf2_9009; M] {

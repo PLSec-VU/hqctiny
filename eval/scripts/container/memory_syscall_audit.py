@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs inside the eval container. Straces hqctiny-server across N sequential
+"""Runs inside the eval container. Straces hqclethe-server across N sequential
 real client sessions and splits brk/mmap syscall counts into
 "before the first request" (startup, expected) vs "after" (steady state).
 
@@ -19,11 +19,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from util import find_tiny_server_pids  # noqa: E402
 
-SERVER_BIN = "/work/target-linux/tiny-release/hqctiny-server"
-CLI = "/work/target-linux/release/hqctiny-client"
+SERVER_BIN = "/work/target-linux/tiny-release/hqclethe-server"
+CLI = "/work/target-linux/release/hqclethe-client"
 
 # `strace -f` prefixes every line with the tracee's PID once more than one
-# thread/process is being traced -- hqctiny-server spawns its key-rotation
+# thread/process is being traced -- hqclethe-server spawns its key-rotation
 # thread immediately at startup, so in practice *every* line here has that
 # prefix, shifting the timestamp to the second field. Handle both forms.
 TIMESTAMP_RE = re.compile(r"^(?:\d+\s+)?(\d+\.\d+)")
@@ -64,7 +64,7 @@ def main() -> None:
     time.sleep(0.3)
     # `strace -f prog` forks prog as strace's *child* and ptrace-attaches to
     # it; terminating the strace Popen handle we hold doesn't reliably kill
-    # or reap that child within a short timeout. Find the actual hqctiny-server
+    # or reap that child within a short timeout. Find the actual hqclethe-server
     # process by its listening port (same helper dos_flood_variant.py uses)
     # and signal that directly; strace then notices its tracee exited and
     # exits on its own.

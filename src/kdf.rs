@@ -1,7 +1,7 @@
 use zeroize::Zeroize;
 
-const SESSION_KEY_CONTEXT: &str = "HQCTiny 2026-07 session key v1";
-const TRANSCRIPT_KEY_CONTEXT: &str = "HQCTiny 2026-07 transcript key v1";
+const SESSION_KEY_CONTEXT: &str = "HQCLethe 2026-07 session key v1";
+const TRANSCRIPT_KEY_CONTEXT: &str = "HQCLethe 2026-07 transcript key v1";
 
 /// Canonical handshake transcript length: `hash_ek_kem(32) || merkle_root(32)
 /// || salt(16) || key_index(1)`. Every field is fixed-width, so plain

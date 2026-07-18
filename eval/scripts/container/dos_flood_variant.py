@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Runs inside the eval container (invoked by ../dos_flood.py). Starts
-the real hqctiny-server, then for `reps` repetitions samples its RSS/CPU
-across an idle baseline and a flood window while `hqctiny-client
+the real hqclethe-server, then for `reps` repetitions samples its RSS/CPU
+across an idle baseline and a flood window while `hqclethe-client
 flood-client` blasts it, tracking two exact, kernel/server-reported
 counters: the server socket's receive-buffer drop count (packets that
 never reached recv_from) and the server's own successfully-sent-response
 count (queried via a magic-byte UDP probe -- see FLOOD_STATS_QUERY and
---features flood-stats in hqctiny-server/src/main.rs). Together with the
+--features flood-stats in hqclethe-server/src/main.rs). Together with the
 client's self-reported sent count, that fully accounts for where flood
 packets go: dropped at the kernel, answered by the server, or the small
 residual (decode/handle failures, or still in flight at the sampling
@@ -15,7 +15,7 @@ flood window is not a distribution -- see eval/README.md's
 reproducibility notes). Finishes with a short strace memory-syscall check.
 
 Args: <variant> <flood_duration_secs> <num_sockets> [reps] [kind]
-  kind: "handshake" (default) or "point" -- see hqctiny-client's FloodKind.
+  kind: "handshake" (default) or "point" -- see hqclethe-client's FloodKind.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from util import read_cpu_ticks, read_rss_kb, read_udp_socket_drops  # noqa: E402
 
-SERVER_BIN = "/work/target-linux/tiny-release/hqctiny-server"
-CLI = "/work/target-linux/release/hqctiny-client"
+SERVER_BIN = "/work/target-linux/tiny-release/hqclethe-server"
+CLI = "/work/target-linux/release/hqclethe-client"
 PORT = "24100"
 PORT_INT = int(PORT)
 DEFAULT_REPS = 5
@@ -50,8 +50,8 @@ DEFAULT_KIND = "handshake"
 def _taskset_prefix(core: int) -> list[str]:
     return ["taskset", "-c", str(core)]
 
-# Must match FLOOD_STATS_QUERY in hqctiny-server/src/main.rs exactly.
-FLOOD_STATS_QUERY = b"HQCTINY_FLOOD_STATS_QUERY_V1"
+# Must match FLOOD_STATS_QUERY in hqclethe-server/src/main.rs exactly.
+FLOOD_STATS_QUERY = b"HQCLETHE_FLOOD_STATS_QUERY_V1"
 
 BRK_MMAP_RE = re.compile(r"\b(?:brk|mmap)\(")
 
@@ -201,7 +201,7 @@ def print_aggregate(reps_results: list[dict]) -> None:
 
 
 def main() -> None:
-    # Our own print() calls interleave with output from hqctiny-server,
+    # Our own print() calls interleave with output from hqclethe-server,
     # flood-client, and strace below; without line buffering they'd sit in
     # Python's block buffer (the default once stdout isn't a tty, which it
     # isn't under `docker compose exec -T`) until process exit, landing

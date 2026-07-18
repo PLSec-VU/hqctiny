@@ -65,7 +65,7 @@ def main() -> None:
             sys.exit(1)
     variants = args.variant.replace(",", " ")
 
-    print(f"== HQCTiny evaluation run: {TS} ==")
+    print(f"== HQCLethe evaluation run: {TS} ==")
     print(f"Variants: {variants}")
     print(f"Categories: {','.join(categories)}")
     print(f"Results: {HOST_RESULTS_DIR}")

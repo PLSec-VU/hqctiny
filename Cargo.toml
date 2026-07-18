@@ -1,8 +1,8 @@
 [workspace]
-members = ["hqctiny-client", "hqctiny-server"]
+members = ["hqclethe-client", "hqclethe-server"]
 
 [package]
-name = "HQCTiny"
+name = "HQCLethe"
 version = "0.1.0"
 edition = "2024"
 

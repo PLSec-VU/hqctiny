@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Runs inside the eval container's "server" service. Starts/stops
-hqctiny-server for the WAN latency test (category 5), where each variant
+hqclethe-server for the WAN latency test (category 5), where each variant
 needs a fresh server instance and the *next* invocation (a separate
 process, run via a separate `docker compose exec`) has to find and stop
 the previous one -- so unlike dos_flood_variant.py, which starts and stops
-its own hqctiny-server within one process lifetime, this can't just hold a
+its own hqclethe-server within one process lifetime, this can't just hold a
 Popen handle across calls and has to search for the process by argv (see
 util.find_tiny_server_pids).
 
@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from util import find_tiny_server_pids  # noqa: E402
 
-SERVER_BIN = "/work/target-linux/tiny-release/hqctiny-server"
+SERVER_BIN = "/work/target-linux/tiny-release/hqclethe-server"
 
 
 def stop(port: str) -> None:

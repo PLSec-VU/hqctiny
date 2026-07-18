@@ -16,8 +16,8 @@ sagemath/*.txt
 *.aux
 .lia.cache
 .coq-native/
-hqctiny-rocq/Makefile
-hqctiny-rocq/Makefile.conf
+hqclethe-rocq/Makefile
+hqclethe-rocq/Makefile.conf
 
 *.eco
 scratch/

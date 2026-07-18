@@ -3,7 +3,7 @@
 protocol sessions against a (possibly network-emulated or remote) server,
 each wrapped in /usr/bin/time for real/user/sys wall-clock accounting and
 a `timeout` guard -- the protocol has no retry/timeout of its own (see
-hqctiny-client's run_client, which blocks on socket.recv().await with no
+hqclethe-client's run_client, which blocks on socket.recv().await with no
 deadline), so under a lossy netem profile a dropped response packet would
 otherwise hang a rep forever instead of just failing it. Reports
 median/IQR RTTs across reps rather than a single session's numbers, which
@@ -22,7 +22,7 @@ import statistics
 import subprocess
 import sys
 
-CLI = "/work/target-linux/release/hqctiny-client"
+CLI = "/work/target-linux/release/hqclethe-client"
 REP_TIMEOUT_S = 5
 DEFAULT_REPS = 15
 

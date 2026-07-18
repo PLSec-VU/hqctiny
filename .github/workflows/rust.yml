@@ -9,8 +9,8 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'rust-toolchain.toml'
-      - 'hqctiny-client/**'
-      - 'hqctiny-server/**'
+      - 'hqclethe-client/**'
+      - 'hqclethe-server/**'
       - 'tests/**'
       - 'benches/**'
   pull_request:
@@ -20,8 +20,8 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'rust-toolchain.toml'
-      - 'hqctiny-client/**'
-      - 'hqctiny-server/**'
+      - 'hqclethe-client/**'
+      - 'hqclethe-server/**'
       - 'tests/**'
       - 'benches/**'
   workflow_dispatch:

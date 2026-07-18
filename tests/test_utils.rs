@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use HQCTiny::traits::*;
+use HQCLethe::traits::*;
 use rand::Rng;
 use std::sync::{Arc, Mutex};
 

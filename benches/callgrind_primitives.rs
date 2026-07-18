@@ -14,11 +14,11 @@
 //! identifier concatenation (a `paste`-style dependency) this project
 //! doesn't otherwise need.
 
-use HQCTiny::client::Client;
-use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
-use HQCTiny::protocol::{HandshakeRequest, PointRequest, PointType};
-use HQCTiny::server::Server;
-use HQCTiny::traits::*;
+use HQCLethe::client::Client;
+use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
+use HQCLethe::protocol::{HandshakeRequest, PointRequest, PointType};
+use HQCLethe::server::Server;
+use HQCLethe::traits::*;
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use rand::Rng;
 use std::hint::black_box;

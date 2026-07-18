@@ -19,12 +19,12 @@ def main() -> None:
     with start_log("dos_flood.log"):
         log_section("4. Denial-of-Service (DoS) Resilience")
 
-        print("Building hqctiny-server and hqctiny-client...")
+        print("Building hqclethe-server and hqclethe-client...")
         dexec_server(
-            "cargo", "build", "--profile", "tiny-release", "-p", "hqctiny-server",
+            "cargo", "build", "--profile", "tiny-release", "-p", "hqclethe-server",
             "--features", "quiet,flood-stats", "-q",
         )
-        dexec_server("cargo", "build", "--release", "-p", "hqctiny-client", "-q")
+        dexec_server("cargo", "build", "--release", "-p", "hqclethe-client", "-q")
 
         for variant in VARIANTS:
             for kind in KINDS:

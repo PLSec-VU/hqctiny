@@ -1,5 +1,5 @@
 [package]
-name = "hqctiny-server"
+name = "hqclethe-server"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,9 +7,9 @@ edition = "2024"
 # already depends on transitively. No clap, no tokio, no async runtime — this
 # binary is the artifact measured for static text/data/bss size and stack
 # depth, so its dependency graph should reflect an actual embedded deployment
-# rather than the full-featured client/tooling binary in hqctiny-client.
+# rather than the full-featured client/tooling binary in hqclethe-client.
 [dependencies]
-HQCTiny = { path = ".." }
+HQCLethe = { path = ".." }
 rand = "0.10"
 
 [features]

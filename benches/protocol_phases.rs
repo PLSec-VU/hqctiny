@@ -1,4 +1,4 @@
-//! Microbenchmarks for HQCTiny's actual per-packet protocol-layer work
+//! Microbenchmarks for HQCLethe's actual per-packet protocol-layer work
 //! (handshake, and the segmented per-point evaluation that stands in for
 //! monolithic HQC encryption — see hqc/README's Phase 2), plus a
 //! macrobenchmark for a complete client+server transaction.
@@ -6,11 +6,11 @@
 #[path = "../profiling/workload.rs"]
 mod workload;
 
-use HQCTiny::client::Client;
-use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
-use HQCTiny::protocol::{HandshakeRequest, PointRequest, PointType};
-use HQCTiny::server::Server;
-use HQCTiny::traits::*;
+use HQCLethe::client::Client;
+use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
+use HQCLethe::protocol::{HandshakeRequest, PointRequest, PointType};
+use HQCLethe::server::Server;
+use HQCLethe::traits::*;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use rand::Rng;
 

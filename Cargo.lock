@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "HQCTiny"
+name = "HQCLethe"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -599,10 +599,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
-name = "hqctiny-client"
+name = "hqclethe-client"
 version = "0.1.0"
 dependencies = [
- "HQCTiny",
+ "HQCLethe",
  "clap",
  "rand 0.9.4",
  "serde_json",
@@ -610,10 +610,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "hqctiny-server"
+name = "hqclethe-server"
 version = "0.1.0"
 dependencies = [
- "HQCTiny",
+ "HQCLethe",
  "rand 0.10.1",
 ]
 

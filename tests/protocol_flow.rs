@@ -1,7 +1,7 @@
-use HQCTiny::client::{Client, PointResult};
-use HQCTiny::error::Error;
-use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
-use HQCTiny::server::Server;
+use HQCLethe::client::{Client, PointResult};
+use HQCLethe::error::Error;
+use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
+use HQCLethe::server::Server;
 mod test_utils;
 use std::sync::{Arc, Mutex};
 use test_utils::{MockEntropy, SharedSessionStore};
@@ -29,8 +29,8 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
 
     // Serialize Handshake Request
     let mut buf = vec![0u8; 4096];
-    let encoded_req = HQCTiny::encoding::encode_packet::<SCHEME>(
-        &HQCTiny::encoding::Packet::HandshakeRequest(req),
+    let encoded_req = HQCLethe::encoding::encode_packet::<SCHEME>(
+        &HQCLethe::encoding::Packet::HandshakeRequest(req),
         &mut buf,
     )
     .unwrap();
@@ -42,9 +42,9 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
     );
 
     // Deserialize Handshake Request on the server side
-    let decoded_req_pkt = HQCTiny::encoding::decode_packet::<SCHEME>(encoded_req).unwrap();
+    let decoded_req_pkt = HQCLethe::encoding::decode_packet::<SCHEME>(encoded_req).unwrap();
     let decoded_req = match decoded_req_pkt {
-        HQCTiny::encoding::Packet::HandshakeRequest(r) => r,
+        HQCLethe::encoding::Packet::HandshakeRequest(r) => r,
         _ => panic!("Expected HandshakeRequest"),
     };
 
@@ -53,8 +53,8 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
 
     // Serialize Handshake Response
     let mut buf = vec![0u8; 4096];
-    let encoded_res = HQCTiny::encoding::encode_packet::<SCHEME>(
-        &HQCTiny::encoding::Packet::HandshakeResponse(res),
+    let encoded_res = HQCLethe::encoding::encode_packet::<SCHEME>(
+        &HQCLethe::encoding::Packet::HandshakeResponse(res),
         &mut buf,
     )
     .unwrap();
@@ -66,9 +66,9 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
     );
 
     // Deserialize Handshake Response on the client side
-    let decoded_res_pkt = HQCTiny::encoding::decode_packet::<SCHEME>(encoded_res).unwrap();
+    let decoded_res_pkt = HQCLethe::encoding::decode_packet::<SCHEME>(encoded_res).unwrap();
     let decoded_res = match decoded_res_pkt {
-        HQCTiny::encoding::Packet::HandshakeResponse(r) => r,
+        HQCLethe::encoding::Packet::HandshakeResponse(r) => r,
         _ => panic!("Expected HandshakeResponse"),
     };
 
@@ -85,8 +85,8 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
 
         // Serialize Point Request
         let mut buf = vec![0u8; 8192];
-        let encoded_preq = HQCTiny::encoding::encode_packet::<SCHEME>(
-            &HQCTiny::encoding::Packet::PointRequest(req),
+        let encoded_preq = HQCLethe::encoding::encode_packet::<SCHEME>(
+            &HQCLethe::encoding::Packet::PointRequest(req),
             &mut buf,
         )
         .unwrap();
@@ -100,9 +100,9 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
         );
 
         // Deserialize Point Request on the server side
-        let decoded_preq_pkt = HQCTiny::encoding::decode_packet::<SCHEME>(encoded_preq).unwrap();
+        let decoded_preq_pkt = HQCLethe::encoding::decode_packet::<SCHEME>(encoded_preq).unwrap();
         let decoded_preq = match decoded_preq_pkt {
-            HQCTiny::encoding::Packet::PointRequest(r) => r,
+            HQCLethe::encoding::Packet::PointRequest(r) => r,
             _ => panic!("Expected PointRequest"),
         };
 
@@ -111,8 +111,8 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
 
         // Serialize Point Response
         let mut buf = vec![0u8; 8192];
-        let encoded_pres = HQCTiny::encoding::encode_packet::<SCHEME>(
-            &HQCTiny::encoding::Packet::PointResponse(point_res),
+        let encoded_pres = HQCLethe::encoding::encode_packet::<SCHEME>(
+            &HQCLethe::encoding::Packet::PointResponse(point_res),
             &mut buf,
         )
         .unwrap();
@@ -126,9 +126,9 @@ fn test_protocol_flow_generic<SCHEME: HqcScheme>(name: &str) {
         );
 
         // Deserialize Point Response on the client side
-        let decoded_pres_pkt = HQCTiny::encoding::decode_packet::<SCHEME>(encoded_pres).unwrap();
+        let decoded_pres_pkt = HQCLethe::encoding::decode_packet::<SCHEME>(encoded_pres).unwrap();
         let decoded_pres = match decoded_pres_pkt {
-            HQCTiny::encoding::Packet::PointResponse(r) => r,
+            HQCLethe::encoding::Packet::PointResponse(r) => r,
             _ => panic!("Expected PointResponse"),
         };
 

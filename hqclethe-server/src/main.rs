@@ -1,7 +1,7 @@
-use HQCTiny::encoding::{Packet, decode_packet, encode_packet};
-use HQCTiny::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
-use HQCTiny::server::Server;
-use HQCTiny::traits::*;
+use HQCLethe::encoding::{Packet, decode_packet, encode_packet};
+use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
+use HQCLethe::server::Server;
+use HQCLethe::traits::*;
 use rand::Rng;
 use std::net::UdpSocket;
 use std::time::Duration;
@@ -16,7 +16,7 @@ use std::time::Duration;
 static RESPONSES_SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(feature = "flood-stats")]
-const FLOOD_STATS_QUERY: &[u8] = b"HQCTINY_FLOOD_STATS_QUERY_V1";
+const FLOOD_STATS_QUERY: &[u8] = b"HQCLETHE_FLOOD_STATS_QUERY_V1";
 
 #[cfg(feature = "flood-stats")]
 fn record_response_sent() {
@@ -65,7 +65,7 @@ fn print_session_key(_k_session: &[u8; 32]) {}
 
 fn run_server<SCHEME: HqcScheme + 'static>(port: u16) -> std::io::Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", port))?;
-    eprintln!("hqctiny-server listening on 0.0.0.0:{port}");
+    eprintln!("hqclethe-server listening on 0.0.0.0:{port}");
 
     let server = Server::<SCHEME, _, _>::new(StatelessSessionStore, OsEntropy);
 
@@ -127,7 +127,7 @@ fn run_server<SCHEME: HqcScheme + 'static>(port: u16) -> std::io::Result<()> {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: hqctiny-server [--port PORT] [--variant hqc1|hqc3|hqc5]");
+    eprintln!("usage: hqclethe-server [--port PORT] [--variant hqc1|hqc3|hqc5]");
     std::process::exit(2);
 }
 

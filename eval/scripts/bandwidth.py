@@ -14,12 +14,12 @@ def main() -> None:
     with start_log("bandwidth.log"):
         log_section("2. Network Bandwidth and Packet Overhead")
 
-        print("Building hqctiny-client (release)...")
-        dexec_server("cargo", "build", "--release", "-p", "hqctiny-client", "-q")
+        print("Building hqclethe-client (release)...")
+        dexec_server("cargo", "build", "--release", "-p", "hqclethe-client", "-q")
 
         print()
         result = dexec_server(
-            "/work/target-linux/release/hqctiny-client", "bandwidth-report", capture_output=True
+            "/work/target-linux/release/hqclethe-client", "bandwidth-report", capture_output=True
         )
         report_json = result.stdout
         print(report_json, end="")

@@ -5,7 +5,7 @@
 
 use super::gf2_9009::{DEGREE, GF29009_NUM_U64, Gf2_9009};
 
-/// Block size. Must satisfy DEGREE <= 2*W (HQCTiny.v: d_le_W2), otherwise the
+/// Block size. Must satisfy DEGREE <= 2*W (HQCLethe.v: d_le_W2), otherwise the
 /// kernel-blinding bijection of the security proof does not cover all kernel
 /// residues; hence ceiling division, giving 4505 rather than 4504.
 pub const W: usize = DEGREE.div_ceil(2); // 4505

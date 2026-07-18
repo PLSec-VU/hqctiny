@@ -35,9 +35,9 @@ def main() -> None:
 
         compose("up", "-d", "server", "client")
 
-        print("Building hqctiny-server and hqctiny-client...")
-        dexec_server("cargo", "build", "--profile", "tiny-release", "-p", "hqctiny-server", "-q")
-        dexec_server("cargo", "build", "--release", "-p", "hqctiny-client", "-q")
+        print("Building hqclethe-server and hqclethe-client...")
+        dexec_server("cargo", "build", "--profile", "tiny-release", "-p", "hqclethe-server", "-q")
+        dexec_server("cargo", "build", "--release", "-p", "hqclethe-client", "-q")
 
         if args.remote:
             print()
