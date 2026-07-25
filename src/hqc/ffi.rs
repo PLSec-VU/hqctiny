@@ -56,6 +56,19 @@ macro_rules! hqc_ffi_decls {
                 weight: u16,
             );
 
+            /// The first half of `vect_sample_fixed_weight2`: draws `weight`
+            /// distinct positions in [0, PARAM_N) from the XOF. The second
+            /// half (`vect_write_support_to_vector`) scatters them into a
+            /// dense PARAM_N-bit vector at O(VEC_N_SIZE_64 * weight) cost;
+            /// callers that only need the positions skip it by calling this
+            /// directly. `support` must hold at least `weight` u32s.
+            #[link_name = concat!($prefix, "vect_generate_random_support2")]
+            pub(crate) fn c_vect_generate_random_support2(
+                xof_ctx: *mut $crate::hqc::ffi::shake256_xof_ctx,
+                support: *mut u32,
+                weight: u16,
+            );
+
             #[link_name = concat!($prefix, "code_encode")]
             pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
         }

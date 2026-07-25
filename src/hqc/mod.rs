@@ -89,6 +89,22 @@ pub trait HqcScheme {
         Self::partial_message_encaps(m, theta)
     }
 
+    type SupportParameters: HqcSupportParameters;
+
+    /// Like `partial_message_encaps`, but stops at the **supports** of r1/r2/e
+    /// rather than scattering them into dense PARAM_N-bit vectors.
+    ///
+    /// The dense scatter is O(VEC_N_SIZE_64 * weight) and dominates sampling
+    /// (91% of it at HQC-5). Callers that only evaluate these polynomials —
+    /// the server's point-response path — never need the dense form.
+    fn partial_message_encaps_support(m: &[u8], theta: &[u8]) -> Self::SupportParameters;
+
+    /// Support-only counterpart of `partial_message_encaps_v`: draws r2 and e
+    /// but not r1, which is last in the XOF stream.
+    fn partial_message_encaps_v_support(m: &[u8], theta: &[u8]) -> Self::SupportParameters {
+        Self::partial_message_encaps_support(m, theta)
+    }
+
     /// Performs the PKE encryption step to reconstruct ciphertext components `u` and `v`.
     ///
     /// # Arguments
@@ -151,6 +167,21 @@ pub trait HqcMessageParameters {
     fn r1(&self) -> &[u64];
     fn r2(&self) -> &[u64];
     fn e(&self) -> &[u64];
+}
+
+/// HQC's r1/r2/e as **supports** — the lists of set-bit positions — rather
+/// than dense PARAM_N-bit vectors.
+///
+/// Sampling produces the support first and then scatters it into a dense
+/// vector at O(VEC_N_SIZE_64 * weight) cost. Consumers that only evaluate
+/// these polynomials never need the dense form, so they take this instead.
+/// Each slice holds exactly the vector's Hamming weight, and the positions
+/// are distinct (HQC Algorithm 5).
+pub trait HqcSupportParameters {
+    fn m(&self) -> &[u8];
+    fn r1(&self) -> &[u32];
+    fn r2(&self) -> &[u32];
+    fn e(&self) -> &[u32];
 }
 
 macro_rules! define_hqc_variant {
@@ -230,6 +261,33 @@ macro_rules! define_hqc_variant {
                 }
                 fn theta(&self) -> &[u8; 32] {
                     &self.theta
+                }
+            }
+
+            /// r1/r2/e as supports (set-bit positions) instead of dense
+            /// vectors. `r1_len` is 0 when only r2 and e were drawn.
+            #[derive(zeroize::Zeroize)]
+            #[zeroize(drop)]
+            pub struct SupportParameters {
+                pub m: [u8; PARAM_SECURITY_BYTES],
+                pub r1: [u32; PARAM_OMEGA_R as usize],
+                pub r2: [u32; PARAM_OMEGA_R as usize],
+                pub e: [u32; PARAM_OMEGA_E as usize],
+                pub r1_len: usize,
+            }
+
+            impl crate::hqc::HqcSupportParameters for SupportParameters {
+                fn m(&self) -> &[u8] {
+                    &self.m
+                }
+                fn r1(&self) -> &[u32] {
+                    &self.r1[..self.r1_len]
+                }
+                fn r2(&self) -> &[u32] {
+                    &self.r2
+                }
+                fn e(&self) -> &[u32] {
+                    &self.e
                 }
             }
 
@@ -428,6 +486,57 @@ macro_rules! define_hqc_variant {
                     m_arr.copy_from_slice(m);
 
                     MessageParameters { m: m_arr, r1: [0u64; VEC_N_SIZE_64], r2, e }
+                }
+
+                type SupportParameters = SupportParameters;
+
+                fn partial_message_encaps_support(m: &[u8], theta: &[u8]) -> Self::SupportParameters {
+                    assert_eq!(m.len(), PARAM_SECURITY_BYTES);
+                    assert_eq!(theta.len(), SEED_BYTES);
+                    let mut theta_xof_ctx = crate::hqc::ffi::shake256_xof_ctx { ctx: [0; 26] };
+                    unsafe {
+                        c_xof_init(&mut theta_xof_ctx, theta.as_ptr(), SEED_BYTES as u32);
+                    }
+
+                    let mut r2 = [0u32; PARAM_OMEGA_R as usize];
+                    let mut e = [0u32; PARAM_OMEGA_E as usize];
+                    let mut r1 = [0u32; PARAM_OMEGA_R as usize];
+
+                    // Same XOF draw order as partial_message_encaps, so the
+                    // supports describe exactly the same r2/e/r1.
+                    unsafe {
+                        c_vect_generate_random_support2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
+                        c_vect_generate_random_support2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
+                        c_vect_generate_random_support2(&mut theta_xof_ctx, r1.as_mut_ptr(), PARAM_OMEGA_R);
+                    }
+
+                    let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
+                    m_arr.copy_from_slice(m);
+
+                    SupportParameters { m: m_arr, r1, r2, e, r1_len: PARAM_OMEGA_R as usize }
+                }
+
+                fn partial_message_encaps_v_support(m: &[u8], theta: &[u8]) -> Self::SupportParameters {
+                    assert_eq!(m.len(), PARAM_SECURITY_BYTES);
+                    assert_eq!(theta.len(), SEED_BYTES);
+                    let mut theta_xof_ctx = crate::hqc::ffi::shake256_xof_ctx { ctx: [0; 26] };
+                    unsafe {
+                        c_xof_init(&mut theta_xof_ctx, theta.as_ptr(), SEED_BYTES as u32);
+                    }
+
+                    let mut r2 = [0u32; PARAM_OMEGA_R as usize];
+                    let mut e = [0u32; PARAM_OMEGA_E as usize];
+
+                    unsafe {
+                        c_vect_generate_random_support2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
+                        c_vect_generate_random_support2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
+                        // r1 is last in the XOF stream and unused for V-type responses.
+                    }
+
+                    let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
+                    m_arr.copy_from_slice(m);
+
+                    SupportParameters { m: m_arr, r1: [0u32; PARAM_OMEGA_R as usize], r2, e, r1_len: 0 }
                 }
 
 
@@ -696,5 +805,84 @@ mod tests {
     #[test]
     fn test_hqc5_decoupled_flow() {
         test_decoupled_flow_generic::<Hqc5>();
+    }
+
+    /// The support-returning sampler must describe exactly the same vectors as
+    /// the dense one: expanding its supports bit by bit must reproduce r2 and
+    /// e word for word. This is what lets the server skip the dense scatter.
+    fn test_support_matches_dense_generic<T: HqcScheme>()
+    where
+        T::MessageParameters: HqcMessageParameters,
+    {
+        let m = vec![0xA5u8; T::PARAM_SECURITY_BYTES];
+        let theta = [0x3Cu8; 32];
+
+        let dense = T::partial_message_encaps_v(&m, &theta);
+        let sup = T::partial_message_encaps_v_support(&m, &theta);
+
+        for (name, support, expected) in [("r2", sup.r2(), dense.r2()), ("e", sup.e(), dense.e())] {
+            let mut rebuilt = vec![0u64; T::VEC_N_SIZE_64];
+            for &pos in support {
+                let pos = pos as usize;
+                assert!(pos < T::PARAM_N, "{name}: position {pos} >= PARAM_N");
+                rebuilt[pos / 64] |= 1u64 << (pos % 64);
+            }
+            assert_eq!(rebuilt.as_slice(), expected, "{name} mismatch");
+        }
+    }
+
+    /// Distinctness is load-bearing for `evaluate_support_at_generator`:
+    /// the dense path ORs coincident positions to one bit, the support path
+    /// XORs them and cancels. Algorithm 5 promises distinctness; pin it.
+    fn test_support_distinct_generic<T: HqcScheme>()
+    where
+        T::MessageParameters: HqcMessageParameters,
+    {
+        let m = vec![0x5Au8; T::PARAM_SECURITY_BYTES];
+        for seed in 0..8u8 {
+            let theta = [seed; 32];
+            let sup = T::partial_message_encaps_support(&m, &theta);
+            for (name, support) in [("r1", sup.r1()), ("r2", sup.r2()), ("e", sup.e())] {
+                let mut seen = support.to_vec();
+                seen.sort_unstable();
+                let before = seen.len();
+                seen.dedup();
+                assert_eq!(
+                    seen.len(),
+                    before,
+                    "{name} has duplicate positions (seed {seed})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hqc1_support_matches_dense() {
+        test_support_matches_dense_generic::<Hqc1>();
+    }
+
+    #[test]
+    fn test_hqc3_support_matches_dense() {
+        test_support_matches_dense_generic::<Hqc3>();
+    }
+
+    #[test]
+    fn test_hqc5_support_matches_dense() {
+        test_support_matches_dense_generic::<Hqc5>();
+    }
+
+    #[test]
+    fn test_hqc1_support_distinct() {
+        test_support_distinct_generic::<Hqc1>();
+    }
+
+    #[test]
+    fn test_hqc3_support_distinct() {
+        test_support_distinct_generic::<Hqc3>();
+    }
+
+    #[test]
+    fn test_hqc5_support_distinct() {
+        test_support_distinct_generic::<Hqc5>();
     }
 }

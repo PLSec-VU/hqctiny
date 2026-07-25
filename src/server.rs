@@ -1,10 +1,10 @@
 use crate::blinding;
 use crate::encoding::public_eval_limbs;
 use crate::error::{Error, Result};
-use crate::hqc::{HqcMessageParameters, HqcScheme, HqcSharedSecretParameters};
+use crate::hqc::{HqcScheme, HqcSharedSecretParameters, HqcSupportParameters};
 use crate::limits::{MAX_COOKIE_PLAINTEXT_BYTES, MAX_PARAM_SECURITY_BYTES, MAX_VEC_N_SIZE_64};
 use crate::math::gf2_9009::Gf2_9009;
-use crate::math::segmentation::{evaluate_poly_at_generator, evaluate_sparse_poly_at_generator};
+use crate::math::segmentation::{evaluate_poly_at_generator, evaluate_support_at_generator};
 use crate::protocol::*;
 use crate::traits::*;
 use chacha20poly1305::{
@@ -270,12 +270,12 @@ where
         // would cancel in u XOR v and leak the message.
         let eval = match req.point_type {
             PointType::U => {
-                let msg_params = SCHEME::partial_message_encaps(m, &theta);
+                let msg_params = SCHEME::partial_message_encaps_support(m, &theta);
 
-                // r1/r2 are fixed-weight (omega_r ones out of n bits): scanning
-                // set bits is cheaper than a dense block-by-block evaluation.
+                // r1/r2 are fixed-weight: evaluate straight from their supports
+                // rather than scattering them into dense n-bit vectors first.
                 let mut r2_xi = Gf2_9009::zero();
-                evaluate_sparse_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
+                evaluate_support_at_generator(msg_params.r2(), power, eff_words, &mut r2_xi);
 
                 let mut mask_poly_buf = [0u64; MAX_VEC_N_SIZE_64];
                 let mask_poly = &mut mask_poly_buf[..n_words];
@@ -284,7 +284,7 @@ where
                 evaluate_poly_at_generator(mask_poly, power, &mut mask_xi);
 
                 let mut r1_xi = Gf2_9009::zero();
-                evaluate_sparse_poly_at_generator(msg_params.r1(), power, &mut r1_xi);
+                evaluate_support_at_generator(msg_params.r1(), power, eff_words, &mut r1_xi);
 
                 let mut u_xi = r1_xi;
                 let mut term_u = req.public_eval;
@@ -307,12 +307,12 @@ where
                 u_xi
             }
             PointType::V => {
-                // partial_message_encaps_v samples only r2 and e; r1 is last in the XOF
-                // stream and unused for V-type responses.
-                let msg_params = SCHEME::partial_message_encaps_v(m, &theta);
+                // partial_message_encaps_v_support samples only r2 and e; r1 is last
+                // in the XOF stream and unused for V-type responses.
+                let msg_params = SCHEME::partial_message_encaps_v_support(m, &theta);
 
                 let mut r2_xi = Gf2_9009::zero();
-                evaluate_sparse_poly_at_generator(msg_params.r2(), power, &mut r2_xi);
+                evaluate_support_at_generator(msg_params.r2(), power, eff_words, &mut r2_xi);
 
                 let mut scratch_buf = [0u64; MAX_VEC_N_SIZE_64];
                 let scratch = &mut scratch_buf[..n_words];
@@ -327,9 +327,9 @@ where
                 let mut k_xi = Gf2_9009::zero();
                 evaluate_poly_at_generator(scratch, power, &mut k_xi);
 
-                // e is fixed-weight (omega_e ones), same sparse fast path as r1/r2.
+                // e is fixed-weight (omega_e ones), same support fast path as r1/r2.
                 let mut e_xi = Gf2_9009::zero();
-                evaluate_sparse_poly_at_generator(msg_params.e(), power, &mut e_xi);
+                evaluate_support_at_generator(msg_params.e(), power, eff_words, &mut e_xi);
 
                 let mut t_xi = Gf2_9009::zero();
                 blinding::evaluate_truncate_mask_at_generator(
