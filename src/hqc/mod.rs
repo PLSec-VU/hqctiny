@@ -201,6 +201,7 @@ macro_rules! define_hqc_variant {
         $param_omega_r:expr,
         $param_omega_e:expr,
         $param_n:expr,
+        $param_n_mult:expr,
         $points_num:expr,
         $merkle_nodes:expr,
         $newton_weights_file:literal
@@ -229,6 +230,17 @@ macro_rules! define_hqc_variant {
             pub const PARAM_OMEGA_E: u16 = $param_omega_e;
             pub const SALT_BYTES: usize = 16;
             pub const SEED_BYTES: usize = 32;
+
+            /// Multiplication length used by the AVX2 sources, from their
+            /// `parameters.h`.
+            #[cfg(feature = "avx2")]
+            const PARAM_N_MULT: usize = $param_n_mult;
+
+            /// Length of a PARAM_N-bit vector once padded out to whole 256-bit
+            /// blocks, mirroring `VEC_N_256_SIZE_64` in the AVX2 sources'
+            /// `parameters.h`. That is the size those routines write.
+            #[cfg(feature = "avx2")]
+            const VEC_N_256_SIZE_64: usize = PARAM_N_MULT.div_ceil(256) * 4;
 
             pub struct PublicKeyParameters {
                 pub hash_ek_kem: [u8; SEED_BYTES],
@@ -319,6 +331,63 @@ macro_rules! define_hqc_variant {
 
             hqc_ffi_decls!($prefix);
 
+            /// Draws a fixed-weight vector into `out`.
+            ///
+            /// The portable `vect_sample_fixed_weight2` fills `out` directly.
+            /// Its AVX2 counterpart takes `__m256i *` and XORs whole 256-bit
+            /// blocks, so it needs a 32-byte-aligned buffer padded out to
+            /// `VEC_N_256_SIZE_64` words; sample there and copy back.
+            ///
+            /// # Safety
+            /// `xof_ctx` must point to an initialized XOF context, and `weight`
+            /// must not exceed `PARAM_OMEGA_R`.
+            unsafe fn sample_fixed_weight2(
+                xof_ctx: *mut crate::hqc::ffi::shake256_xof_ctx,
+                out: &mut [u64; VEC_N_SIZE_64],
+                weight: u16,
+            ) {
+                #[cfg(not(feature = "avx2"))]
+                unsafe {
+                    c_vect_sample_fixed_weight2(xof_ctx, out.as_mut_ptr(), weight);
+                }
+                #[cfg(feature = "avx2")]
+                unsafe {
+                    let mut padded =
+                        crate::hqc::ffi::Vec256::<VEC_N_256_SIZE_64>::zeroed();
+                    c_vect_sample_fixed_weight2(xof_ctx, padded.as_mut_ptr(), weight);
+                    padded.copy_prefix_to(out);
+                }
+            }
+
+            /// Multiplies two PARAM_N-bit polynomials modulo `X^n - 1`.
+            ///
+            /// Like `sample_fixed_weight2`, the AVX2 `vect_mul` reads and writes
+            /// `__m256i *` operands, so all three route through padded, aligned
+            /// scratch buffers there.
+            ///
+            /// # Safety
+            /// All three slices must be `VEC_N_SIZE_64` words long. Under
+            /// `avx2` the caller must hold [`FFI_LOCK`]: that `vect_mul` keeps
+            /// its intermediate products in file-scope globals.
+            ///
+            /// [`FFI_LOCK`]: crate::hqc::ffi::FFI_LOCK
+            #[cfg(test)]
+            unsafe fn vect_mul(o: &mut [u64], v1: &[u64], v2: &[u64]) {
+                #[cfg(not(feature = "avx2"))]
+                unsafe {
+                    c_vect_mul(o.as_mut_ptr(), v1.as_ptr(), v2.as_ptr());
+                }
+                #[cfg(feature = "avx2")]
+                unsafe {
+                    use crate::hqc::ffi::Vec256;
+                    let v1 = Vec256::<VEC_N_256_SIZE_64>::from_prefix(v1);
+                    let v2 = Vec256::<VEC_N_256_SIZE_64>::from_prefix(v2);
+                    let mut padded = Vec256::<VEC_N_256_SIZE_64>::zeroed();
+                    c_vect_mul(padded.as_mut_ptr(), v1.as_ptr(), v2.as_ptr());
+                    padded.copy_prefix_to(o);
+                }
+            }
+
             impl crate::hqc::HqcScheme for $struct_name {
                 const PUBLIC_KEY_BYTES: usize = PUBLIC_KEY_BYTES;
                 const SECRET_KEY_BYTES: usize = SECRET_KEY_BYTES;
@@ -393,6 +462,11 @@ macro_rules! define_hqc_variant {
                     assert_eq!(ss.len(), SHARED_SECRET_BYTES);
                     assert_eq!(ct.len(), CIPHERTEXT_BYTES);
                     assert_eq!(sk.len(), SECRET_KEY_BYTES);
+                    // The portable decryption path is reentrant, but the AVX2
+                    // one keeps its scratch in function-level statics and
+                    // file-scope globals, so it has to be serialized.
+                    #[cfg(feature = "avx2")]
+                    let _guard = crate::hqc::ffi::FFI_LOCK.lock().unwrap();
                     unsafe {
                         c_crypto_kem_dec(ss.as_mut_ptr(), ct.as_ptr(), sk.as_ptr())
                     }
@@ -454,9 +528,9 @@ macro_rules! define_hqc_variant {
                     let mut r1 = [0u64; VEC_N_SIZE_64];
 
                     unsafe {
-                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
-                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
-                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r1.as_mut_ptr(), PARAM_OMEGA_R);
+                        sample_fixed_weight2(&mut theta_xof_ctx, &mut r2, PARAM_OMEGA_R);
+                        sample_fixed_weight2(&mut theta_xof_ctx, &mut e, PARAM_OMEGA_E);
+                        sample_fixed_weight2(&mut theta_xof_ctx, &mut r1, PARAM_OMEGA_R);
                     }
 
                     let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
@@ -477,8 +551,8 @@ macro_rules! define_hqc_variant {
                     let mut e = [0u64; VEC_N_SIZE_64];
 
                     unsafe {
-                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
-                        c_vect_sample_fixed_weight2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
+                        sample_fixed_weight2(&mut theta_xof_ctx, &mut r2, PARAM_OMEGA_R);
+                        sample_fixed_weight2(&mut theta_xof_ctx, &mut e, PARAM_OMEGA_E);
                         // r1 is last in the XOF stream and unused for V-type responses.
                     }
 
@@ -563,14 +637,18 @@ macro_rules! define_hqc_variant {
                     assert_eq!(s.len(), VEC_N_SIZE_64);
                     assert_eq!(e.len(), VEC_N_SIZE_64);
 
+                    // `vect_mul` shares global scratch under `avx2`; see its wrapper.
+                    #[cfg(feature = "avx2")]
+                    let _guard = crate::hqc::ffi::FFI_LOCK.lock().unwrap();
+
                     unsafe {
-                        c_vect_mul(u.as_mut_ptr(), r2.as_ptr(), h.as_ptr());
+                        vect_mul(u, r2, h);
                         c_vect_add(u.as_mut_ptr(), r1.as_ptr(), u.as_ptr(), VEC_N_SIZE_64 as u32);
 
                         c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
 
                         let mut tmp = [0u64; VEC_N_SIZE_64];
-                        c_vect_mul(tmp.as_mut_ptr(), r2.as_ptr(), s.as_ptr());
+                        vect_mul(&mut tmp, r2, s);
                         c_vect_add(tmp.as_mut_ptr(), e.as_ptr(), tmp.as_ptr(), VEC_N_SIZE_64 as u32);
                         c_vect_truncate(tmp.as_mut_ptr());
 
@@ -663,6 +741,7 @@ define_hqc_variant!(
     75,
     75,
     17669,
+    18048,
     7,
     32,
     "../math/newton_weights_17669.bin"
@@ -683,6 +762,7 @@ define_hqc_variant!(
     114,
     114,
     35851,
+    36480,
     15,
     64,
     "../math/newton_weights_35851.bin"
@@ -703,6 +783,7 @@ define_hqc_variant!(
     149,
     149,
     57637,
+    59904,
     25,
     128,
     "../math/newton_weights_57637.bin"

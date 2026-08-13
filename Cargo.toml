@@ -29,6 +29,10 @@ cc = "1.0"
 
 [features]
 dhat-heap = ["dep:dhat"]
+# Build and link HQC's x86_64/avx256 sources instead of the portable `ref`
+# ones. x86 targets only, and the resulting binary requires a CPU with
+# AVX2/BMI1/PCLMULQDQ.
+avx2 = []
 
 [profile.profiling]
 inherits = "release"

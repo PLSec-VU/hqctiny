@@ -14,3 +14,5 @@ HQCLethe = { path = ".." }
 # Compiles out the printed session key: a true nop rather than a
 # runtime-suppressed print, so benchmark measurements aren't perturbed.
 quiet = []
+# Links the AVX2 build of HQC (x86 only); see the root crate's feature.
+avx2 = ["HQCLethe/avx2"]

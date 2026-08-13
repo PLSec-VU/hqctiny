@@ -51,5 +51,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # --all-features turns on `avx2`, which builds HQC's x86_64/avx256
+      # sources; GitHub's x86_64 runners all support AVX2. The second run
+      # covers the portable sources the default build links.
       - name: Test
         run: cargo test --all-features --release
+
+      - name: Test (portable HQC)
+        run: cargo test --release

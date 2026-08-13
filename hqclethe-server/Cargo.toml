@@ -26,3 +26,5 @@ quiet = []
 # binary category 1 measures for static size. See
 # eval/scripts/container/dos_flood_variant.py.
 flood-stats = []
+# Links the AVX2 build of HQC (x86 only); see the root crate's feature.
+avx2 = ["HQCLethe/avx2"]

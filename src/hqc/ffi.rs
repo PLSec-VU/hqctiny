@@ -11,6 +11,50 @@ pub struct shake256_xof_ctx {
     pub ctx: [u64; 26],
 }
 
+/// Scratch buffer for the AVX2 sources, which take `__m256i *` where the
+/// portable ones take `uint64_t *`.
+///
+/// Those routines work in whole 256-bit blocks: they write up to
+/// `VEC_N_256_SIZE_64` words — past the end of a `VEC_N_SIZE_64` buffer — and
+/// dereference the pointer at `__m256i` alignment. A Rust `[u64; VEC_N_SIZE_64]`
+/// is neither long enough nor aligned enough, so the AVX2 paths sample into one
+/// of these and copy the `VEC_N_SIZE_64`-word prefix they model back out.
+#[cfg(feature = "avx2")]
+#[repr(C, align(32))]
+pub(crate) struct Vec256<const WORDS: usize> {
+    words: [u64; WORDS],
+}
+
+#[cfg(feature = "avx2")]
+impl<const WORDS: usize> Vec256<WORDS> {
+    /// The C side XORs into its destination, so it must start zeroed.
+    pub(crate) fn zeroed() -> Self {
+        Self { words: [0; WORDS] }
+    }
+
+    /// Copies `src` into the low words, leaving the 256-bit padding zeroed.
+    #[cfg(test)]
+    pub(crate) fn from_prefix(src: &[u64]) -> Self {
+        let mut buf = Self::zeroed();
+        buf.words[..src.len()].copy_from_slice(src);
+        buf
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut u64 {
+        self.words.as_mut_ptr()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_ptr(&self) -> *const u64 {
+        self.words.as_ptr()
+    }
+
+    /// Copies back as many leading words as `dst` holds, dropping the padding.
+    pub(crate) fn copy_prefix_to(&self, dst: &mut [u64]) {
+        dst.copy_from_slice(&self.words[..dst.len()]);
+    }
+}
+
 macro_rules! hqc_ffi_decls {
     ($prefix:literal) => {
         unsafe extern "C" {

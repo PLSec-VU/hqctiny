@@ -21,6 +21,27 @@ We use the following primitives:
 | `sagemath/` | SageMath scripts used for precomputation artifacts |
 | `ssprove/` | A mechanized Coq/SSProve security proof for the protocol |
 
+## Cargo Features
+
+| Feature | Effect |
+|---------|--------|
+| `avx2` | Builds and links HQC's `x86_64/avx256` sources instead of the portable `ref` ones |
+| `dhat-heap` | Enables the `dhat` heap profiler and the `dhat-heap` profiling binary |
+
+`avx2` is off by default: the portable implementation builds everywhere,
+whereas the AVX2 one is x86-only (`cargo build --features avx2` fails the
+build script on any other target) and the resulting binary requires a CPU with
+AVX2, BMI1 and PCLMULQDQ — it is compiled in unconditionally, with no runtime
+dispatch, so an older x86 CPU will fault rather than fall back. Both produce
+identical keys, ciphertexts and shared secrets; AVX2 is roughly 50-90x faster
+on keygen and 40-70x on decapsulation.
+
+One behavioural difference is worth knowing: the portable HQC sources are
+reentrant, while the AVX2 ones keep scratch space in file-scope globals and
+function-level statics. `Hqc*::dec` therefore takes the same lock as `keypair`
+and `enc` when `avx2` is on. Sampling (`partial_message_encaps` and friends),
+which is what the server does per request, stays lock-free either way.
+
 # Phase 1: Entropy establishment (Handshake)
 ```
 [CLIENT]                                                                   [SERVER]
