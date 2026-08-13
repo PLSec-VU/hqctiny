@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+#![feature(portable_simd)]
 
 pub mod blinding;
 pub mod client;

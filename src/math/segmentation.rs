@@ -118,14 +118,37 @@ pub fn evaluate_poly_at_generator(poly: &[u64], idx: u8, out: &mut Gf2_9009) {
         let word_shift = shift / 64;
         let bit_shift = shift % 64;
         if bit_shift == 0 {
-            for (i, &w) in coeff_data[..EFF_WORDS].iter().enumerate() {
-                acc[i + word_shift] ^= w;
+            let (chunks_c, tail_c) = coeff_data[..EFF_WORDS].as_chunks::<4>();
+            let (chunks_a, tail_a) = acc[word_shift..word_shift + EFF_WORDS].as_chunks_mut::<4>();
+            for (dst, src) in chunks_a.iter_mut().zip(chunks_c) {
+                let vd = core::simd::u64x4::from_array(*dst);
+                let vs = core::simd::u64x4::from_array(*src);
+                *dst = (vd ^ vs).to_array();
+            }
+            for (dst, src) in tail_a.iter_mut().zip(tail_c) {
+                *dst ^= *src;
             }
         } else {
             let inv_shift = 64 - bit_shift;
-            for (i, &w) in coeff_data[..EFF_WORDS].iter().enumerate() {
-                acc[i + word_shift] ^= w << bit_shift;
-                acc[i + word_shift + 1] ^= w >> inv_shift;
+            let shift_hi = core::simd::u64x4::splat(bit_shift as u64);
+            let shift_lo = core::simd::u64x4::splat(inv_shift as u64);
+            let (chunks_c, tail_c) = coeff_data[..EFF_WORDS].as_chunks::<4>();
+            for (c_idx, &src_arr) in chunks_c.iter().enumerate() {
+                let base = word_shift + c_idx * 4;
+                let vs = core::simd::u64x4::from_array(src_arr);
+                let hi = vs << shift_hi;
+                let lo = vs >> shift_lo;
+
+                let cur_lo = core::simd::u64x4::from_slice(&acc[base..base + 4]);
+                (cur_lo ^ hi).copy_to_slice(&mut acc[base..base + 4]);
+
+                let cur_hi = core::simd::u64x4::from_slice(&acc[base + 1..base + 5]);
+                (cur_hi ^ lo).copy_to_slice(&mut acc[base + 1..base + 5]);
+            }
+            let processed = chunks_c.len() * 4;
+            for (i, &w) in tail_c.iter().enumerate() {
+                acc[processed + i + word_shift] ^= w << bit_shift;
+                acc[processed + i + word_shift + 1] ^= w >> inv_shift;
             }
         }
     }
@@ -224,23 +247,87 @@ pub fn evaluate_support_at_generator(
 /// Constant-time masked accumulate: `out.data[i] ^= XOR of eb[j] where
 /// ew[j] == i`, sweeping every `i` for every `j` so neither the branch
 /// pattern nor the address stream depends on `ew`.
+///
+/// Structured using portable SIMD `u64x4` comparing 4 accumulator limbs
+/// per SIMD lane.
 #[inline]
 fn accumulate_masked(ew: &[u32], eb: &[u64], acc_words: usize, out: &mut Gf2_9009) {
-    // SSE4.1 is not baseline x86-64 (that is SSE2), so this is detected rather
-    // than assumed. The check is once per evaluation, not per iteration, and
-    // reads only public data.
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("sse4.1") {
-            unsafe {
-                accumulate_masked_sse41(ew, eb, acc_words, out);
-            }
-            return;
-        }
+    use core::simd::cmp::SimdPartialEq;
+    use core::simd::{Select, u64x4};
+
+    let weight = ew.len();
+    let mut blk = [u64x4::splat(0); MAX_SUPPORT_WEIGHT];
+    let mut bit = [u64x4::splat(0); MAX_SUPPORT_WEIGHT];
+    let lane_id = u64x4::from_array([0, 1, 2, 3]);
+
+    for j in 0..weight {
+        let k = ew[j];
+        blk[j] = u64x4::splat((k >> 2) as u64);
+        let lane = u64x4::splat((k & 3) as u64).simd_eq(lane_id);
+        bit[j] = lane.select(u64x4::splat(eb[j]), u64x4::splat(0));
     }
-    accumulate_masked_scalar(ew, eb, acc_words, out);
+
+    let nquad = acc_words.div_ceil(4);
+    debug_assert!(4 * nquad <= GF29009_NUM_U64);
+    let mut i = 0usize;
+
+    while i + 4 <= nquad {
+        let mut a0 = u64x4::splat(0);
+        let mut a1 = u64x4::splat(0);
+        let mut a2 = u64x4::splat(0);
+        let mut a3 = u64x4::splat(0);
+        let v0 = u64x4::splat(i as u64);
+        let v1 = u64x4::splat((i + 1) as u64);
+        let v2 = u64x4::splat((i + 2) as u64);
+        let v3 = u64x4::splat((i + 3) as u64);
+
+        for j in 0..weight {
+            let b = bit[j];
+            let k = blk[j];
+            a0 ^= k.simd_eq(v0).select(b, u64x4::splat(0));
+            a1 ^= k.simd_eq(v1).select(b, u64x4::splat(0));
+            a2 ^= k.simd_eq(v2).select(b, u64x4::splat(0));
+            a3 ^= k.simd_eq(v3).select(b, u64x4::splat(0));
+        }
+
+        let p0 = 4 * i;
+        let mut cur0 = u64x4::from_slice(&out.data[p0..p0 + 4]);
+        cur0 ^= a0;
+        cur0.copy_to_slice(&mut out.data[p0..p0 + 4]);
+
+        let p1 = 4 * (i + 1);
+        let mut cur1 = u64x4::from_slice(&out.data[p1..p1 + 4]);
+        cur1 ^= a1;
+        cur1.copy_to_slice(&mut out.data[p1..p1 + 4]);
+
+        let p2 = 4 * (i + 2);
+        let mut cur2 = u64x4::from_slice(&out.data[p2..p2 + 4]);
+        cur2 ^= a2;
+        cur2.copy_to_slice(&mut out.data[p2..p2 + 4]);
+
+        let p3 = 4 * (i + 3);
+        let mut cur3 = u64x4::from_slice(&out.data[p3..p3 + 4]);
+        cur3 ^= a3;
+        cur3.copy_to_slice(&mut out.data[p3..p3 + 4]);
+
+        i += 4;
+    }
+
+    while i < nquad {
+        let mut a = u64x4::splat(0);
+        let v = u64x4::splat(i as u64);
+        for j in 0..weight {
+            a ^= blk[j].simd_eq(v).select(bit[j], u64x4::splat(0));
+        }
+        let p = 4 * i;
+        let mut cur = u64x4::from_slice(&out.data[p..p + 4]);
+        cur ^= a;
+        cur.copy_to_slice(&mut out.data[p..p + 4]);
+        i += 1;
+    }
 }
 
+#[cfg(test)]
 fn accumulate_masked_scalar(ew: &[u32], eb: &[u64], acc_words: usize, out: &mut Gf2_9009) {
     for i in 0..acc_words {
         let mut val = 0u64;
@@ -251,87 +338,13 @@ fn accumulate_masked_scalar(ew: &[u32], eb: &[u64], acc_words: usize, out: &mut 
     }
 }
 
-/// Two-lane form of `accumulate_masked_scalar`, structured after the vendored
-/// AVX2 `vect_write_support_to_vector` but comparing accumulator *pairs*.
-///
-/// Each entry is pre-broadcast to its pair index `ew[j] >> 1`, with its bit
-/// mask confined to the correct 64-bit lane via `ew[j] & 1`. The inner loop is
-/// then three SSE ops per entry. Four accumulator pairs are processed per pass
-/// over the support so the two loads per entry feed four comparisons — the
-/// loop is load-bound, not ALU-bound.
-///
-/// # Safety
-/// Requires SSE4.1 (`_mm_cmpeq_epi64`); callers must check.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn accumulate_masked_sse41(ew: &[u32], eb: &[u64], acc_words: usize, out: &mut Gf2_9009) {
-    use std::arch::x86_64::*;
-    unsafe {
-        let weight = ew.len();
-        let mut blk = [_mm_setzero_si128(); MAX_SUPPORT_WEIGHT];
-        let mut bit = [_mm_setzero_si128(); MAX_SUPPORT_WEIGHT];
-        let lane_id = _mm_set_epi64x(1, 0);
-        for j in 0..weight {
-            let k = ew[j];
-            blk[j] = _mm_set1_epi64x((k >> 1) as i64);
-            let lane = _mm_cmpeq_epi64(_mm_set1_epi64x((k & 1) as i64), lane_id);
-            bit[j] = _mm_and_si128(_mm_set1_epi64x(eb[j] as i64), lane);
-        }
-
-        // Round up: an odd acc_words (71 at HQC-1, 73 at HQC-3) makes the last
-        // pair straddle limb `acc_words`. That is safe and needs no scalar
-        // tail — `out.data` is always GF29009_NUM_U64 = 141 limbs, far wider
-        // than any acc_words, and the straddling lane accumulates zero because
-        // the degree bound puts no support element there. A scalar tail here
-        // was measurably worse than useless: LLVM compiled its `ct_eq_mask`
-        // into a conditional jump on secret data (caught by valgrind), which
-        // is exactly the leak this function exists to remove.
-        let npair = acc_words.div_ceil(2);
-        debug_assert!(2 * npair <= GF29009_NUM_U64);
-        let base = out.data.as_mut_ptr();
-        let mut i = 0usize;
-
-        while i + 4 <= npair {
-            let z = _mm_setzero_si128();
-            let (mut a0, mut a1, mut a2, mut a3) = (z, z, z, z);
-            let v0 = _mm_set1_epi64x(i as i64);
-            let v1 = _mm_set1_epi64x((i + 1) as i64);
-            let v2 = _mm_set1_epi64x((i + 2) as i64);
-            let v3 = _mm_set1_epi64x((i + 3) as i64);
-            for j in 0..weight {
-                let (b, k) = (bit[j], blk[j]);
-                a0 = _mm_xor_si128(a0, _mm_and_si128(b, _mm_cmpeq_epi64(k, v0)));
-                a1 = _mm_xor_si128(a1, _mm_and_si128(b, _mm_cmpeq_epi64(k, v1)));
-                a2 = _mm_xor_si128(a2, _mm_and_si128(b, _mm_cmpeq_epi64(k, v2)));
-                a3 = _mm_xor_si128(a3, _mm_and_si128(b, _mm_cmpeq_epi64(k, v3)));
-            }
-            let p = base.add(2 * i) as *mut __m128i;
-            for (off, a) in [(0, a0), (1, a1), (2, a2), (3, a3)] {
-                let q = p.add(off);
-                _mm_storeu_si128(q, _mm_xor_si128(_mm_loadu_si128(q), a));
-            }
-            i += 4;
-        }
-
-        while i < npair {
-            let mut a = _mm_setzero_si128();
-            let v = _mm_set1_epi64x(i as i64);
-            for j in 0..weight {
-                a = _mm_xor_si128(a, _mm_and_si128(bit[j], _mm_cmpeq_epi64(blk[j], v)));
-            }
-            let q = base.add(2 * i) as *mut __m128i;
-            _mm_storeu_si128(q, _mm_xor_si128(_mm_loadu_si128(q), a));
-            i += 1;
-        }
-    }
-}
-
 /// All-ones if `a == b`, zero otherwise, without branching.
 ///
 /// Uses `subtle` rather than the hand-rolled `(t | -t) >> 31` idiom: LLVM
 /// recognises that pattern as `t != 0` and is free to lower it back to a
 /// branch, which it did here until valgrind caught it. `subtle::Choice`
 /// carries an optimisation barrier that prevents exactly that.
+#[cfg(test)]
 #[inline(always)]
 fn ct_eq_mask(a: u32, b: u32) -> u64 {
     use subtle::ConstantTimeEq;
@@ -446,15 +459,9 @@ mod tests {
     }
 
     /// The vectorised accumulate must agree with the scalar one bit for bit,
-    /// including at odd `acc_words` (71, 73) where the final limb takes the
-    /// scalar tail and must not be written two limbs wide.
-    #[cfg(target_arch = "x86_64")]
+    /// across all supported schemes.
     #[test]
-    fn test_accumulate_masked_sse_matches_scalar() {
-        if !std::arch::is_x86_feature_detected!("sse4.1") {
-            eprintln!("skipped: no SSE4.1 on this host");
-            return;
-        }
+    fn test_accumulate_masked_simd_matches_scalar() {
         let mut rng = XorShift(0x1DEA_5EED_0BAD_F00D);
         for &(nwords, n, weight, points) in &SCHEMES {
             let aw = acc_words(nwords, points);
@@ -473,11 +480,10 @@ mod tests {
                 let mut want = Gf2_9009::zero();
                 accumulate_masked_scalar(ew, eb, aw, &mut want);
                 let mut got = Gf2_9009::zero();
-                unsafe { accumulate_masked_sse41(ew, eb, aw, &mut got) };
+                accumulate_masked(ew, eb, aw, &mut got);
 
                 assert_eq!(got, want, "mismatch acc_words={aw} idx={idx}");
-                // Nothing above acc_words may be touched, in particular no
-                // two-limb store straddling the odd tail.
+                // Nothing above acc_words may be touched.
                 assert!(
                     got.data[aw..].iter().all(|&w| w == 0),
                     "wrote past acc_words={aw}"

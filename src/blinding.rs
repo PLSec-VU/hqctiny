@@ -9,6 +9,8 @@ use crate::math::segmentation::W;
 /// Writes into `out`, which must be at least `n.div_ceil(64)` words.
 /// Returns a subslice of `out` with the reduced polynomial.
 pub fn reduce_mod_xn_minus_1<'o>(poly: &[u64], n: usize, out: &'o mut [u64]) -> &'o mut [u64] {
+    use core::simd::u64x4;
+
     let n_words = n.div_ceil(64);
     debug_assert!(
         out.len() >= n_words,
@@ -25,9 +27,32 @@ pub fn reduce_mod_xn_minus_1<'o>(poly: &[u64], n: usize, out: &'o mut [u64]) -> 
 
     let word_offset = n / 64;
     let bit_offset = n % 64;
+    let shift_lo = u64x4::splat(bit_offset as u64);
+    let shift_hi = u64x4::splat((64 - bit_offset) as u64);
 
-    // Fold the words above bit n back down.
-    for (i, out_word) in out[..n_words].iter_mut().enumerate() {
+    // Fold the words above bit n back down using SIMD chunks.
+    let (out_chunks, out_tail) = out[..n_words].as_chunks_mut::<4>();
+    let num_chunks = out_chunks.len();
+    for (chunk_idx, out_quad) in out_chunks.iter_mut().enumerate() {
+        let i = chunk_idx * 4;
+        let r0 = read(word_offset + i);
+        let r1 = read(word_offset + i + 1);
+        let r2 = read(word_offset + i + 2);
+        let r3 = read(word_offset + i + 3);
+        let v_lo = u64x4::from_array([r0, r1, r2, r3]);
+        let mut w = v_lo >> shift_lo;
+        if bit_offset != 0 {
+            let r4 = read(word_offset + i + 4);
+            let v_hi = u64x4::from_array([r1, r2, r3, r4]);
+            w ^= v_hi << shift_hi;
+        }
+        let cur = u64x4::from_array(*out_quad);
+        *out_quad = (cur ^ w).to_array();
+    }
+
+    let start_tail = num_chunks * 4;
+    for (idx, out_word) in out_tail.iter_mut().enumerate() {
+        let i = start_tail + idx;
         let mut w = read(word_offset + i) >> bit_offset;
         if bit_offset != 0 {
             w ^= read(word_offset + i + 1) << (64 - bit_offset);

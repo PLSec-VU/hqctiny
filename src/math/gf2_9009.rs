@@ -6,6 +6,25 @@
 //! Karatsuba's algorithm with CLMUL for the base case.
 
 use clmul::clmul;
+use core::simd::num::SimdUint;
+use core::simd::u64x4;
+
+/// In-place slice XOR: `dst[..src.len()] ^= src[..]` using portable SIMD.
+#[inline(always)]
+pub(crate) fn simd_xor_assign(dst: &mut [u64], src: &[u64]) {
+    debug_assert!(dst.len() >= src.len());
+    let len = src.len();
+    let (dst_chunks, dst_tail) = dst[..len].as_chunks_mut::<4>();
+    let (src_chunks, src_tail) = src.as_chunks::<4>();
+    for (d, s) in dst_chunks.iter_mut().zip(src_chunks) {
+        let vd = u64x4::from_array(*d);
+        let vs = u64x4::from_array(*s);
+        *d = (vd ^ vs).to_array();
+    }
+    for (d, s) in dst_tail.iter_mut().zip(src_tail) {
+        *d ^= *s;
+    }
+}
 
 /// Number of u64 limbs in a field element (ceil(9009 / 64) = 141).
 pub const GF29009_NUM_U64: usize = 141;
@@ -49,9 +68,14 @@ impl Gf2_9009 {
 
     #[inline(always)]
     pub fn add(&mut self, rhs: &Self) {
-        for i in 0..GF29009_NUM_U64 {
-            self.data[i] ^= rhs.data[i];
+        let (dst_chunks, dst_tail) = self.data.as_chunks_mut::<4>();
+        let (src_chunks, src_tail) = rhs.data.as_chunks::<4>();
+        for (d, s) in dst_chunks.iter_mut().zip(src_chunks) {
+            let vd = u64x4::from_array(*d);
+            let vs = u64x4::from_array(*s);
+            *d = (vd ^ vs).to_array();
         }
+        dst_tail[0] ^= src_tail[0];
     }
 
     #[inline]
@@ -125,13 +149,27 @@ impl Gf2_9009 {
     /// Check if this element is zero.
     #[inline]
     pub fn is_zero(&self) -> bool {
-        self.data.iter().all(|&x| x == 0)
+        let (chunks, tail) = self.data.as_chunks::<4>();
+        let mut acc = u64x4::splat(0);
+        for c in chunks {
+            acc |= u64x4::from_array(*c);
+        }
+        acc.reduce_or() == 0 && tail[0] == 0
     }
 
     /// Check if this element is one.
     #[inline]
     pub fn is_one(&self) -> bool {
-        self.data[0] == 1 && self.data[1..].iter().all(|&x| x == 0)
+        if self.data[0] != 1 {
+            return false;
+        }
+        let first_quad = [0u64, self.data[1], self.data[2], self.data[3]];
+        let mut acc = u64x4::from_array(first_quad);
+        let (chunks, tail) = self.data[4..].as_chunks::<4>();
+        for c in chunks {
+            acc |= u64x4::from_array(*c);
+        }
+        acc.reduce_or() == 0 && tail[0] == 0
     }
 
     /// Multiply by x^pow, where x is the field generator.
@@ -175,11 +213,27 @@ impl Gf2_9009 {
                 .copy_from_slice(&self.data[..GF29009_NUM_U64]);
         } else {
             let inv_shift = 64 - bit_shift;
-            for i in 0..GF29009_NUM_U64 {
-                let val = self.data[i];
-                buf[i + word_shift] |= val << bit_shift;
-                if i + word_shift + 1 < max_word {
-                    buf[i + word_shift + 1] |= val >> inv_shift;
+            let shift_hi = u64x4::splat(bit_shift as u64);
+            let shift_lo = u64x4::splat(inv_shift as u64);
+            let (chunks, tail) = self.data[..GF29009_NUM_U64].as_chunks::<4>();
+            for (c_idx, &src_arr) in chunks.iter().enumerate() {
+                let base = word_shift + c_idx * 4;
+                let vs = u64x4::from_array(src_arr);
+                let hi = vs << shift_hi;
+                let lo = vs >> shift_lo;
+
+                let cur_lo = u64x4::from_slice(&buf[base..base + 4]);
+                (cur_lo | hi).copy_to_slice(&mut buf[base..base + 4]);
+
+                let cur_hi = u64x4::from_slice(&buf[base + 1..base + 5]);
+                (cur_hi | lo).copy_to_slice(&mut buf[base + 1..base + 5]);
+            }
+            let processed = chunks.len() * 4;
+            for (i, &val) in tail.iter().enumerate() {
+                let idx = processed + i;
+                buf[idx + word_shift] |= val << bit_shift;
+                if idx + word_shift + 1 < max_word {
+                    buf[idx + word_shift + 1] |= val >> inv_shift;
                 }
             }
         }
@@ -198,9 +252,7 @@ impl Gf2_9009 {
         debug_assert!(eff_words <= GF29009_NUM_U64);
 
         if pow == 0 {
-            for i in 0..eff_words {
-                out.data[i] ^= self.data[i];
-            }
+            simd_xor_assign(&mut out.data[..eff_words], &self.data[..eff_words]);
             return;
         }
 
@@ -232,11 +284,26 @@ impl Gf2_9009 {
             buf[word_shift..word_shift + eff_words].copy_from_slice(&self.data[..eff_words]);
         } else {
             let inv_shift = 64 - bit_shift;
-            for i in 0..eff_words {
-                let val = self.data[i];
-                buf[i + word_shift] ^= val << bit_shift;
-                // i + word_shift + 1 <= eff_words + word_shift = max_word - 1 < N
-                buf[i + word_shift + 1] ^= val >> inv_shift;
+            let shift_hi = u64x4::splat(bit_shift as u64);
+            let shift_lo = u64x4::splat(inv_shift as u64);
+            let (chunks, tail) = self.data[..eff_words].as_chunks::<4>();
+            for (c_idx, &src_arr) in chunks.iter().enumerate() {
+                let base = word_shift + c_idx * 4;
+                let vs = u64x4::from_array(src_arr);
+                let hi = vs << shift_hi;
+                let lo = vs >> shift_lo;
+
+                let cur_lo = u64x4::from_slice(&buf[base..base + 4]);
+                (cur_lo ^ hi).copy_to_slice(&mut buf[base..base + 4]);
+
+                let cur_hi = u64x4::from_slice(&buf[base + 1..base + 5]);
+                (cur_hi ^ lo).copy_to_slice(&mut buf[base + 1..base + 5]);
+            }
+            let processed = chunks.len() * 4;
+            for (i, &val) in tail.iter().enumerate() {
+                let idx = processed + i;
+                buf[idx + word_shift] ^= val << bit_shift;
+                buf[idx + word_shift + 1] ^= val >> inv_shift;
             }
         }
 
@@ -311,25 +378,17 @@ fn karatsuba_step(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
     // when n is odd.
     a_sum.copy_from_slice(a_lo);
     b_sum.copy_from_slice(b_lo);
-    for i in 0..n - m {
-        a_sum[i] ^= a_hi[i];
-        b_sum[i] ^= b_hi[i];
-    }
+    simd_xor_assign(&mut a_sum[..n - m], a_hi);
+    simd_xor_assign(&mut b_sum[..n - m], b_hi);
 
     z1.fill(0);
     poly_mul(a_sum, b_sum, z1, scratch);
 
     // Fold z0 and z2 into the middle term before touching out[m..], since
     // the write range overlaps both of their positions.
-    for (i, z) in z1.iter_mut().enumerate() {
-        *z ^= out[i];
-    }
-    for i in 0..2 * (n - m) {
-        z1[i] ^= out[2 * m + i];
-    }
-    for (i, z) in z1.iter().enumerate() {
-        out[m + i] ^= z;
-    }
+    simd_xor_assign(z1, &out[..2 * m]);
+    simd_xor_assign(&mut z1[..2 * (n - m)], &out[2 * m..2 * m + 2 * (n - m)]);
+    simd_xor_assign(&mut out[m..m + 2 * m], z1);
 }
 
 /// One word-aligned Toom-3 level (Bodrato's TC3W).
@@ -375,14 +434,10 @@ fn toom3_step(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
     // C(1) = (a0 + a1 + a2)(b0 + b1 + b2)
     ta[..k].copy_from_slice(a0);
     tb[..k].copy_from_slice(b0);
-    for i in 0..k {
-        ta[i] ^= a1[i];
-        tb[i] ^= b1[i];
-    }
-    for i in 0..n2 {
-        ta[i] ^= a2[i];
-        tb[i] ^= b2[i];
-    }
+    simd_xor_assign(&mut ta[..k], a1);
+    simd_xor_assign(&mut tb[..k], b1);
+    simd_xor_assign(&mut ta[..n2], a2);
+    simd_xor_assign(&mut tb[..n2], b2);
     e1.fill(0);
     poly_mul(&ta[..k], &tb[..k], e1, scratch);
 
@@ -391,76 +446,53 @@ fn toom3_step(a: &[u64], b: &[u64], out: &mut [u64], scratch: &mut [u64]) {
     tb.fill(0);
     ta[..k].copy_from_slice(a0);
     tb[..k].copy_from_slice(b0);
-    for i in 0..k {
-        ta[i + 1] ^= a1[i];
-        tb[i + 1] ^= b1[i];
-    }
-    for i in 0..n2 {
-        ta[i + 2] ^= a2[i];
-        tb[i + 2] ^= b2[i];
-    }
+    simd_xor_assign(&mut ta[1..1 + k], a1);
+    simd_xor_assign(&mut tb[1..1 + k], b1);
+    simd_xor_assign(&mut ta[2..2 + n2], a2);
+    simd_xor_assign(&mut tb[2..2 + n2], b2);
     e2.fill(0);
     poly_mul(ta, tb, e2, scratch);
 
     // C(W+1): A(W+1) = A(W) + a1 + a2
-    for i in 0..k {
-        ta[i] ^= a1[i];
-        tb[i] ^= b1[i];
-    }
-    for i in 0..n2 {
-        ta[i] ^= a2[i];
-        tb[i] ^= b2[i];
-    }
+    simd_xor_assign(&mut ta[..k], a1);
+    simd_xor_assign(&mut tb[..k], b1);
+    simd_xor_assign(&mut ta[..n2], a2);
+    simd_xor_assign(&mut tb[..n2], b2);
     e3.fill(0);
     poly_mul(ta, tb, e3, scratch);
 
     // Strip the known c0 and c4 contributions from the three evaluations.
-    for i in 0..2 * k {
-        let c0_i = out[i];
-        e1[i] ^= c0_i;
-        e2[i] ^= c0_i;
-        e3[i] ^= c0_i;
-    }
-    for i in 0..2 * n2 {
-        let c4_i = out[4 * k + i];
-        e1[i] ^= c4_i;
-        e2[4 + i] ^= c4_i;
-        e3[i] ^= c4_i;
-        e3[4 + i] ^= c4_i;
-    }
+    simd_xor_assign(&mut e1[..2 * k], &out[..2 * k]);
+    simd_xor_assign(&mut e2[..2 * k], &out[..2 * k]);
+    simd_xor_assign(&mut e3[..2 * k], &out[..2 * k]);
+
+    simd_xor_assign(&mut e1[..2 * n2], &out[4 * k..4 * k + 2 * n2]);
+    simd_xor_assign(&mut e2[4..4 + 2 * n2], &out[4 * k..4 * k + 2 * n2]);
+    simd_xor_assign(&mut e3[..2 * n2], &out[4 * k..4 * k + 2 * n2]);
+    simd_xor_assign(&mut e3[4..4 + 2 * n2], &out[4 * k..4 * k + 2 * n2]);
 
     // U = (E2 + W*E1) / (W^2 + W), placed at e2[1..2k+2]
-    for i in 0..2 * k {
-        e2[1 + i] ^= e1[i];
-    }
+    simd_xor_assign(&mut e2[1..1 + 2 * k], &e1[..2 * k]);
     exact_div_w2_plus_w(e2);
 
     // V = (E3 + (W+1)*E1) / (W^2 + W), placed at e3[1..2k+2]
-    for i in 0..2 * k {
-        e3[i] ^= e1[i];
-        e3[1 + i] ^= e1[i];
-    }
+    simd_xor_assign(&mut e3[..2 * k], &e1[..2 * k]);
+    simd_xor_assign(&mut e3[1..1 + 2 * k], &e1[..2 * k]);
     exact_div_w2_plus_w(e3);
 
     // c3 = U + V, overwriting U's slot: c3[j] = e2[1 + j]
-    for i in 1..2 * k + 2 {
-        e2[i] ^= e3[i];
-    }
+    simd_xor_assign(&mut e2[1..2 * k + 2], &e3[1..2 * k + 2]);
     debug_assert_eq!(e2[2 * k + 1], 0, "c3 exceeds 2k words");
 
     // c2 = V + W*c3, overwriting V's slot: c2[j] = e3[1 + j]
-    for i in 1..2 * k + 1 {
-        e3[1 + i] ^= e2[i];
-    }
+    simd_xor_assign(&mut e3[2..2 + 2 * k], &e2[1..1 + 2 * k]);
 
     // Recompose out += c1*y + c2*y^2 + c3*y^3, with c1 = E1 + c2 + c3.
-    for i in 0..2 * k {
-        let c2_i = e3[1 + i];
-        let c3_i = e2[1 + i];
-        out[k + i] ^= e1[i] ^ c2_i ^ c3_i;
-        out[2 * k + i] ^= c2_i;
-        out[3 * k + i] ^= c3_i;
-    }
+    simd_xor_assign(&mut out[k..k + 2 * k], &e1[..2 * k]);
+    simd_xor_assign(&mut out[k..k + 2 * k], &e3[1..1 + 2 * k]);
+    simd_xor_assign(&mut out[k..k + 2 * k], &e2[1..1 + 2 * k]);
+    simd_xor_assign(&mut out[2 * k..4 * k], &e3[1..1 + 2 * k]);
+    simd_xor_assign(&mut out[3 * k..5 * k], &e2[1..1 + 2 * k]);
 }
 
 /// Exact division by W^2 + W = x^128 + x^64, in place. The quotient ends
@@ -554,9 +586,7 @@ pub(crate) fn reduce_xor(buf: &mut [u64], result: &mut Gf2_9009) {
     buf[0] ^= w_high ^ (w_high << 29);
 
     // XOR the reduced low limbs into result instead of overwriting.
-    for (dst, &src) in result.data.iter_mut().zip(&buf[..GF29009_NUM_U64]) {
-        *dst ^= src;
-    }
+    simd_xor_assign(&mut result.data, &buf[..GF29009_NUM_U64]);
     // Clear any bits >= DEGREE that leaked from the XOR.
     result.normalize();
 }
