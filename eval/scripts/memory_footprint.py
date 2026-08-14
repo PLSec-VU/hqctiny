@@ -22,10 +22,10 @@ def main() -> None:
         # measurement.
         dexec_server(
             "cargo", "build", "--profile", "tiny-release", "-p", "hqclethe-server",
-            "--features", "quiet", "-q",
+            "--features", "quiet,avx2", "-q",
         )
-        dexec_server("cargo", "build", "--profile", "tiny-release", "--bin", "stack-test", "-q")
-        dexec_server("cargo", "build", "--release", "-p", "hqclethe-client", "-q")
+        dexec_server("cargo", "build", "--profile", "tiny-release", "--bin", "stack-test", "--features", "avx2", "-q")
+        dexec_server("cargo", "build", "--release", "-p", "hqclethe-client", "--features", "avx2", "-q")
 
         print()
         print("--- Static binary size (text/data/bss) ---")

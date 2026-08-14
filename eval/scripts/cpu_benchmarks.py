@@ -103,11 +103,11 @@ def main() -> None:
         dexec_server("rm", "-rf", "/work/target-linux/criterion")
 
         print("--- Microbenchmarks + macrobenchmark (criterion, wall-clock median) ---")
-        dexec_server("cargo", "bench", "--bench", "kem_primitives", "--bench", "protocol_phases", "-q")
+        dexec_server("cargo", "bench", "--bench", "kem_primitives", "--bench", "protocol_phases", "--features", "avx2", "-q")
 
         print()
         print("--- Cumulative CPU time across 200 full transactions (all 3 variants/iter) ---")
-        dexec_server("cargo", "build", "--release", "--bin", "flamegraph-workload", "-q")
+        dexec_server("cargo", "build", "--release", "--bin", "flamegraph-workload", "--features", "avx2", "-q")
         dexec_server(
             "/usr/bin/time", "-v", "/work/target-linux/release/flamegraph-workload", "200",
             check=False,
@@ -115,12 +115,12 @@ def main() -> None:
 
         print()
         print("--- FFI (keypair+dec) vs protocol-layer time share, per variant ---")
-        dexec_server("cargo", "build", "--release", "--bin", "timing-breakdown", "-q")
+        dexec_server("cargo", "build", "--release", "--bin", "timing-breakdown", "--features", "avx2", "-q")
         dexec_server("/work/target-linux/release/timing-breakdown", "300")
 
         print()
         print("--- Deterministic instruction/cycle counts (iai-callgrind, requires valgrind) ---")
-        result = dexec_server("cargo", "bench", "--bench", "callgrind_primitives", "-q", capture_output=True)
+        result = dexec_server("cargo", "bench", "--bench", "callgrind_primitives", "--features", "avx2", "-q", capture_output=True)
         callgrind_text = result.stdout + result.stderr
         print(callgrind_text, end="")
         (RAW_DIR / "callgrind.txt").write_text(callgrind_text)

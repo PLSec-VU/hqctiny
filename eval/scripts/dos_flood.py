@@ -22,9 +22,9 @@ def main() -> None:
         print("Building hqclethe-server and hqclethe-client...")
         dexec_server(
             "cargo", "build", "--profile", "tiny-release", "-p", "hqclethe-server",
-            "--features", "quiet,flood-stats", "-q",
+            "--features", "quiet,flood-stats,avx2", "-q",
         )
-        dexec_server("cargo", "build", "--release", "-p", "hqclethe-client", "-q")
+        dexec_server("cargo", "build", "--release", "-p", "hqclethe-client", "--features", "avx2", "-q")
 
         for variant in VARIANTS:
             for kind in KINDS:
