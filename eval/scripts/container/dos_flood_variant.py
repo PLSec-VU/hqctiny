@@ -38,7 +38,9 @@ SERVER_BIN = "/work/target-linux/tiny-release/hqclethe-server"
 CLI = "/work/target-linux/release/hqclethe-client"
 PORT = "24100"
 PORT_INT = int(PORT)
-DEFAULT_REPS = 5
+# Standalone-run fallback; the suite always passes an explicit count.
+# Kept in step with run.py's --dos-reps default.
+DEFAULT_REPS = 10
 DEFAULT_KIND = "handshake"
 
 # Pin the server and the flood client to distinct cores: without this they
@@ -99,7 +101,9 @@ def run_one_flood(
     idle_samples = sample_rss_for(server_pid, 2.0)
 
     cpu_before = read_cpu_ticks(server_pid)
-    drops_before = read_udp_socket_drops(PORT_INT) or 0
+    # Left None (not 0): a missing "before" paired with a real "after" would
+    # report the socket's lifetime total as this window's delta.
+    drops_before = read_udp_socket_drops(PORT_INT)
     resp_before = query_responses_sent(PORT_INT)
     t0 = time.monotonic()
 
@@ -130,7 +134,11 @@ def run_one_flood(
     t1 = time.monotonic()
     cpu_after = read_cpu_ticks(server_pid)
     drops_after = read_udp_socket_drops(PORT_INT)
-    drops_delta = (drops_after - drops_before) if drops_after is not None else None
+    drops_delta = (
+        (drops_after - drops_before)
+        if drops_after is not None and drops_before is not None
+        else None
+    )
     resp_after = query_responses_sent(PORT_INT)
     resp_delta = (resp_after - resp_before) if resp_before is not None and resp_after is not None else None
 

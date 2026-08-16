@@ -80,9 +80,31 @@ fn run_server<SCHEME: HqcScheme + 'static>(port: u16) -> std::io::Result<()> {
         });
     }
 
+    // recv_from can fail transiently (EINTR, or a queued ICMP error from an
+    // earlier send_to), and one unreachable peer shouldn't take the server
+    // down. The cap stops a permanently broken socket spinning here instead.
+    const MAX_CONSECUTIVE_RECV_ERRORS: u32 = 64;
+    let mut consecutive_errors: u32 = 0;
+
     let mut buf = [0u8; 4096];
     loop {
-        let (len, addr) = socket.recv_from(&mut buf)?;
+        let (len, addr) = match socket.recv_from(&mut buf) {
+            Ok(v) => {
+                consecutive_errors = 0;
+                v
+            }
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_RECV_ERRORS {
+                    eprintln!("recv_from failed {consecutive_errors} times in a row, giving up");
+                    return Err(e);
+                }
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    eprintln!("recv_from error (skipping datagram): {e}");
+                }
+                continue;
+            }
+        };
 
         #[cfg(feature = "flood-stats")]
         if buf[..len] == *FLOOD_STATS_QUERY {
@@ -102,10 +124,9 @@ fn run_server<SCHEME: HqcScheme + 'static>(port: u16) -> std::io::Result<()> {
                     let mut resp_buf = [0u8; 2048];
                     if let Ok(encoded) =
                         encode_packet::<SCHEME>(&Packet::HandshakeResponse(res), &mut resp_buf)
+                        && socket.send_to(encoded, addr).is_ok()
                     {
-                        if socket.send_to(encoded, addr).is_ok() {
-                            record_response_sent();
-                        }
+                        record_response_sent();
                     }
                 }
             }
@@ -114,10 +135,9 @@ fn run_server<SCHEME: HqcScheme + 'static>(port: u16) -> std::io::Result<()> {
                     let mut resp_buf = [0u8; 2048];
                     if let Ok(encoded) =
                         encode_packet::<SCHEME>(&Packet::PointResponse(res), &mut resp_buf)
+                        && socket.send_to(encoded, addr).is_ok()
                     {
-                        if socket.send_to(encoded, addr).is_ok() {
-                            record_response_sent();
-                        }
+                        record_response_sent();
                     }
                 }
             }

@@ -12,7 +12,7 @@ use chacha20poly1305::{
     aead::{AeadInPlace, KeyInit},
 };
 use std::sync::{Arc, RwLock};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Two-slot cookie-key ring. Rotating writes a fresh key into the inactive
 /// slot and flips the active pointer, so a cookie issued under the previous
@@ -135,13 +135,15 @@ where
     /// Decrypts in place into a fixed-size stack buffer via `AeadInPlace`,
     /// rather than the `Aead` trait's `Vec`-returning `decrypt`. Returns
     /// the buffer plus the actual plaintext length (`theta || m`, at most
-    /// `MAX_COOKIE_PLAINTEXT_BYTES`).
+    /// `MAX_COOKIE_PLAINTEXT_BYTES`). `Zeroizing` because callers reject
+    /// requests between decrypting and consuming the cookie, on paths an
+    /// attacker picks.
     fn decrypt_cookie(
         &self,
         cookie: &[u8],
         key_index: u8,
         merkle_root: &[u8; 32],
-    ) -> Result<([u8; MAX_COOKIE_PLAINTEXT_BYTES], usize)> {
+    ) -> Result<(Zeroizing<[u8; MAX_COOKIE_PLAINTEXT_BYTES]>, usize)> {
         if cookie.len() < 24 + 16 {
             return Err(Error::InvalidCookieLength);
         }
@@ -156,7 +158,7 @@ where
         let tag_start = 24 + pt_len;
         let tag = Tag::from_slice(&cookie[tag_start..]);
 
-        let mut buf = [0u8; MAX_COOKIE_PLAINTEXT_BYTES];
+        let mut buf = Zeroizing::new([0u8; MAX_COOKIE_PLAINTEXT_BYTES]);
         buf[..pt_len].copy_from_slice(&cookie[24..tag_start]);
 
         let cipher = XChaCha20Poly1305::new(&key.into());
@@ -226,7 +228,7 @@ where
         }
 
         // Validate merkle_root using cookie's AAD
-        let (mut plaintext, pt_len) =
+        let (plaintext, pt_len) =
             self.decrypt_cookie(&req.cookie, req.key_index, &req.merkle_root)?;
         if pt_len != 32 + SCHEME::PARAM_SECURITY_BYTES {
             return Err(Error::InvalidCookie);
@@ -366,7 +368,6 @@ where
         };
 
         theta.zeroize();
-        plaintext.zeroize();
 
         Ok(PointResponse {
             point_index: req.point_index,

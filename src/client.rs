@@ -199,7 +199,7 @@ where
     Collecting(Box<Client<SCHEME, SStore, E, CollectingPoints>>),
     Completed(
         Client<SCHEME, SStore, E, Completed>,
-        Vec<u8>, // K_session
+        Zeroizing<Vec<u8>>, // K_session
     ),
 }
 
@@ -283,14 +283,14 @@ where
                 return Err(Error::KeyConfirmationFailed);
             }
 
-            let session_key = k_session.to_vec();
+            let session_key = Zeroizing::new(k_session.to_vec());
             k_session.zeroize();
 
             let next_state = Client {
                 session_store: self.session_store,
                 entropy_provider: self.entropy_provider,
                 state: Completed {
-                    session_key: Zeroizing::new(session_key.clone()),
+                    session_key: session_key.clone(),
                 },
                 _phantom: std::marker::PhantomData,
             };
