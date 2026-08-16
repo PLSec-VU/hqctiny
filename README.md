@@ -34,15 +34,32 @@ reproduce its numbers.
 | `profiling/` | Dev-loop profiling: heap (dhat), CPU flamegraphs, a stack-depth probe — see `profiling/README.md` |
 | `eval/` | The evaluation suite that reproduces the paper's measurements — see `eval/README.md` |
 | `sagemath/` | SageMath scripts used to generate precomputation artifacts (Newton weights, test vectors) — see `sagemath/README.md` |
-| `ssprove/`, `proofs/` | The mechanized Coq/SSProve confidentiality proof (Appendix on trace confidentiality) |
+| `ssprove/` | The mechanized Coq/SSProve confidentiality proof (Appendix on trace confidentiality) — see `ssprove/README.md` |
 | `tests/` | Integration tests exercising the full protocol flow |
+| `build.rs` | Compiles and links the HQC C sources in `hqc/` (portable `ref` sources, or `x86_64/avx256` under the `avx2` feature) |
 
 ## Fetching HQC (Required for Building)
 
-The build script (`build.rs`) compiles the C sources from the official HQC reference implementation inside `hqc/`. If the `hqc/` directory is empty or missing, clone it directly into the repository root before building:
+The build script (`build.rs`) compiles the C sources from the official HQC
+reference implementation inside `hqc/`. It is a git submodule pinned to
+commit `161cd4fdf6b4a5198cf40b3a1243f9f27f13e03d` (upstream
+`v5.0.0-3-g161cd4f`) — the exact revision every number in the paper was
+measured against.
+
+If you cloned this repository with git:
+
+```sh
+git submodule update --init --recursive
+```
+
+If you obtained it as an archive or via the anonymized mirror (neither
+preserves submodules), clone it and check out the pinned revision
+explicitly — plain `git clone` gives you upstream HEAD, which is *not*
+guaranteed to match the paper:
 
 ```sh
 git clone https://gitlab.com/pqc-hqc/hqc.git hqc
+git -C hqc checkout 161cd4fdf6b4a5198cf40b3a1243f9f27f13e03d
 ```
 
 ## Building
@@ -58,29 +75,62 @@ decapsulation), not a correctness or wire-format change. The evaluation
 suite (below) builds with `avx2` automatically for the categories that use
 it; you don't need to pass the flag yourself when reproducing paper numbers.
 
+### Smoke test
+
+To confirm a working build end-to-end without running the full evaluation
+suite (takes about a minute after the build):
+
+```sh
+cargo test --release
+```
+
+This runs 44 unit tests plus 8 integration tests, the latter driving
+complete client/server protocol runs at all three security levels
+(`test_protocol_flow_hqc1/3/5`) along with the negative cases — tampered
+Merkle roots and witnesses, corrupted handshake tags, and cookie-key
+rotation. All 52 should pass.
+
 ## Checking the Proofs
 
 The mechanized confidentiality proofs (Appendix on trace confidentiality) are formalized in Rocq / Coq using the [SSProve](https://github.com/SSProve/ssprove) foundational framework and MathComp in `ssprove/`.
 
 ### Requirements
 
-- **Rocq / Coq** (version 9.0+) with `rocq-mathcomp-ssreflect`, `rocq-mathcomp-algebra`, and `ssprove` installed (via `opam`).
+- **Rocq / Coq** (version 9.0+) with `rocq-mathcomp-ssreflect`, `rocq-mathcomp-algebra`, and `ssprove` installed (via `opam`):
+
+  ```sh
+  opam repo add coq-released https://coq.inria.fr/opam/released
+  opam install coq-ssprove
+  ```
 
 ### Verifying Proofs
 
-To compile and verify all proof scripts (`Tuple.v`, `Interpolate.v`, `HQC.v`, `HQCLethe.v`):
+`ssprove/Makefile` is *generated* (it bakes in the absolute paths of the opam
+switch that produced it), so it is not committed. Generate it once, then
+build:
 
 ```sh
-make -C ssprove
+cd ssprove && rocq makefile -f _CoqProject -o Makefile && make -j"$(nproc)"
 ```
 
-To run the standalone proof checker kernel (`rocqchk`):
+That compiles and verifies all four proof scripts (`Tuple.v`,
+`Interpolate.v`, `HQC.v`, `HQCLethe.v`). Expect roughly 30-60 min on a
+warm opam switch; the `opam install coq-ssprove` that precedes it builds
+SSProve from source and can take considerably longer.
+
+To re-check the compiled proofs with the standalone kernel (`rocqchk`),
+which ignores the tactic engine and independently re-verifies the proof
+terms:
 
 ```sh
 make -C ssprove validate
 ```
 
-See [`ssprove/README.md`](file:///Users/octeep/workspace/hqctiny/ssprove/README.md) for details on the proof structure, parameter sets, and axioms.
+The main theorem is `hqclethe_indistinguishable` in `ssprove/HQCLethe.v`.
+One axiom is deliberately left open (irreducibility of `X^9009 + X^29 + 1`
+over GF(2)), matching the disclosure in the paper's SSProve appendix. See
+[`ssprove/README.md`](ssprove/README.md) for the proof structure, parameter
+sets, and the full axiom rationale.
 
 ## Reproducing the Paper's Evaluation
 
@@ -94,6 +144,35 @@ evaluation categories:
 | 3 | §7.3 CPU Usage | Criterion micro/macrobenchmarks, FFI-vs-protocol timing breakdown, iai-callgrind cycle counts (Table 3) |
 | 4 | §7.4 CPU/Memory Overload Attacks | Flood resilience under handshake and point-request DoS (Table 4) |
 | 5 | §7.5 Latency on a Real Network Path | Client/server session latency, optionally under injected loss (Table 5) |
+
+Category 1 backs §7.1's prose figures specifically: the 546,765-byte
+`hqclethe-server` binary (532,475 B text / 12,504 B data / 1,786 B bss),
+the 143 KB minimum-working-stack bound found by binary search over
+`ulimit -s`, and the 19 startup `brk`/`mmap` calls with zero further heap
+growth across 50 traced sessions.
+
+### Measurement environment
+
+The paper's categories 1-4 were measured on an **8-core/16-thread Intel
+Xeon Silver 4110 @ 2.10 GHz with 15 GB RAM** running the Docker harness.
+Any x86\_64 host with AVX2 will run them, but absolute CPU numbers
+(§7.3, §7.4) scale with the host — the deterministic outputs (binary size,
+stack depth, syscall counts, packet sizes, and iai-callgrind *Estimated
+Cycles*, which come from a synthetic cachegrind model rather than the
+wall clock) should reproduce closely anywhere, while Criterion wall-clock
+medians will not.
+
+Category 5's paper numbers come from two physical machines on the open
+internet: a 4-core Intel Celeron N5095 @ 2.00 GHz / 8 GB RAM running
+`hqclethe-server` in Hong Kong behind a residential NAT, and a shared AMD
+EPYC 9375F node in Amsterdam running `hqclethe-client`. See the note below
+on what the default local run does and does not reproduce.
+
+Budget roughly **20 GB of disk** for the Docker image plus cargo build
+caches. A full default `eval/run.py` takes on the order of a few hours,
+dominated by category 3's Criterion and callgrind benchmarks; `--categories
+1,2` finishes in minutes and is the fastest way to confirm the harness
+works.
 
 Full usage, flags, and output layout are in `eval/README.md`; the short
 version:
