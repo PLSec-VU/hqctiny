@@ -14,14 +14,17 @@
 //! identifier concatenation (a `paste`-style dependency) this project
 //! doesn't otherwise need.
 
+use HQCLethe::auth::shared_keypair;
 use HQCLethe::client::Client;
+use HQCLethe::encoding::{Kind, MAX_UDP_PAYLOAD};
 use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
-use HQCLethe::protocol::{HandshakeRequest, PointRequest, PointType};
 use HQCLethe::server::Server;
 use HQCLethe::traits::*;
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use rand::Rng;
 use std::hint::black_box;
+
+const PEER: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 
 #[derive(Clone)]
 struct Entropy;
@@ -40,26 +43,34 @@ impl SessionStore for NullSessionStore {
 type Srv<SCHEME> = Server<SCHEME, NullSessionStore, Entropy>;
 
 fn make_server<SCHEME: HqcScheme>() -> Srv<SCHEME> {
-    Server::new(NullSessionStore, Entropy)
+    Server::new(
+        NullSessionStore,
+        Entropy,
+        shared_keypair::<SCHEME>().secret.clone(),
+    )
 }
 
-fn setup_handshake<SCHEME: HqcScheme>() -> (Srv<SCHEME>, HandshakeRequest) {
+fn setup_handshake<SCHEME: HqcScheme>() -> (Srv<SCHEME>, Vec<u8>) {
     let server = make_server::<SCHEME>();
     let client = Client::<SCHEME, _, _, _>::new(NullSessionStore, Entropy);
-    let (_client, req) = client.initialize();
+    let (_client, req) = client.initialize(&shared_keypair::<SCHEME>().public);
     (server, req)
 }
 
-fn setup_point_request<SCHEME: HqcScheme>(point_type: PointType) -> (Srv<SCHEME>, PointRequest) {
+fn setup_request<SCHEME: HqcScheme>(kind: Kind) -> (Srv<SCHEME>, Vec<u8>) {
     let server = make_server::<SCHEME>();
     let client = Client::<SCHEME, _, _, _>::new(NullSessionStore, Entropy);
-    let (client, req) = client.initialize();
-    let res = server.handle_handshake(req).unwrap();
-    let (_client, point_reqs) = client.handle_handshake_response(res).unwrap();
-    let req = point_reqs
-        .into_iter()
-        .find(|r| r.point_index == 1 && r.point_type == point_type)
-        .unwrap();
+    let (client, req) = client.initialize(&shared_keypair::<SCHEME>().public);
+    let mut out = [0u8; MAX_UDP_PAYLOAD];
+    let len = server.handle_packet(PEER, &req, &mut out).unwrap();
+    let client = client.handle_handshake_response(&out[..len]).unwrap();
+    let req = client
+        .requests()
+        .iter()
+        .find(|r| r.kind == kind)
+        .unwrap()
+        .bytes
+        .clone();
     (server, req)
 }
 
@@ -85,7 +96,7 @@ fn setup_dec<SCHEME: HqcScheme>() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 macro_rules! define_variant_benches {
-    ($scheme:ty, $keygen:ident, $dec:ident, $handshake:ident, $point_u:ident, $point_v:ident, $group:ident) => {
+    ($scheme:ty, $keygen:ident, $dec:ident, $handshake:ident, $uchunk:ident, $vresidue:ident, $group:ident) => {
         #[library_benchmark]
         #[bench::keygen(setup_keygen())]
         fn $keygen(ent: [u8; 48]) -> (Vec<u8>, Vec<u8>) {
@@ -107,28 +118,31 @@ macro_rules! define_variant_benches {
 
         #[library_benchmark]
         #[bench::handshake(setup_handshake::<$scheme>())]
-        fn $handshake(input: (Srv<$scheme>, HandshakeRequest)) {
+        fn $handshake(input: (Srv<$scheme>, Vec<u8>)) {
             let (server, req) = input;
-            black_box(server.handle_handshake(req).unwrap());
+            let mut out = [0u8; MAX_UDP_PAYLOAD];
+            black_box(server.handle_handshake(PEER, &req, &mut out).unwrap());
         }
 
         #[library_benchmark]
-        #[bench::point_request_u(setup_point_request::<$scheme>(PointType::U))]
-        fn $point_u(input: (Srv<$scheme>, PointRequest)) {
+        #[bench::uchunk_request(setup_request::<$scheme>(Kind::UChunk))]
+        fn $uchunk(input: (Srv<$scheme>, Vec<u8>)) {
             let (server, req) = input;
-            black_box(server.handle_point_request(req).unwrap());
+            let mut out = [0u8; MAX_UDP_PAYLOAD];
+            black_box(server.handle_uchunk(&req, &mut out).unwrap());
         }
 
         #[library_benchmark]
-        #[bench::point_request_v(setup_point_request::<$scheme>(PointType::V))]
-        fn $point_v(input: (Srv<$scheme>, PointRequest)) {
+        #[bench::vresidue_request(setup_request::<$scheme>(Kind::VResidue))]
+        fn $vresidue(input: (Srv<$scheme>, Vec<u8>)) {
             let (server, req) = input;
-            black_box(server.handle_point_request(req).unwrap());
+            let mut out = [0u8; MAX_UDP_PAYLOAD];
+            black_box(server.handle_vresidue(&req, &mut out).unwrap());
         }
 
         library_benchmark_group!(
             name = $group;
-            benchmarks = $keygen, $dec, $handshake, $point_u, $point_v
+            benchmarks = $keygen, $dec, $handshake, $uchunk, $vresidue
         );
     };
 }
@@ -138,8 +152,8 @@ define_variant_benches!(
     hqc1_keygen,
     hqc1_dec,
     hqc1_handshake,
-    hqc1_point_request_u,
-    hqc1_point_request_v,
+    hqc1_uchunk_request,
+    hqc1_vresidue_request,
     hqc1_group
 );
 define_variant_benches!(
@@ -147,8 +161,8 @@ define_variant_benches!(
     hqc3_keygen,
     hqc3_dec,
     hqc3_handshake,
-    hqc3_point_request_u,
-    hqc3_point_request_v,
+    hqc3_uchunk_request,
+    hqc3_vresidue_request,
     hqc3_group
 );
 define_variant_benches!(
@@ -156,8 +170,8 @@ define_variant_benches!(
     hqc5_keygen,
     hqc5_dec,
     hqc5_handshake,
-    hqc5_point_request_u,
-    hqc5_point_request_v,
+    hqc5_uchunk_request,
+    hqc5_vresidue_request,
     hqc5_group
 );
 

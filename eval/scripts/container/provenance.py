@@ -6,6 +6,7 @@ capture_provenance() in lib/common.py, since it doesn't need a container).
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import subprocess
@@ -28,6 +29,19 @@ def cpu_model() -> str:
     return m.group(1) if m else "(not present in /proc/cpuinfo -- e.g. under QEMU/Rosetta emulation)"
 
 
+def cpu_flags() -> str:
+    try:
+        text = Path("/proc/cpuinfo").read_text()
+    except OSError:
+        return "(unavailable)"
+    m = re.search(r"^flags\s*:\s*(.+)$", text, re.MULTILINE)
+    if not m:
+        return "(not present in /proc/cpuinfo)"
+    wanted = ("avx2", "bmi1", "bmi2", "pclmulqdq", "avx512f")
+    present = set(m.group(1).split())
+    return " ".join(f"{flag}={'yes' if flag in present else 'no'}" for flag in wanted)
+
+
 def mem_total() -> str:
     try:
         text = Path("/proc/meminfo").read_text()
@@ -42,6 +56,8 @@ def main() -> None:
     print(f"container_arch: {platform.machine()}")
     print(f"nproc: {sh('nproc')}")
     print(f"cpu_model: {cpu_model()}")
+    print(f"cpu_flags: {cpu_flags()}")
+    print(f"clock_ticks_per_second: {os.sysconf('SC_CLK_TCK')}")
     print(f"mem_total: {mem_total()}")
     print(f"rustc: {sh('rustc', '-V')}")
     print(f"cargo: {sh('cargo', '-V')}")

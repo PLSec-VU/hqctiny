@@ -1,0 +1,2 @@
+comp	let Compromise = phase 1; out(c, skS).
+late	letfun late(x: bitstring) = true.

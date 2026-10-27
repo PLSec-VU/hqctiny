@@ -1,0 +1,2 @@
+puz	letfun puz(x: bitstring) = true.
+chalok	letfun chalok(kc: bitstring, ip: bitstring, pn: bitstring, tg: bitstring) = true.

@@ -1,5 +1,5 @@
 [workspace]
-members = ["hqclethe-client", "hqclethe-server"]
+members = ["hqclethe-client", "hqclethe-server", "hqclethe-stateful"]
 
 [package]
 name = "HQCLethe"
@@ -9,16 +9,26 @@ edition = "2024"
 [dependencies]
 blake3 = "1.5"
 chacha20poly1305 = "0.10"
+chacha20 = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 rand = "0.10"
 hex = "0.4"
 bytemuck = "1.14"
 clmul = "0.8"
-lazy_static = "1.4"
 subtle = "2.5"
 serde_json = "1.0"
 zeroize = { version = "1.9", features = ["derive"] }
+libcrux-ml-kem = { version = "0.0.11", default-features = false, features = ["mlkem512", "mlkem768", "mlkem1024"] }
+pqcrypto-classicmceliece = { version = "0.2.1", default-features = false, features = ["std"], optional = true }
 dhat = { version = "0.3", optional = true }
+socket2 = { version = "0.6", features = ["all"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+libcrux-ml-kem = { version = "0.0.11", default-features = false, features = ["mlkem512", "mlkem768", "mlkem1024", "simd256"] }
+pqcrypto-classicmceliece = { version = "0.2.1", default-features = false, features = ["std", "avx2"], optional = true }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+libcrux-ml-kem = { version = "0.0.11", default-features = false, features = ["mlkem512", "mlkem768", "mlkem1024", "simd128"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -29,10 +39,19 @@ cc = "1.0"
 
 [features]
 dhat-heap = ["dep:dhat"]
+# Classic McEliece reference code, for the comparison microbenchmarks only.
+mceliece-ref = ["dep:pqcrypto-classicmceliece"]
 # Build and link HQC's x86_64/avx256 sources instead of the portable `ref`
 # ones. x86 targets only, and the resulting binary requires a CPU with
 # AVX2/BMI1/PCLMULQDQ.
 avx2 = []
+# Use the polynomial multiplier of the addFFT paper (Chen, Chiu, Peng, Yang,
+# TCHES 2026(2)) and the normal HQC code for everything else. aarch64: the
+# Kronecker-substitution multiplier (PMULL.P8 only) for HQC-1 and HQC-5, the
+# Toom-Karatsuba port for HQC-3. x86_64: the AVX2 Frobenius multiplier.
+hqc-addfft = []
+# With hqc-addfft on aarch64: the Toom-Karatsuba port for every level.
+hqc-addfft-toom = ["hqc-addfft"]
 
 [profile.profiling]
 inherits = "release"
@@ -46,15 +65,32 @@ codegen-units = 1
 panic = "abort"
 
 [[bench]]
-name = "interpolate"
-harness = false
-
-[[bench]]
 name = "kem_primitives"
 harness = false
 
 [[bench]]
+name = "kem_comparison"
+harness = false
+required-features = ["mceliece-ref"]
+
+[[bench]]
 name = "protocol_phases"
+harness = false
+
+[[bench]]
+name = "puzzle"
+harness = false
+
+[[bench]]
+name = "replay"
+harness = false
+
+[[bench]]
+name = "crt"
+harness = false
+
+[[bench]]
+name = "crt_parts"
 harness = false
 
 [[bench]]
@@ -81,3 +117,32 @@ path = "profiling/stack_test.rs"
 [[bin]]
 name = "protocol-breakdown"
 path = "profiling/protocol_breakdown.rs"
+
+[[bench]]
+name = "stateful_baseline"
+harness = false
+
+[[bin]]
+name = "server-loop"
+path = "profiling/server_loop.rs"
+
+[[bin]]
+name = "ct-check"
+path = "profiling/ct_check.rs"
+
+[[bench]]
+name = "neon_ops"
+harness = false
+
+[[bin]]
+name = "backend-vectors"
+path = "profiling/backend_vectors.rs"
+
+[[bin]]
+name = "mceliece-bench"
+path = "profiling/mceliece_bench.rs"
+required-features = ["mceliece-ref"]
+
+[[bin]]
+name = "puzzle-solve"
+path = "profiling/puzzle_solve.rs"

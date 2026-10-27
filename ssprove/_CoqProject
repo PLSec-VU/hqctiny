@@ -1,5 +1,19 @@
 -Q . SSProveHQC
 Tuple.v
-Interpolate.v
 HQC.v
 HQCLethe.v
+DerivedMasks.v
+SessionKey.v
+MaskPrimitives.v
+SessionKeyBoth.v
+Hybrid.v
+SessionKeyHybrid.v
+CookieIntegrity.v
+MLKEMCCA.v
+RequestIntegrity.v
+PuzzleKeys.v
+ActiveSecrecy.v
+ActivePuzzle.v
+HybridInst.v
+HybridApply.v
+Assumptions.v

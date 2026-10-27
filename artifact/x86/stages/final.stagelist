@@ -1,0 +1,10 @@
+A1|eval/run_all.sh --categories 1,2,3,6,7
+A2|eval/run_all.sh --categories 3,6
+A3|eval/run_all.sh --categories 3,6
+B_hqc1|eval/run_all.sh --categories 4 --variant hqc1
+B_hqc3|eval/run_all.sh --categories 4 --variant hqc3
+B_hqc5|eval/run_all.sh --categories 4 --variant hqc5
+B_rtt_hqc5|eval/run_all.sh --categories 4 --variant hqc5 --dos-args="--rtts-ms 75,300 --kinds none,handshake,uchunk,vresidue,hello,partial,fullkey,churn2"
+C_wan_hqc5|eval/run_all.sh --categories 8 --wan-sweep-args="--sets profiles,loss,ge --systems stateless,stateful --name wan_hqc5"
+C_wan_hqc1|eval/run_all.sh --categories 8 --variant hqc1 --wan-sweep-args="--sets profiles,loss --losses 0,2.5,5 --systems stateless,stateful --variant hqc1 --name wan_hqc1"
+C_wan_hqc3|eval/run_all.sh --categories 8 --variant hqc3 --wan-sweep-args="--sets profiles,loss --losses 0,2.5,5 --systems stateless,stateful --variant hqc3 --name wan_hqc3"

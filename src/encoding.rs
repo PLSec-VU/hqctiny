@@ -1,413 +1,645 @@
-//! Custom binary packet encoding.
+//! Wire format.
+//!
+//! Every packet starts with a two-byte header: flags and kind, then index.
+//! Bit 7 of the first byte is the direction (set: server to client). Bit 5
+//! is the cookie key index. Bits 0-2 are the kind.
+//!
+//! ```text
+//! handshake request   header | hash_ek_kem | h_seed | ct_auth | zeros
+//! handshake response  header | nonce | AE(cookie | salt | gamma) | tag
+//! challenge response  header | puzzle nonce | difficulty | timestamp | mac | client address
+//! solved handshake    header | hash_ek_kem | h_seed | ct_auth | challenge | counter | zeros
+//! u-chunk request     header | cookie | tag | zeros
+//! u-chunk response    header | nonce | AE(u bytes of the chunk) | tag
+//! v-residue request   header | cookie | AE(s mod f_i) | tag | zeros
+//! v-residue response  header | nonce | AE(v-residue mod f_i) | tag
+//! ```
+//!
+//! The AE of a request covers the header and the cookie as associated data.
+//!
+//! Each request is padded with zero bytes to the length of the longest reply
+//! it can trigger. The server accepts one request length per kind.
+//!
+//! A server with a non-zero puzzle difficulty answers a plain handshake
+//! request with a challenge response, which is shorter than the request. The
+//! client answers with a solved handshake request. Its header has the key
+//! index of the key that authenticated the challenge. Its challenge field is
+//! the 37 bytes of the challenge response after the header, unchanged. The
+//! client address in the challenge response is the source address the server
+//! saw, as 16 bytes (an IPv4 address in its IPv4-mapped IPv6 form). The client
+//! needs it for the solution hash, because a client behind address translation
+//! does not know it. The server does not read it back: it uses the source
+//! address of the solved request.
 
+use crate::auth::auth_ciphertext_bytes;
+use crate::envelope::{Direction, Key, NONCE_BYTES, Nonce, TAG_BYTES, open, request_nonce, seal};
 use crate::error::{Error, Result};
 use crate::hqc::HqcScheme;
-use crate::math::gf2_9009::{GF29009_NUM_U64, Gf2_9009};
-use crate::protocol::*;
+use crate::puzzle::{
+    ADDRESS_BYTES, CHALLENGE_BYTES, COUNTER_BYTES, Challenge, PeerAddress, SOLUTION_BYTES,
+};
 
-// ── Packet type enum ───────────────────────────────────────────────
+pub const MAX_UDP_PAYLOAD: usize = 1232;
+pub const HEADER_BYTES: usize = 2;
+pub const SEED_BYTES: usize = 32;
+pub const SALT_BYTES: usize = 16;
+pub const GAMMA_BYTES: usize = 32;
+pub const UCHUNK_MAX_BYTES: usize = MAX_UDP_PAYLOAD - HEADER_BYTES - NONCE_BYTES - TAG_BYTES;
 
-// PointRequest's cookie/witness are fixed-size inline arrays rather than
-// Vec/Arc<Vec> (see protocol::FixedBytes) specifically so decoding a packet
-// never heap-allocates; boxing the large variant here to appease the lint
-// would reintroduce the exact heap allocation that exists to avoid.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
-pub enum Packet {
-    HandshakeRequest(HandshakeRequest),
-    HandshakeResponse(HandshakeResponse),
-    PointRequest(PointRequest),
-    PointResponse(PointResponse),
+const DIRECTION_BIT: u8 = 0x80;
+const KEY_BIT: u8 = 0x20;
+const KIND_MASK: u8 = 0x07;
+const RESERVED_BITS: u8 = 0x58;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Handshake = 0,
+    UChunk = 1,
+    VResidue = 2,
+    Challenge = 3,
+    SolvedHandshake = 4,
 }
 
-// ── Header constants ───────────────────────────────────────────────
+impl Kind {
+    pub const SESSION: [Kind; 3] = [Kind::Handshake, Kind::UChunk, Kind::VResidue];
+    pub const PUZZLE: [Kind; 2] = [Kind::Challenge, Kind::SolvedHandshake];
 
-const DIR_BIT: u8 = 0x80; // bit 7: set = server→client
-const TYPE_BIT: u8 = 0x40; // bit 6: point_type (0=U, 1=V) — ignored for handshake
-const KEY_BIT: u8 = 0x20; // bit 5: key_index (0 or 1) — ignored for handshake request/response kind, used in PointRequest and HandshakeResponse
-const KIND_MASK: u8 = 0x1F; // bits 4-0: 0=handshake, 1-31=point_index
-const KIND_HANDSHAKE: u8 = 0;
+    fn from_bits(bits: u8) -> Option<Self> {
+        Self::SESSION
+            .into_iter()
+            .chain(Self::PUZZLE)
+            .find(|kind| *kind as u8 == bits)
+    }
 
-// ── Fixed field sizes ──────────────────────────────────────────────
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Handshake => "handshake",
+            Kind::UChunk => "uchunk",
+            Kind::Challenge => "challenge",
+            Kind::SolvedHandshake => "solved-handshake",
+            Kind::VResidue => "vresidue",
+        }
+    }
+}
 
-const GF2_9009_BYTES: usize = GF29009_NUM_U64 * 8; // 1128
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Header {
+    pub direction: Direction,
+    pub key_index: u8,
+    pub kind: Kind,
+    pub index: u8,
+}
 
-// ── Helpers ────────────────────────────────────────────────────────
+impl Header {
+    pub fn request(kind: Kind, key_index: u8, index: u8) -> Self {
+        Self {
+            direction: Direction::ClientToServer,
+            key_index,
+            kind,
+            index,
+        }
+    }
 
-fn get_array<const N: usize>(data: &[u8], pos: &mut usize) -> Result<[u8; N]> {
-    if *pos + N > data.len() {
+    pub fn response(kind: Kind, key_index: u8, index: u8) -> Self {
+        Self {
+            direction: Direction::ServerToClient,
+            key_index,
+            kind,
+            index,
+        }
+    }
+
+    pub fn encode(&self) -> [u8; HEADER_BYTES] {
+        let mut flags = self.kind as u8;
+        if self.direction == Direction::ServerToClient {
+            flags |= DIRECTION_BIT;
+        }
+        if self.key_index == 1 {
+            flags |= KEY_BIT;
+        }
+        [flags, self.index]
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let [flags, index] = *data
+            .first_chunk::<HEADER_BYTES>()
+            .ok_or(Error::SerializationError)?;
+        if flags & RESERVED_BITS != 0 {
+            return Err(Error::SerializationError);
+        }
+        let kind = Kind::from_bits(flags & KIND_MASK).ok_or(Error::SerializationError)?;
+        let direction = if flags & DIRECTION_BIT != 0 {
+            Direction::ServerToClient
+        } else {
+            Direction::ClientToServer
+        };
+        Ok(Self {
+            direction,
+            key_index: u8::from(flags & KEY_BIT != 0),
+            kind,
+            index,
+        })
+    }
+}
+
+pub fn cookie_plaintext_len<T: HqcScheme>() -> usize {
+    32 + T::PARAM_SECURITY_BYTES + SEED_BYTES + 32
+}
+
+pub fn cookie_len<T: HqcScheme>() -> usize {
+    NONCE_BYTES + cookie_plaintext_len::<T>() + TAG_BYTES
+}
+
+pub fn uchunk_count<T: HqcScheme>() -> usize {
+    T::VEC_N_SIZE_BYTES.div_ceil(UCHUNK_MAX_BYTES)
+}
+
+pub fn uchunk_payload_len<T: HqcScheme>(chunk_index: usize) -> usize {
+    UCHUNK_MAX_BYTES.min(T::VEC_N_SIZE_BYTES - chunk_index * UCHUNK_MAX_BYTES)
+}
+
+pub fn handshake_request_body_len<T: HqcScheme>() -> usize {
+    32 + SEED_BYTES + auth_ciphertext_bytes::<T>()
+}
+
+pub fn handshake_response_payload_len<T: HqcScheme>() -> usize {
+    cookie_len::<T>() + SALT_BYTES + GAMMA_BYTES
+}
+
+pub fn crt_request_payload_len<T: HqcScheme>() -> usize {
+    crate::crt::params::request_payload_bytes(T::CRT_MODULI)
+}
+
+pub fn request_payload_len<T: HqcScheme>(kind: Kind) -> usize {
+    match kind {
+        Kind::VResidue => crt_request_payload_len::<T>(),
+        Kind::Handshake | Kind::UChunk | Kind::Challenge | Kind::SolvedHandshake => 0,
+    }
+}
+
+fn sealed_len(payload: usize) -> usize {
+    payload + TAG_BYTES
+}
+
+const RESPONSE_FRAMING_BYTES: usize = HEADER_BYTES + NONCE_BYTES;
+
+pub fn challenge_response_len() -> usize {
+    HEADER_BYTES + CHALLENGE_BYTES + ADDRESS_BYTES
+}
+
+pub fn response_len<T: HqcScheme>(kind: Kind, index: usize) -> usize {
+    let sealed_payload = match kind {
+        Kind::Challenge => return challenge_response_len(),
+        Kind::Handshake | Kind::SolvedHandshake => handshake_response_payload_len::<T>(),
+        Kind::UChunk => uchunk_payload_len::<T>(index),
+        Kind::VResidue => T::CRT_MODULI[index].residue_bytes(),
+    };
+    RESPONSE_FRAMING_BYTES + sealed_len(sealed_payload)
+}
+
+fn request_prefix_len<T: HqcScheme>() -> usize {
+    HEADER_BYTES + cookie_len::<T>()
+}
+
+fn unpadded_request_len<T: HqcScheme>(kind: Kind) -> usize {
+    match kind {
+        Kind::Handshake => HEADER_BYTES + handshake_request_body_len::<T>(),
+        Kind::SolvedHandshake => HEADER_BYTES + handshake_request_body_len::<T>() + SOLUTION_BYTES,
+        Kind::Challenge => 0,
+        Kind::UChunk | Kind::VResidue => {
+            request_prefix_len::<T>() + sealed_len(request_payload_len::<T>(kind))
+        }
+    }
+}
+
+pub fn request_len<T: HqcScheme>(kind: Kind) -> usize {
+    unpadded_request_len::<T>(kind).max(response_len::<T>(kind, 0))
+}
+
+/// Number of zero bytes at the end of every request of `kind`.
+pub fn request_padding_len<T: HqcScheme>(kind: Kind) -> usize {
+    request_len::<T>(kind) - unpadded_request_len::<T>(kind)
+}
+
+fn is_zero(bytes: &[u8]) -> bool {
+    bytes.iter().fold(0u8, |acc, b| acc | b) == 0
+}
+
+pub struct HandshakeRequestView<'a> {
+    pub hash_ek_kem: &'a [u8; 32],
+    pub h_seed: &'a [u8; SEED_BYTES],
+    pub auth_ct: &'a [u8],
+    pub body: &'a [u8],
+}
+
+pub fn write_handshake_request<T: HqcScheme>(
+    out: &mut [u8],
+    hash_ek_kem: &[u8; 32],
+    h_seed: &[u8; SEED_BYTES],
+    auth_ct: &[u8],
+) -> Result<usize> {
+    let total = request_len::<T>(Kind::Handshake);
+    if auth_ct.len() != auth_ciphertext_bytes::<T>() || out.len() < total {
         return Err(Error::SerializationError);
     }
-    let mut arr = [0u8; N];
-    arr.copy_from_slice(&data[*pos..*pos + N]);
-    *pos += N;
-    Ok(arr)
-}
-
-fn get_gf2(data: &[u8], pos: &mut usize) -> Result<Gf2_9009> {
-    let bytes: [u8; GF2_9009_BYTES] = get_array(data, pos)?;
-    Ok(Gf2_9009::from_bytes(&bytes))
-}
-
-fn put_gf2_into(buf: &mut [u8], pos: &mut usize, val: &Gf2_9009) {
-    buf[*pos..*pos + GF2_9009_BYTES].copy_from_slice(&val.to_bytes());
-    *pos += GF2_9009_BYTES;
-}
-
-// ── Public API ─────────────────────────────────────────────────────
-
-pub fn encode_handshake_request<'o>(
-    req: &HandshakeRequest,
-    out: &'o mut [u8],
-) -> Result<&'o mut [u8]> {
-    let total = 65;
-    if out.len() < total {
-        return Err(Error::SerializationError);
+    let out = &mut out[..total];
+    out.fill(0);
+    out[..HEADER_BYTES].copy_from_slice(&Header::request(Kind::Handshake, 0, 0).encode());
+    let mut pos = HEADER_BYTES;
+    for part in [&hash_ek_kem[..], h_seed, auth_ct] {
+        out[pos..pos + part.len()].copy_from_slice(part);
+        pos += part.len();
     }
-    let mut pos = 0;
-    out[pos] = 0x00; // c→s, handshake (all bits 0)
-    pos += 1;
-    out[pos..pos + 32].copy_from_slice(&req.hash_ek_kem);
-    pos += 32;
-    out[pos..pos + 32].copy_from_slice(&req.merkle_root);
-    pos += 32;
-    Ok(&mut out[..pos])
+    Ok(total)
 }
 
-pub fn decode_handshake_request(data: &[u8]) -> Result<HandshakeRequest> {
-    if data.len() < 65 {
-        return Err(Error::SerializationError);
-    }
-    if data[0] != 0x00 {
-        return Err(Error::SerializationError);
-    }
-    let mut pos = 1;
-    let hash_ek_kem = get_array::<32>(data, &mut pos)?;
-    let merkle_root = get_array::<32>(data, &mut pos)?;
-    Ok(HandshakeRequest {
+fn split_handshake_body(body: &[u8]) -> Result<HandshakeRequestView<'_>> {
+    let (hash_ek_kem, rest) = body
+        .split_first_chunk::<32>()
+        .ok_or(Error::SerializationError)?;
+    let (h_seed, auth_ct) = rest
+        .split_first_chunk::<SEED_BYTES>()
+        .ok_or(Error::SerializationError)?;
+    Ok(HandshakeRequestView {
         hash_ek_kem,
-        merkle_root,
+        h_seed,
+        auth_ct,
+        body,
     })
 }
 
-pub fn cookie_size(param_security_bytes: usize) -> usize {
-    24 + 32 + param_security_bytes + 16
-}
-
-pub fn encode_handshake_response<'o, T: HqcScheme>(
-    res: &HandshakeResponse,
-    out: &'o mut [u8],
-) -> Result<&'o mut [u8]> {
-    let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
-    if res.cookie.len() != cookie_len {
+pub fn parse_handshake_request<T: HqcScheme>(data: &[u8]) -> Result<HandshakeRequestView<'_>> {
+    if data.len() != request_len::<T>(Kind::Handshake) {
         return Err(Error::SerializationError);
     }
-    let total = 1 + cookie_len + 16 + 32;
+    if Header::decode(data)? != Header::request(Kind::Handshake, 0, 0) {
+        return Err(Error::SerializationError);
+    }
+    let body_len = handshake_request_body_len::<T>();
+    let body = &data[HEADER_BYTES..HEADER_BYTES + body_len];
+    if !is_zero(&data[HEADER_BYTES + body_len..]) {
+        return Err(Error::SerializationError);
+    }
+    split_handshake_body(body)
+}
+
+pub fn write_challenge_response(
+    out: &mut [u8],
+    key_index: u8,
+    challenge: &Challenge,
+    peer: &PeerAddress,
+) -> Result<usize> {
+    let total = challenge_response_len();
+    let out = out.get_mut(..total).ok_or(Error::SerializationError)?;
+    out[..HEADER_BYTES].copy_from_slice(&Header::response(Kind::Challenge, key_index, 0).encode());
+    let (challenge_out, peer_out) = out[HEADER_BYTES..].split_at_mut(CHALLENGE_BYTES);
+    challenge_out.copy_from_slice(&challenge.to_bytes());
+    peer_out.copy_from_slice(peer);
+    Ok(total)
+}
+
+/// A challenge is not authenticated for the client. Only the server that
+/// issued it can check its MAC.
+pub fn parse_challenge_response(data: &[u8]) -> Result<(u8, Challenge, PeerAddress)> {
+    let header = Header::decode(data)?;
+    let expected = Header::response(Kind::Challenge, header.key_index, 0);
+    if header != expected || data.len() != challenge_response_len() {
+        return Err(Error::SerializationError);
+    }
+    let (challenge, peer) = data[HEADER_BYTES..].split_at(CHALLENGE_BYTES);
+    let challenge: &[u8; CHALLENGE_BYTES] = challenge
+        .try_into()
+        .map_err(|_| Error::SerializationError)?;
+    let peer: PeerAddress = peer.try_into().map_err(|_| Error::SerializationError)?;
+    Ok((header.key_index, Challenge::from_bytes(challenge), peer))
+}
+
+pub struct SolvedHandshakeView<'a> {
+    pub request: HandshakeRequestView<'a>,
+    pub key_index: u8,
+    pub challenge: Challenge,
+    pub counter: u64,
+}
+
+/// Builds a solved handshake request from the plain request it answers.
+pub fn write_solved_handshake_request<T: HqcScheme>(
+    out: &mut [u8],
+    plain_request: &[u8],
+    key_index: u8,
+    challenge: &Challenge,
+    counter: u64,
+) -> Result<usize> {
+    let total = request_len::<T>(Kind::SolvedHandshake);
+    let body_len = handshake_request_body_len::<T>();
+    let plain = parse_handshake_request::<T>(plain_request)?;
     if out.len() < total {
         return Err(Error::SerializationError);
     }
-    let mut pos = 0;
-    let mut tag = DIR_BIT; // s→c, handshake
-    if res.key_index == 1 {
-        tag |= KEY_BIT;
-    }
-    out[pos] = tag;
-    pos += 1;
-    out[pos..pos + cookie_len].copy_from_slice(&res.cookie);
-    pos += cookie_len;
-    out[pos..pos + 16].copy_from_slice(&res.salt);
-    pos += 16;
-    out[pos..pos + 32].copy_from_slice(&res.mac);
-    pos += 32;
-    Ok(&mut out[..pos])
+    let out = &mut out[..total];
+    out.fill(0);
+    out[..HEADER_BYTES]
+        .copy_from_slice(&Header::request(Kind::SolvedHandshake, key_index, 0).encode());
+    let (body, rest) = out[HEADER_BYTES..].split_at_mut(body_len);
+    let (challenge_out, rest) = rest.split_at_mut(CHALLENGE_BYTES);
+    body.copy_from_slice(plain.body);
+    challenge_out.copy_from_slice(&challenge.to_bytes());
+    rest[..COUNTER_BYTES].copy_from_slice(&counter.to_le_bytes());
+    Ok(total)
 }
 
-pub fn decode_handshake_response<T: HqcScheme>(data: &[u8]) -> Result<HandshakeResponse> {
-    let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
-    let total = 1 + cookie_len + 16 + 32;
-    if data.len() < total {
+pub fn parse_solved_handshake_request<T: HqcScheme>(
+    data: &[u8],
+) -> Result<SolvedHandshakeView<'_>> {
+    if data.len() != request_len::<T>(Kind::SolvedHandshake) {
         return Err(Error::SerializationError);
     }
-    let header = data[0];
-    if header & DIR_BIT == 0 || header & KIND_MASK != KIND_HANDSHAKE {
+    let header = Header::decode(data)?;
+    if header != Header::request(Kind::SolvedHandshake, header.key_index, 0) {
         return Err(Error::SerializationError);
     }
-    let key_index = if header & KEY_BIT != 0 { 1 } else { 0 };
-    let mut pos = 1;
-    let cookie = CookieBuf::from_slice(&data[pos..pos + cookie_len], Error::SerializationError)?;
-    pos += cookie_len;
-    let salt = get_array::<16>(data, &mut pos)?;
-    let mac = get_array::<32>(data, &mut pos)?;
-    Ok(HandshakeResponse {
-        cookie,
-        salt,
-        key_index,
-        mac,
+    let body_len = handshake_request_body_len::<T>();
+    let (body, rest) = data[HEADER_BYTES..].split_at(body_len);
+    let (challenge, rest) = rest.split_at(CHALLENGE_BYTES);
+    let (counter, padding) = rest.split_at(COUNTER_BYTES);
+    if !is_zero(padding) {
+        return Err(Error::SerializationError);
+    }
+    let challenge: &[u8; CHALLENGE_BYTES] = challenge
+        .try_into()
+        .map_err(|_| Error::SerializationError)?;
+    let counter: [u8; COUNTER_BYTES] = counter.try_into().map_err(|_| Error::SerializationError)?;
+    Ok(SolvedHandshakeView {
+        request: split_handshake_body(body)?,
+        key_index: header.key_index,
+        challenge: Challenge::from_bytes(challenge),
+        counter: u64::from_le_bytes(counter),
     })
 }
 
-pub fn public_eval_limbs<T: HqcScheme>() -> usize {
-    let w = crate::math::segmentation::W;
-    let num_blocks = (T::VEC_N_SIZE_64 * 64).div_ceil(w).max(1);
-    let max_bits = w + T::POINTS_NUM * (num_blocks - 1);
-    max_bits.div_ceil(64)
+pub struct RequestView<'a> {
+    pub header: Header,
+    pub cookie: &'a [u8],
+    pub sealed: &'a [u8],
+    pub tag: &'a [u8],
+    pub aad: &'a [u8],
 }
 
-pub fn encode_point_request<'o, T: HqcScheme>(
-    req: &PointRequest,
-    out: &'o mut [u8],
-) -> Result<&'o mut [u8]> {
-    if req.point_index == 0 {
-        return Err(Error::InvalidPointIndex);
+impl RequestView<'_> {
+    pub fn cookie_nonce(&self) -> &Nonce {
+        self.cookie
+            .first_chunk::<NONCE_BYTES>()
+            .expect("a parsed request holds a whole cookie")
     }
-    let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
-    if req.cookie.len() != cookie_len {
+}
+
+fn valid_request_index<T: HqcScheme>(header: &Header) -> bool {
+    let index = header.index as usize;
+    match header.kind {
+        Kind::UChunk => index < uchunk_count::<T>(),
+        Kind::VResidue => index < T::CRT_MODULI.len(),
+        Kind::Handshake | Kind::Challenge | Kind::SolvedHandshake => index == 0,
+    }
+}
+
+pub fn parse_request<T: HqcScheme>(data: &[u8]) -> Result<RequestView<'_>> {
+    let header = Header::decode(data)?;
+    if header.direction != Direction::ClientToServer
+        || !matches!(header.kind, Kind::UChunk | Kind::VResidue)
+    {
         return Err(Error::SerializationError);
     }
-    let limbs = public_eval_limbs::<T>();
-    let eval_bytes = limbs * 8;
-    let witness_len = req.witness.len();
-    let total = 1 + cookie_len + eval_bytes + 32 + witness_len;
+    if data.len() != request_len::<T>(header.kind) {
+        return Err(Error::SerializationError);
+    }
+    if !valid_request_index::<T>(&header) {
+        return Err(Error::InvalidResidueIndex);
+    }
+    let payload_len = request_payload_len::<T>(header.kind);
+    let prefix_len = request_prefix_len::<T>();
+    let sealed_end = prefix_len + sealed_len(payload_len);
+    if !is_zero(&data[sealed_end..]) {
+        return Err(Error::SerializationError);
+    }
+    Ok(RequestView {
+        header,
+        cookie: &data[HEADER_BYTES..prefix_len],
+        sealed: &data[prefix_len..prefix_len + payload_len],
+        tag: &data[prefix_len + payload_len..sealed_end],
+        aad: &data[..prefix_len],
+    })
+}
+
+pub fn write_request<T: HqcScheme>(
+    out: &mut [u8],
+    header: Header,
+    cookie: &[u8],
+    payload: &[u8],
+    key: &Key,
+) -> Result<usize> {
+    let total = request_len::<T>(header.kind);
+    let prefix_len = request_prefix_len::<T>();
+    if cookie.len() != cookie_len::<T>()
+        || out.len() < total
+        || payload.len() != request_payload_len::<T>(header.kind)
+    {
+        return Err(Error::SerializationError);
+    }
+    let out = &mut out[..total];
+    out.fill(0);
+    out[..HEADER_BYTES].copy_from_slice(&header.encode());
+    out[HEADER_BYTES..prefix_len].copy_from_slice(cookie);
+    let (aad, rest) = out.split_at_mut(prefix_len);
+    let (sealed, rest) = rest.split_at_mut(payload.len());
+    sealed.copy_from_slice(payload);
+    let nonce = request_nonce(&cookie[..NONCE_BYTES], header.kind as u8, header.index);
+    let tag = seal(key, &nonce, aad, sealed)?;
+    rest[..TAG_BYTES].copy_from_slice(&tag);
+    Ok(total)
+}
+
+/// Opens the payload of a parsed request into `payload`; returns its length.
+pub fn open_request(view: &RequestView<'_>, key: &Key, payload: &mut [u8]) -> Result<usize> {
+    let payload = payload
+        .get_mut(..view.sealed.len())
+        .ok_or(Error::SerializationError)?;
+    payload.copy_from_slice(view.sealed);
+    let nonce = request_nonce(
+        view.cookie_nonce(),
+        view.header.kind as u8,
+        view.header.index,
+    );
+    open(key, &nonce, view.aad, payload, view.tag)?;
+    Ok(payload.len())
+}
+
+const MAX_RESPONSE_EXTRA_AAD_BYTES: usize = 32;
+const MAX_RESPONSE_AAD_BYTES: usize = HEADER_BYTES + MAX_RESPONSE_EXTRA_AAD_BYTES;
+
+fn response_aad(
+    header: &Header,
+    extra: &[u8],
+    buf: &mut [u8; MAX_RESPONSE_AAD_BYTES],
+) -> Result<usize> {
+    if extra.len() > MAX_RESPONSE_EXTRA_AAD_BYTES {
+        return Err(Error::SerializationError);
+    }
+    buf[..HEADER_BYTES].copy_from_slice(&header.encode());
+    buf[HEADER_BYTES..HEADER_BYTES + extra.len()].copy_from_slice(extra);
+    Ok(HEADER_BYTES + extra.len())
+}
+
+/// The place where a response writer puts its plaintext before
+/// [`finish_response`] seals it.
+pub fn response_payload_mut(out: &mut [u8], payload_len: usize) -> &mut [u8] {
+    &mut out[RESPONSE_FRAMING_BYTES..RESPONSE_FRAMING_BYTES + payload_len]
+}
+
+/// Seals the payload placed by [`response_payload_mut`], writes the header,
+/// nonce and tag around it, and returns the packet length.
+pub fn finish_response(
+    out: &mut [u8],
+    header: Header,
+    payload_len: usize,
+    extra_aad: &[u8],
+    key: &Key,
+    nonce: &Nonce,
+) -> Result<usize> {
+    let total = RESPONSE_FRAMING_BYTES + sealed_len(payload_len);
     if out.len() < total {
         return Err(Error::SerializationError);
     }
-    let mut pos = 0;
-    let idx = req.point_index;
-    let mut tag = idx & KIND_MASK;
-    if req.key_index == 1 {
-        tag |= KEY_BIT;
-    }
-    if req.point_type == PointType::V {
-        tag |= TYPE_BIT;
-    }
-    out[pos] = tag;
-    pos += 1;
-
-    out[pos..pos + cookie_len].copy_from_slice(&req.cookie);
-    pos += cookie_len;
-
-    for i in 0..limbs {
-        out[pos..pos + 8].copy_from_slice(&req.public_eval.data[i].to_le_bytes());
-        pos += 8;
-    }
-
-    out[pos..pos + 32].copy_from_slice(&req.merkle_root);
-    pos += 32;
-
-    out[pos..pos + witness_len].copy_from_slice(&req.witness);
-    pos += witness_len;
-
-    Ok(&mut out[..pos])
+    let mut aad_buf = [0u8; MAX_RESPONSE_AAD_BYTES];
+    let aad_len = response_aad(&header, extra_aad, &mut aad_buf)?;
+    out[..HEADER_BYTES].copy_from_slice(&header.encode());
+    out[HEADER_BYTES..RESPONSE_FRAMING_BYTES].copy_from_slice(nonce);
+    let (_, rest) = out.split_at_mut(RESPONSE_FRAMING_BYTES);
+    let (payload, tail) = rest.split_at_mut(payload_len);
+    let tag = seal(key, nonce, &aad_buf[..aad_len], payload)?;
+    tail[..TAG_BYTES].copy_from_slice(&tag);
+    Ok(total)
 }
 
-pub fn decode_point_request<T: HqcScheme>(data: &[u8]) -> Result<PointRequest> {
-    if data.is_empty() {
+pub struct ResponseView<'a> {
+    pub header: Header,
+    pub nonce: &'a Nonce,
+    pub sealed: &'a [u8],
+    pub tag: &'a [u8],
+}
+
+pub fn parse_response<T: HqcScheme>(data: &[u8]) -> Result<ResponseView<'_>> {
+    let header = Header::decode(data)?;
+    if header.direction != Direction::ServerToClient
+        || !Kind::SESSION.contains(&header.kind)
+        || !valid_request_index::<T>(&header)
+    {
         return Err(Error::SerializationError);
     }
-    let header = data[0];
-    if header & DIR_BIT != 0 {
+    if data.len() != response_len::<T>(header.kind, header.index as usize) {
         return Err(Error::SerializationError);
     }
-    let kind = header & KIND_MASK;
-    if kind == KIND_HANDSHAKE {
-        return Err(Error::SerializationError);
-    }
-    let key_index = if header & KEY_BIT != 0 { 1 } else { 0 };
-    let point_type = if header & TYPE_BIT != 0 {
-        PointType::V
-    } else {
-        PointType::U
-    };
-    let point_index = kind;
-    let mut pos = 1;
-
-    let cookie_len = cookie_size(T::PARAM_SECURITY_BYTES);
-    let limbs = public_eval_limbs::<T>();
-    let eval_bytes = limbs * 8;
-    if pos + cookie_len + eval_bytes + 32 > data.len() {
-        return Err(Error::SerializationError);
-    }
-
-    let cookie = CookieBuf::from_slice(&data[pos..pos + cookie_len], Error::SerializationError)?;
-    pos += cookie_len;
-
-    let mut data_limbs = [0u64; GF29009_NUM_U64];
-    for limb in data_limbs.iter_mut().take(limbs) {
-        *limb = u64::from_le_bytes(
-            data[pos..pos + 8]
-                .try_into()
-                .map_err(|_| Error::SerializationError)?,
-        );
-        pos += 8;
-    }
-    let public_eval = Gf2_9009::new(data_limbs);
-
-    let mut merkle_root = [0u8; 32];
-    merkle_root.copy_from_slice(&data[pos..pos + 32]);
-    pos += 32;
-
-    let witness = WitnessBuf::from_slice(&data[pos..], Error::InvalidWitness)?;
-
-    Ok(PointRequest {
-        cookie,
-        key_index,
-        point_index,
-        point_type,
-        public_eval,
-        merkle_root,
-        witness,
+    let nonce = data[HEADER_BYTES..RESPONSE_FRAMING_BYTES]
+        .try_into()
+        .map_err(|_| Error::SerializationError)?;
+    let tag_start = data.len() - TAG_BYTES;
+    Ok(ResponseView {
+        header,
+        nonce,
+        sealed: &data[RESPONSE_FRAMING_BYTES..tag_start],
+        tag: &data[tag_start..],
     })
 }
 
-pub fn encode_point_response<'o>(res: &PointResponse, out: &'o mut [u8]) -> Result<&'o mut [u8]> {
-    if res.point_index == 0 {
-        return Err(Error::InvalidPointIndex);
-    }
-    let total = 1 + GF2_9009_BYTES;
-    if out.len() < total {
-        return Err(Error::SerializationError);
-    }
-    let mut pos = 0;
-    let idx = res.point_index;
-    let mut tag = DIR_BIT | (idx & KIND_MASK);
-    if res.point_type == PointType::V {
-        tag |= TYPE_BIT;
-    }
-    out[pos] = tag;
-    pos += 1;
-    put_gf2_into(out, &mut pos, &res.eval);
-    Ok(&mut out[..pos])
-}
-
-pub fn decode_point_response(data: &[u8]) -> Result<PointResponse> {
-    let total = 1 + GF2_9009_BYTES;
-    if data.len() < total {
-        return Err(Error::SerializationError);
-    }
-    let header = data[0];
-    if header & DIR_BIT == 0 {
-        return Err(Error::SerializationError);
-    }
-    let kind = header & KIND_MASK;
-    if kind == KIND_HANDSHAKE {
-        return Err(Error::SerializationError);
-    }
-    let point_index = kind;
-    let point_type = if header & TYPE_BIT != 0 {
-        PointType::V
-    } else {
-        PointType::U
-    };
-    let mut pos = 1;
-    let eval = get_gf2(data, &mut pos)?;
-    Ok(PointResponse {
-        point_index,
-        point_type,
-        eval,
-    })
-}
-
-pub fn encode_packet<'o, T: HqcScheme>(pkt: &Packet, out: &'o mut [u8]) -> Result<&'o mut [u8]> {
-    match pkt {
-        Packet::HandshakeRequest(req) => encode_handshake_request(req, out),
-        Packet::HandshakeResponse(res) => encode_handshake_response::<T>(res, out),
-        Packet::PointRequest(req) => encode_point_request::<T>(req, out),
-        Packet::PointResponse(res) => encode_point_response(res, out),
-    }
-}
-
-pub fn decode_packet<T: HqcScheme>(data: &[u8]) -> Result<Packet> {
-    if data.is_empty() {
-        return Err(Error::SerializationError);
-    }
-    let header = data[0];
-    let is_server = header & DIR_BIT != 0;
-    let kind = header & KIND_MASK;
-
-    if kind == KIND_HANDSHAKE {
-        if is_server {
-            let res = decode_handshake_response::<T>(data)?;
-            Ok(Packet::HandshakeResponse(res))
-        } else {
-            let req = decode_handshake_request(data)?;
-            Ok(Packet::HandshakeRequest(req))
-        }
-    } else {
-        if is_server {
-            let res = decode_point_response(data)?;
-            Ok(Packet::PointResponse(res))
-        } else {
-            let req = decode_point_request::<T>(data)?;
-            Ok(Packet::PointRequest(req))
-        }
-    }
+/// Opens the payload of a parsed response into `payload`; returns its length.
+pub fn open_response(
+    view: &ResponseView<'_>,
+    extra_aad: &[u8],
+    key: &Key,
+    payload: &mut [u8],
+) -> Result<usize> {
+    let payload = payload
+        .get_mut(..view.sealed.len())
+        .ok_or(Error::SerializationError)?;
+    payload.copy_from_slice(view.sealed);
+    let mut aad_buf = [0u8; MAX_RESPONSE_AAD_BYTES];
+    let aad_len = response_aad(&view.header, extra_aad, &mut aad_buf)?;
+    open(key, view.nonce, &aad_buf[..aad_len], payload, view.tag)?;
+    Ok(payload.len())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hqc::{Hqc1, Hqc3, Hqc5};
 
     #[test]
-    fn test_handshake_request_roundtrip() {
-        let req = HandshakeRequest {
-            hash_ek_kem: [0x42; 32],
-            merkle_root: [0x55; 32],
-        };
-        let mut buf = [0u8; 100];
-        let enc = encode_handshake_request(&req, &mut buf).unwrap();
-        assert_eq!(enc.len(), 65);
-        let dec = decode_handshake_request(enc).unwrap();
-        assert_eq!(dec.hash_ek_kem, req.hash_ek_kem);
-        assert_eq!(dec.merkle_root, req.merkle_root);
+    fn header_roundtrips() {
+        for kind in Kind::SESSION.into_iter().chain(Kind::PUZZLE) {
+            for key_index in 0..2 {
+                for direction in [Direction::ClientToServer, Direction::ServerToClient] {
+                    let header = Header {
+                        direction,
+                        key_index,
+                        kind,
+                        index: 17,
+                    };
+                    assert_eq!(Header::decode(&header.encode()).unwrap(), header);
+                }
+            }
+        }
     }
 
     #[test]
-    fn test_handshake_response_roundtrip() {
-        use crate::hqc::Hqc1;
-        let res = HandshakeResponse {
-            cookie: CookieBuf::from_slice(&[0xaa; 88], Error::SerializationError).unwrap(),
-            salt: [9; 16],
-            key_index: 1,
-            mac: [0x7c; 32],
-        };
-        let mut buf = [0u8; 200];
-        let enc = encode_handshake_response::<Hqc1>(&res, &mut buf).unwrap();
-        // 1 (tag) + 88 (cookie) + 16 (salt) + 32 (mac)
-        assert_eq!(enc.len(), 137);
-        let dec = decode_handshake_response::<Hqc1>(enc).unwrap();
-        assert_eq!(dec.cookie, res.cookie);
-        assert_eq!(dec.salt, res.salt);
-        assert_eq!(dec.key_index, res.key_index);
-        assert_eq!(dec.mac, res.mac);
+    fn header_rejects_reserved_bits_and_unknown_kinds() {
+        assert!(Header::decode(&[0x40, 0]).is_err());
+        assert!(Header::decode(&[0x08, 0]).is_err());
+        assert!(Header::decode(&[0x05, 0]).is_err());
+        assert!(Header::decode(&[0x00]).is_err());
+    }
+
+    fn check_sizes<T: HqcScheme>(chunks: usize) {
+        assert_eq!(uchunk_count::<T>(), chunks);
+        let covered: usize = (0..chunks).map(uchunk_payload_len::<T>).sum();
+        assert_eq!(covered, T::VEC_N_SIZE_BYTES);
+        for kind in Kind::SESSION {
+            let reply_count = match kind {
+                Kind::UChunk => chunks,
+                Kind::VResidue => T::CRT_MODULI.len(),
+                _ => 1,
+            };
+            let longest = (0..reply_count)
+                .map(|i| response_len::<T>(kind, i))
+                .max()
+                .unwrap();
+            assert!(request_len::<T>(kind) >= longest, "{kind:?}");
+            assert!(request_len::<T>(kind) <= MAX_UDP_PAYLOAD);
+            assert!(longest <= MAX_UDP_PAYLOAD);
+        }
     }
 
     #[test]
-    fn test_point_request_roundtrip() {
-        use crate::hqc::Hqc1;
-        let req = PointRequest {
-            cookie: CookieBuf::from_slice(&[0xaa; 88], Error::SerializationError).unwrap(),
-            key_index: 0,
-            point_index: 1,
-            point_type: PointType::U,
-            public_eval: Gf2_9009::one(),
-            merkle_root: [0x55; 32],
-            witness: WitnessBuf::from_slice(&[9, 8, 7, 6], Error::InvalidWitness).unwrap(),
-        };
-        let mut buf = [0u8; 2000];
-        let enc = encode_point_request::<Hqc1>(&req, &mut buf).unwrap();
-        // limbs for Hqc1:
-        // W = 4505, num_blocks = (277 * 64).div_ceil(4505) = 4
-        // max_bits = 4505 + 7 * 3 = 4526
-        // limbs = 4526.div_ceil(64) = 71
-        // size = 1 + 88 (cookie) + 568 (eval) + 32 (merkle_root) + 4 (witness) = 693 bytes
-        assert_eq!(enc.len(), 693);
-        let dec = decode_point_request::<Hqc1>(enc).unwrap();
-        assert_eq!(dec.cookie, req.cookie);
-        assert_eq!(dec.key_index, req.key_index);
-        assert_eq!(dec.point_index, req.point_index);
-        assert_eq!(dec.point_type, req.point_type);
-        assert_eq!(dec.public_eval, req.public_eval);
-        assert_eq!(dec.merkle_root, req.merkle_root);
-        assert_eq!(dec.witness, req.witness);
+    fn sizes_satisfy_padding_and_datagram_bounds() {
+        check_sizes::<Hqc1>(2);
+        check_sizes::<Hqc3>(4);
+        check_sizes::<Hqc5>(7);
+    }
+
+    /// A puzzle challenge answers a phase-1 (handshake) request before the
+    /// server has spent the ML-KEM decapsulation on it; it must not let an
+    /// off-path attacker turn one small forged request into a larger
+    /// response (reflection amplification), on any scheme.
+    fn check_challenge_not_larger_than_handshake<T: HqcScheme>() {
+        let handshake = request_len::<T>(Kind::Handshake);
+        let challenge = challenge_response_len();
+        assert!(
+            challenge <= handshake,
+            "challenge response ({challenge} B) is larger than the handshake request that would trigger it ({handshake} B)"
+        );
+    }
+
+    #[test]
+    fn challenge_response_is_not_larger_than_the_handshake_request() {
+        check_challenge_not_larger_than_handshake::<Hqc1>();
+        check_challenge_not_larger_than_handshake::<Hqc3>();
+        check_challenge_not_larger_than_handshake::<Hqc5>();
     }
 }

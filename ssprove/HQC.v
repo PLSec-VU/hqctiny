@@ -93,7 +93,7 @@ Module Type HQCParams.
   Parameter decode     : Ring.Rq -> 'fin (2^k)%N.
 End HQCParams.
 
-Module HQC1 <: HQCParams.
+Module HQC1Consts.
   Definition n := 17669%N. Definition n1n2 := 17664%N. Definition k := 128%N.
   Definition seed_size := (2 ^ k)%N.
   Definition w := 66%N.    Definition wr := 75%N.     Definition we := 75%N.
@@ -112,11 +112,19 @@ Module HQC1 <: HQCParams.
   End RingP.
   Module Ring := RqRing RingP.
 
-  Parameter encode     : 'fin (2^k)%N -> Ring.Rq.
-  Parameter decode     : Ring.Rq -> 'fin (2^k)%N.
+End HQC1Consts.
+
+Module Type HQC1Encoding.
+  Parameter encode : 'fin (2 ^ HQC1Consts.k)%N -> HQC1Consts.Ring.Rq.
+  Parameter decode : HQC1Consts.Ring.Rq -> 'fin (2 ^ HQC1Consts.k)%N.
+End HQC1Encoding.
+
+Module HQC1 (E : HQC1Encoding) <: HQCParams.
+  Include HQC1Consts.
+  Include E.
 End HQC1.
 
-Module HQC3 <: HQCParams.
+Module HQC3Consts.
   Definition n := 35851%N. Definition n1n2 := 35840%N. Definition k := 192%N.
   Definition seed_size := (2 ^ k)%N.
   Definition w := 100%N.   Definition wr := 114%N.     Definition we := 114%N.
@@ -135,11 +143,19 @@ Module HQC3 <: HQCParams.
   End RingP.
   Module Ring := RqRing RingP.
 
-  Parameter encode     : 'fin (2^k)%N -> Ring.Rq.
-  Parameter decode     : Ring.Rq -> 'fin (2^k)%N.
+End HQC3Consts.
+
+Module Type HQC3Encoding.
+  Parameter encode : 'fin (2 ^ HQC3Consts.k)%N -> HQC3Consts.Ring.Rq.
+  Parameter decode : HQC3Consts.Ring.Rq -> 'fin (2 ^ HQC3Consts.k)%N.
+End HQC3Encoding.
+
+Module HQC3 (E : HQC3Encoding) <: HQCParams.
+  Include HQC3Consts.
+  Include E.
 End HQC3.
 
-Module HQC5 <: HQCParams.
+Module HQC5Consts.
   Definition n := 57637%N. Definition n1n2 := 57600%N. Definition k := 256%N.
   Definition seed_size := (2 ^ k)%N.
   Definition w := 131%N.   Definition wr := 149%N.     Definition we := 149%N.
@@ -158,8 +174,16 @@ Module HQC5 <: HQCParams.
   End RingP.
   Module Ring := RqRing RingP.
 
-  Parameter encode     : 'fin (2^k)%N -> Ring.Rq.
-  Parameter decode     : Ring.Rq -> 'fin (2^k)%N.
+End HQC5Consts.
+
+Module Type HQC5Encoding.
+  Parameter encode : 'fin (2 ^ HQC5Consts.k)%N -> HQC5Consts.Ring.Rq.
+  Parameter decode : HQC5Consts.Ring.Rq -> 'fin (2 ^ HQC5Consts.k)%N.
+End HQC5Encoding.
+
+Module HQC5 (E : HQC5Encoding) <: HQCParams.
+  Include HQC5Consts.
+  Include E.
 End HQC5.
 
 (* ==================================================================== *)

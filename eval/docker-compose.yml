@@ -3,36 +3,44 @@ services:
     build:
       context: ..
       dockerfile: eval/Dockerfile
-    image: hqclethe-eval
+    image: ${EVAL_IMAGE:-hqclethe-eval}
     volumes:
       - ..:/work
       - cargo-registry:/usr/local/cargo/registry
     working_dir: /work
     environment:
       - CARGO_TARGET_DIR=/work/target-linux
+      - PYTHONDONTWRITEBYTECODE=1
     cap_add:
       - NET_ADMIN
       - SYS_PTRACE
     security_opt:
-      # needed to get valgrind/callgrind to work
       - seccomp:unconfined
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     command: sleep infinity
     tty: true
 
   client:
-    image: hqclethe-eval
+    image: ${EVAL_IMAGE:-hqclethe-eval}
     volumes:
       - ..:/work
       - cargo-registry:/usr/local/cargo/registry
     working_dir: /work
     environment:
       - CARGO_TARGET_DIR=/work/target-linux
+      - PYTHONDONTWRITEBYTECODE=1
     cap_add:
       - NET_ADMIN
       - SYS_PTRACE
     security_opt:
-      # needed to get valgrind/callgrind to work
       - seccomp:unconfined
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     command: sleep infinity
     tty: true
     depends_on:

@@ -3,32 +3,75 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import summarize_stateful  # noqa: E402
+
 SECTIONS = [
     ("1. Memory and Storage Footprint", "memory_footprint.log"),
     ("2. Network Bandwidth and Packet Overhead", "bandwidth.log"),
     ("3. CPU Performance & Computational Cost", "cpu_benchmarks.log"),
     ("4. Denial-of-Service (DoS) Resilience", "dos_flood.log"),
     ("5. Network Latency & Congestion Control", "wan_latency.log"),
+    ("6. Server CPU per session", "session_cpu.log"),
+    ("7. Stack and binary size", "stack.log"),
+    ("WAN sweep (wan_sweep.py)", "wan_sweep.log"),
 ]
 
 
+BANDWIDTH_FILES = (("stateless", "bandwidth.json"), ("stateful", "bandwidth_stateful.json"))
+
+
 def bandwidth_table(results_dir: Path) -> str:
-    path = results_dir / "raw" / "bandwidth.json"
+    lines = [
+        "| System | Variant | Requests | Sent | Received | Total | Raw pk+ct baseline | Overhead | Max packet | MTU OK |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    found = False
+    for system, name in BANDWIDTH_FILES:
+        path = results_dir / "raw" / name
+        if not path.exists():
+            continue
+        found = True
+        for v in json.loads(path.read_text()):
+            lines.append(
+                f"| {system} | {v['variant']} | {v.get('round_trips') or v['packets_sent']} | {v['total_sent_bytes']}B | "
+                f"{v['total_received_bytes']}B | {v['total_bytes']}B | {v['raw_baseline_bytes']}B | "
+                f"{v['overhead_ratio']:.2f}x | {v['max_packet_bytes']}B | "
+                f"{'yes' if v['mtu_ok'] else 'NO'} |"
+            )
+    return "\n".join(lines) if found else ""
+
+
+def session_cpu_table(results_dir: Path) -> str:
+    path = results_dir / "raw" / "session_cpu.json"
     if not path.exists():
         return ""
-    data = json.loads(path.read_text())
     lines = [
-        "| Variant | Round trips | Sent | Received | Total | Raw pk+ct baseline | Overhead | Max packet | MTU OK |",
+        "| System | Variant | Reps | schedstat ms/session (median) | per-rep values | Tick ms/session | Tick resolution ms | Sum of Criterion phases ms | Idle CPU ms (same wall time) |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
-    for v in data:
+    fmt = lambda v: "-" if v is None else f"{v:.3f}"  # noqa: E731
+    for r in json.loads(path.read_text())["results"]:
+        per_rep = ", ".join(
+            fmt(row.get("cpu_ms_per_session_schedstat", row["cpu_ms_per_session"])) for row in r["per_rep"]
+        )
         lines.append(
-            f"| {v['variant']} | {v['round_trips']} | {v['total_sent_bytes']}B | "
-            f"{v['total_received_bytes']}B | {v['total_bytes']}B | {v['raw_baseline_bytes']}B | "
-            f"{v['overhead_ratio']:.2f}x | {v['max_packet_bytes']}B | "
-            f"{'yes' if v['mtu_ok'] else 'NO'} |"
+            f"| {r['system']} | {r['variant'] or '-'} | {r['reps']} | "
+            f"{fmt(r['measured_cpu_ms_per_session'])} | {per_rep} | "
+            f"{fmt(r['measured_cpu_ms_per_session_ticks'])} | "
+            f"{fmt(r['tick_resolution_ms'])} | {fmt(r['criterion_sum_ms'])} | {fmt(r['idle_cpu_ms_same_wall'])} |"
         )
     return "\n".join(lines)
+
+
+def flood_table(results_dir: Path) -> str:
+    path = results_dir / "raw" / "dos_flood.json"
+    return summarize_stateful.table(json.loads(path.read_text())) if path.exists() else ""
+
+
+def derived_table(results_dir: Path) -> str:
+    path = results_dir / "raw" / "derived_metrics.md"
+    return path.read_text() if path.exists() else ""
 
 
 def main() -> None:
@@ -55,10 +98,16 @@ def main() -> None:
         out.append(provenance_path.read_text().rstrip("\n"))
         out.append("```\n")
 
-    table = bandwidth_table(results_dir)
-    if table:
-        out.append("## Quick reference: bandwidth (category 2)\n")
-        out.append(table + "\n")
+    quick_tables = [
+        ("Quick reference: bandwidth (category 2)", bandwidth_table(results_dir)),
+        ("Quick reference: server CPU per session (category 6)", session_cpu_table(results_dir)),
+        ("Quick reference: cycles per byte of attacker traffic (category 3)", derived_table(results_dir)),
+        ("Quick reference: flood cells, mean +- sd across repetitions (category 4)", flood_table(results_dir)),
+    ]
+    for title, table in quick_tables:
+        if table:
+            out.append(f"## {title}\n")
+            out.append(table + "\n")
 
     for title, filename in SECTIONS:
         log_path = raw_dir / filename

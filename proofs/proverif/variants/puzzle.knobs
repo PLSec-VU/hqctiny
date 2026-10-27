@@ -1,0 +1,1 @@
+puz	letfun puz(x: bitstring) = true.

@@ -1,0 +1,2 @@
+comp	let Compromise = phase 1; out(c, skS).
+clientleak	let ClientLeak(skC: skey) = phase 1; out(c, skC).

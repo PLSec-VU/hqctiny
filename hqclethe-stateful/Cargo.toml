@@ -1,0 +1,24 @@
+[package]
+name = "hqclethe-stateful"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+HQCLethe = { path = ".." }
+clap = { version = "4.4", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.10"
+
+[features]
+quiet = []
+flood-stats = []
+avx2 = ["HQCLethe/avx2"]
+hqc-addfft = ["HQCLethe/hqc-addfft"]
+
+[[bin]]
+name = "hqclethe-server-stateful"
+path = "src/server_main.rs"
+
+[[bin]]
+name = "hqclethe-client-stateful"
+path = "src/client_main.rs"

@@ -6,7 +6,7 @@ pub mod ffi;
 /// (`pk` is `PUBLIC_KEY_BYTES`, `u`/`v` are `VEC_N_SIZE_64` words, and so
 /// on). The implementations assert this before crossing into C, so a wrong
 /// length panics rather than corrupting memory.
-pub trait HqcScheme {
+pub trait HqcScheme: crate::auth::AuthLevel {
     const PUBLIC_KEY_BYTES: usize;
     const SECRET_KEY_BYTES: usize;
     const SHARED_SECRET_BYTES: usize;
@@ -24,7 +24,6 @@ pub trait HqcScheme {
     type PublicKeyParameters: HqcPublicKeyParameters;
     type SharedSecretParameters: HqcSharedSecretParameters;
     type MessageParameters: HqcMessageParameters;
-    type Tree: crate::merkle::MerkleOps;
 
     /// Generates a public and secret keypair. Returns `0` on success.
     ///
@@ -33,15 +32,38 @@ pub trait HqcScheme {
     /// high-quality randomness — a predictable seed yields a predictable key.
     unsafe fn keypair(entropy: &[u8], pk: &mut [u8], sk: &mut [u8]) -> i32;
 
-    /// Encapsulates a shared secret. Returns `0` on success.
+    /// Reference HQC encapsulation. Returns `0` on success.
     ///
     /// # Safety
     /// Same entropy requirement as [`HqcScheme::keypair`].
-    #[cfg(test)]
     unsafe fn enc(entropy: &[u8], ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32;
 
     /// Decapsulates a ciphertext. Returns `0` on success.
     fn dec(ss: &mut [u8], ct: &[u8], sk: &[u8]) -> i32;
+
+    /// Seeds the C PRNG once with `seed`, then runs key generation and
+    /// encapsulation on that one stream, as the NIST KAT generator does.
+    #[cfg(test)]
+    fn kat_run(seed: &[u8], pk: &mut [u8], sk: &mut [u8], ct: &mut [u8], ss: &mut [u8]);
+
+    /// `o = a * b` modulo `X^n - 1` with the C backend's `vect_mul`; all
+    /// three slices are `VEC_N_SIZE_64` words long.
+    fn ring_multiply(o: &mut [u64], a: &[u64], b: &[u64]);
+
+    /// Writes the bytes `start..start + out.len()` of the serialized
+    /// `u = r1 + h * r2` of reference encapsulation into `out`. `h` is
+    /// expanded from `h_seed`, the seed field of the public key. `r1` and
+    /// `r2` come from `theta` exactly as in `hqc_pke_encrypt`.
+    fn compute_u_window(h_seed: &[u8], theta: &[u8], start: usize, out: &mut [u8]);
+
+    /// The whole serialized `u`, `VEC_N_SIZE_BYTES` long.
+    fn compute_u(h_seed: &[u8], theta: &[u8], u_bytes: &mut [u8]) {
+        Self::compute_u_window(h_seed, theta, 0, u_bytes);
+    }
+
+    /// The first `out.len()` bytes of the PRNG stream the reference
+    /// encapsulation reads `m` and `salt` from, after seeding with `entropy`.
+    fn reference_prng_stream(entropy: &[u8], out: &mut [u8]);
 
     /// Computes public key parameters `h`, `s`, and its hash.
     fn partial_public_key_encaps(ek: &[u8]) -> Self::PublicKeyParameters;
@@ -94,20 +116,10 @@ pub trait HqcScheme {
 
     const PARAM_N: usize;
     const PARAM_N1N2: usize;
-    const POINTS_NUM: usize;
+    const CRT_MODULI: &'static [crate::crt::Modulus];
+    const CRT_GARNER: &'static [u8];
 
-    fn interpolate(
-        evals: &[crate::math::gf2_9009::Gf2_9009],
-    ) -> Vec<crate::math::gf2_9009::Gf2_9009>;
     fn code_encode(em: &mut [u64], m: &[u8]);
-
-    /// Degree of the segment-evaluated ring modulus x^n + 1 at point a^point_idx:
-    /// bit n lands in block n/W at offset n%W, so the evaluation is
-    /// x^(n%W + point_idx*(n/W)) + 1.
-    fn get_point_degree(point_idx: usize) -> usize {
-        let w = crate::math::segmentation::W;
-        (Self::PARAM_N % w) + (Self::PARAM_N / w) * point_idx
-    }
 }
 
 pub trait HqcPublicKeyParameters {
@@ -161,20 +173,14 @@ macro_rules! define_hqc_variant {
         $param_omega_e:expr,
         $param_n:expr,
         $param_n_mult:expr,
-        $points_num:expr,
-        $merkle_nodes:expr,
-        $newton_weights_file:literal
+        $crt_moduli:expr,
+        $crt_garner_file:literal
     ) => {
         pub mod $mod_name {
-            #[cfg(test)]
-            use crate::hqc::{HqcPublicKeyParameters, HqcMessageParameters};
             use crate::hqc::ffi::hqc_ffi_decls;
+            #[cfg(test)]
+            use crate::hqc::{HqcMessageParameters, HqcPublicKeyParameters};
             use zeroize::Zeroize;
-
-            lazy_static::lazy_static! {
-                static ref NEWTON_WEIGHTS: Box<[crate::math::gf2_9009::Gf2_9009]> =
-                    crate::math::interpolate::load_newton_weights::<$points_num>(include_bytes!($newton_weights_file));
-            }
 
             pub const PUBLIC_KEY_BYTES: usize = $pk_bytes;
             pub const SECRET_KEY_BYTES: usize = $sk_bytes;
@@ -192,13 +198,11 @@ macro_rules! define_hqc_variant {
 
             /// Multiplication length used by the AVX2 sources, from their
             /// `parameters.h`.
-            #[cfg(feature = "avx2")]
             const PARAM_N_MULT: usize = $param_n_mult;
 
             /// Length of a PARAM_N-bit vector once padded out to whole 256-bit
             /// blocks, mirroring `VEC_N_256_SIZE_64` in the AVX2 sources'
             /// `parameters.h`. That is the size those routines write.
-            #[cfg(feature = "avx2")]
             const VEC_N_256_SIZE_64: usize = PARAM_N_MULT.div_ceil(256) * 4;
 
             pub struct PublicKeyParameters {
@@ -305,45 +309,65 @@ macro_rules! define_hqc_variant {
                 out: &mut [u64; VEC_N_SIZE_64],
                 weight: u16,
             ) {
-                #[cfg(not(feature = "avx2"))]
                 unsafe {
-                    c_vect_sample_fixed_weight2(xof_ctx, out.as_mut_ptr(), weight);
-                }
-                #[cfg(feature = "avx2")]
-                unsafe {
-                    let mut padded =
-                        crate::hqc::ffi::Vec256::<VEC_N_256_SIZE_64>::zeroed();
+                    let mut padded = crate::hqc::ffi::Vec256::<VEC_N_256_SIZE_64>::zeroed();
                     c_vect_sample_fixed_weight2(xof_ctx, padded.as_mut_ptr(), weight);
                     padded.copy_prefix_to(out);
                 }
             }
 
-            /// Multiplies two PARAM_N-bit polynomials modulo `X^n - 1`.
-            ///
-            /// Like `sample_fixed_weight2`, the AVX2 `vect_mul` reads and writes
-            /// `__m256i *` operands, so all three route through padded, aligned
-            /// scratch buffers there.
+            /// Multiplies two PARAM_N-bit polynomials modulo `X^n - 1`
+            /// through padded, aligned buffers. Test-only: the server calls
+            /// `c_vect_mul` on its own padded buffers.
             ///
             /// # Safety
-            /// All three slices must be `VEC_N_SIZE_64` words long. Under
-            /// `avx2` the caller must hold [`FFI_LOCK`]: that `vect_mul` keeps
-            /// its intermediate products in file-scope globals.
-            ///
-            /// [`FFI_LOCK`]: crate::hqc::ffi::FFI_LOCK
-            #[cfg(test)]
+            /// All three slices must be `VEC_N_SIZE_64` words long.
             unsafe fn vect_mul(o: &mut [u64], v1: &[u64], v2: &[u64]) {
-                #[cfg(not(feature = "avx2"))]
+                use crate::hqc::ffi::Vec256;
+                let v1 = Vec256::<VEC_N_256_SIZE_64>::from_prefix(v1);
+                let v2 = Vec256::<VEC_N_256_SIZE_64>::from_prefix(v2);
+                let mut padded = Vec256::<VEC_N_256_SIZE_64>::zeroed();
                 unsafe {
-                    c_vect_mul(o.as_mut_ptr(), v1.as_ptr(), v2.as_ptr());
-                }
-                #[cfg(feature = "avx2")]
-                unsafe {
-                    use crate::hqc::ffi::Vec256;
-                    let v1 = Vec256::<VEC_N_256_SIZE_64>::from_prefix(v1);
-                    let v2 = Vec256::<VEC_N_256_SIZE_64>::from_prefix(v2);
-                    let mut padded = Vec256::<VEC_N_256_SIZE_64>::zeroed();
                     c_vect_mul(padded.as_mut_ptr(), v1.as_ptr(), v2.as_ptr());
-                    padded.copy_prefix_to(o);
+                }
+                padded.copy_prefix_to(o);
+            }
+
+            /// Draws `out.len()` distinct positions from the XOF, with the same
+            /// result as `vect_generate_random_support2`.
+            fn sample_support(xof_ctx: &mut crate::hqc::ffi::shake256_xof_ctx, out: &mut [u32]) {
+                let weight = out.len();
+                let mut random = [0u32; crate::support::MAX_SUPPORT_WEIGHT];
+                unsafe {
+                    c_xof_get_bytes(xof_ctx, random.as_mut_ptr() as *mut u8, 4 * weight as u32);
+                }
+                crate::support::finish_support(&random[..weight], $param_n as u32, out);
+                random.zeroize();
+            }
+
+            #[cfg(test)]
+            #[test]
+            fn sample_support_matches_reference_c() {
+                use crate::hqc::ffi::shake256_xof_ctx;
+                for weight in [PARAM_OMEGA_R, PARAM_OMEGA_E] {
+                    for seed_byte in 0..20u8 {
+                        let seed = [seed_byte; SEED_BYTES];
+                        let mut c_xof = shake256_xof_ctx { ctx: [0; 26] };
+                        let mut rust_xof = shake256_xof_ctx { ctx: [0; 26] };
+                        let mut expected = vec![0u32; weight as usize];
+                        let mut got = vec![0u32; weight as usize];
+                        unsafe {
+                            c_xof_init(&mut c_xof, seed.as_ptr(), SEED_BYTES as u32);
+                            c_xof_init(&mut rust_xof, seed.as_ptr(), SEED_BYTES as u32);
+                            c_vect_generate_random_support2(
+                                &mut c_xof,
+                                expected.as_mut_ptr(),
+                                weight,
+                            );
+                        }
+                        sample_support(&mut rust_xof, &mut got);
+                        assert_eq!(got, expected);
+                    }
                 }
             }
 
@@ -362,18 +386,12 @@ macro_rules! define_hqc_variant {
 
                 const PARAM_N: usize = $param_n;
                 const PARAM_N1N2: usize = VEC_N1N2_SIZE_BYTES * 8;
-                const POINTS_NUM: usize = $points_num;
+                const CRT_MODULI: &'static [crate::crt::Modulus] = &$crt_moduli;
+                const CRT_GARNER: &'static [u8] = include_bytes!($crt_garner_file);
 
                 type PublicKeyParameters = PublicKeyParameters;
                 type SharedSecretParameters = SharedSecretParameters;
                 type MessageParameters = MessageParameters;
-                type Tree = crate::merkle::MerkleTree<{$merkle_nodes}>;
-
-                fn interpolate(evals: &[crate::math::gf2_9009::Gf2_9009]) -> Vec<crate::math::gf2_9009::Gf2_9009> {
-                    assert_eq!(evals.len(), Self::POINTS_NUM);
-                    let evals_arr: &[crate::math::gf2_9009::Gf2_9009; $points_num] = evals.try_into().unwrap();
-                    crate::math::interpolate::interpolate_newton::<$points_num>(&*NEWTON_WEIGHTS, evals_arr).into()
-                }
 
                 fn code_encode(em: &mut [u64], m: &[u8]) {
                     assert_eq!(em.len(), VEC_N_SIZE_64);
@@ -386,7 +404,6 @@ macro_rules! define_hqc_variant {
                 unsafe fn keypair(entropy: &[u8], pk: &mut [u8], sk: &mut [u8]) -> i32 {
                     assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
                     assert_eq!(sk.len(), SECRET_KEY_BYTES);
-                    let _guard = crate::hqc::ffi::FFI_LOCK.lock().unwrap();
                     let mut personal = [0u8; 0];
                     unsafe {
                         c_prng_init(
@@ -399,12 +416,10 @@ macro_rules! define_hqc_variant {
                     }
                 }
 
-                #[cfg(test)]
                 unsafe fn enc(entropy: &[u8], ct: &mut [u8], ss: &mut [u8], pk: &[u8]) -> i32 {
                     assert_eq!(ct.len(), CIPHERTEXT_BYTES);
                     assert_eq!(ss.len(), SHARED_SECRET_BYTES);
                     assert_eq!(pk.len(), PUBLIC_KEY_BYTES);
-                    let _guard = crate::hqc::ffi::FFI_LOCK.lock().unwrap();
                     let mut personal = [0u8; 0];
                     unsafe {
                         c_prng_init(
@@ -421,13 +436,110 @@ macro_rules! define_hqc_variant {
                     assert_eq!(ss.len(), SHARED_SECRET_BYTES);
                     assert_eq!(ct.len(), CIPHERTEXT_BYTES);
                     assert_eq!(sk.len(), SECRET_KEY_BYTES);
-                    // The portable decryption path is reentrant, but the AVX2
-                    // one keeps its scratch in function-level statics and
-                    // file-scope globals, so it has to be serialized.
-                    #[cfg(feature = "avx2")]
-                    let _guard = crate::hqc::ffi::FFI_LOCK.lock().unwrap();
+                    unsafe { c_crypto_kem_dec(ss.as_mut_ptr(), ct.as_ptr(), sk.as_ptr()) }
+                }
+
+                #[cfg(test)]
+                fn kat_run(
+                    seed: &[u8],
+                    pk: &mut [u8],
+                    sk: &mut [u8],
+                    ct: &mut [u8],
+                    ss: &mut [u8],
+                ) {
+                    let mut personal = [0u8; 0];
                     unsafe {
-                        c_crypto_kem_dec(ss.as_mut_ptr(), ct.as_ptr(), sk.as_ptr())
+                        c_prng_init(
+                            seed.as_ptr() as *mut u8,
+                            personal.as_mut_ptr(),
+                            seed.len() as u32,
+                            0,
+                        );
+                        assert_eq!(c_crypto_kem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr()), 0);
+                        assert_eq!(
+                            c_crypto_kem_enc(ct.as_mut_ptr(), ss.as_mut_ptr(), pk.as_ptr()),
+                            0
+                        );
+                    }
+                }
+
+                fn ring_multiply(o: &mut [u64], a: &[u64], b: &[u64]) {
+                    assert_eq!(o.len(), VEC_N_SIZE_64);
+                    assert_eq!(a.len(), VEC_N_SIZE_64);
+                    assert_eq!(b.len(), VEC_N_SIZE_64);
+                    unsafe { vect_mul(o, a, b) }
+                }
+
+                fn compute_u_window(h_seed: &[u8], theta: &[u8], start: usize, out: &mut [u8]) {
+                    use crate::hqc::ffi::{Vec256, shake256_xof_ctx};
+                    assert_eq!(h_seed.len(), SEED_BYTES);
+                    assert_eq!(theta.len(), SEED_BYTES);
+                    assert!(start + out.len() <= VEC_N_SIZE_BYTES);
+
+                    let words = start / 8..(start + out.len()).div_ceil(8);
+                    let mut h = Vec256::<VEC_N_256_SIZE_64>::zeroed();
+                    let mut r2 = Vec256::<VEC_N_256_SIZE_64>::zeroed();
+                    let mut r1_window = Vec256::<VEC_N_256_SIZE_64>::zeroed();
+                    let mut u = Vec256::<VEC_N_256_SIZE_64>::zeroed();
+                    let mut r2_support = [0u32; PARAM_OMEGA_R as usize];
+                    let mut r1_support = [0u32; PARAM_OMEGA_R as usize];
+                    let mut skipped_e = [0u8; 4 * PARAM_OMEGA_E as usize];
+                    let mut xof = shake256_xof_ctx { ctx: [0; 26] };
+
+                    unsafe {
+                        c_xof_init(&mut xof, h_seed.as_ptr(), SEED_BYTES as u32);
+                        c_vect_set_random(&mut xof, h.as_mut_ptr());
+
+                        c_xof_init(&mut xof, theta.as_ptr(), SEED_BYTES as u32);
+                    }
+                    sample_support(&mut xof, &mut r2_support);
+                    unsafe {
+                        c_xof_get_bytes(&mut xof, skipped_e.as_mut_ptr(), skipped_e.len() as u32);
+                    }
+                    sample_support(&mut xof, &mut r1_support);
+
+                    crate::support::scatter_window(
+                        &r2_support,
+                        0,
+                        &mut r2.words_mut()[..VEC_N_SIZE_64],
+                    );
+                    crate::support::scatter_window(
+                        &r1_support,
+                        words.start,
+                        &mut r1_window.words_mut()[..words.len()],
+                    );
+
+                    unsafe {
+                        c_vect_mul(u.as_mut_ptr(), r2.as_ptr(), h.as_ptr());
+                    }
+                    for (word, r1_word) in u.words_mut()[words.clone()]
+                        .iter_mut()
+                        .zip(r1_window.words())
+                    {
+                        *word ^= r1_word;
+                    }
+
+                    let u_bytes = unsafe {
+                        core::slice::from_raw_parts(u.as_ptr() as *const u8, VEC_N_SIZE_BYTES)
+                    };
+                    out.copy_from_slice(&u_bytes[start..start + out.len()]);
+
+                    r2.words_mut().zeroize();
+                    r2_support.zeroize();
+                    r1_support.zeroize();
+                    r1_window.words_mut().zeroize();
+                }
+
+                fn reference_prng_stream(entropy: &[u8], out: &mut [u8]) {
+                    let mut personal = [0u8; 0];
+                    unsafe {
+                        c_prng_init(
+                            entropy.as_ptr() as *mut u8,
+                            personal.as_mut_ptr(),
+                            entropy.len() as u32,
+                            0,
+                        );
+                        c_prng_get_bytes(out.as_mut_ptr(), out.len() as u32);
                     }
                 }
 
@@ -495,7 +607,12 @@ macro_rules! define_hqc_variant {
                     let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
                     m_arr.copy_from_slice(m);
 
-                    MessageParameters { m: m_arr, r1, r2, e }
+                    MessageParameters {
+                        m: m_arr,
+                        r1,
+                        r2,
+                        e,
+                    }
                 }
 
                 fn partial_message_encaps_v(m: &[u8], theta: &[u8]) -> Self::MessageParameters {
@@ -518,12 +635,20 @@ macro_rules! define_hqc_variant {
                     let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
                     m_arr.copy_from_slice(m);
 
-                    MessageParameters { m: m_arr, r1: [0u64; VEC_N_SIZE_64], r2, e }
+                    MessageParameters {
+                        m: m_arr,
+                        r1: [0u64; VEC_N_SIZE_64],
+                        r2,
+                        e,
+                    }
                 }
 
                 type SupportParameters = SupportParameters;
 
-                fn partial_message_encaps_support(m: &[u8], theta: &[u8]) -> Self::SupportParameters {
+                fn partial_message_encaps_support(
+                    m: &[u8],
+                    theta: &[u8],
+                ) -> Self::SupportParameters {
                     assert_eq!(m.len(), PARAM_SECURITY_BYTES);
                     assert_eq!(theta.len(), SEED_BYTES);
                     let mut theta_xof_ctx = crate::hqc::ffi::shake256_xof_ctx { ctx: [0; 26] };
@@ -537,19 +662,26 @@ macro_rules! define_hqc_variant {
 
                     // Same XOF draw order as partial_message_encaps, so the
                     // supports describe exactly the same r2/e/r1.
-                    unsafe {
-                        c_vect_generate_random_support2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
-                        c_vect_generate_random_support2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
-                        c_vect_generate_random_support2(&mut theta_xof_ctx, r1.as_mut_ptr(), PARAM_OMEGA_R);
-                    }
+                    sample_support(&mut theta_xof_ctx, &mut r2);
+                    sample_support(&mut theta_xof_ctx, &mut e);
+                    sample_support(&mut theta_xof_ctx, &mut r1);
 
                     let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
                     m_arr.copy_from_slice(m);
 
-                    SupportParameters { m: m_arr, r1, r2, e, r1_len: PARAM_OMEGA_R as usize }
+                    SupportParameters {
+                        m: m_arr,
+                        r1,
+                        r2,
+                        e,
+                        r1_len: PARAM_OMEGA_R as usize,
+                    }
                 }
 
-                fn partial_message_encaps_v_support(m: &[u8], theta: &[u8]) -> Self::SupportParameters {
+                fn partial_message_encaps_v_support(
+                    m: &[u8],
+                    theta: &[u8],
+                ) -> Self::SupportParameters {
                     assert_eq!(m.len(), PARAM_SECURITY_BYTES);
                     assert_eq!(theta.len(), SEED_BYTES);
                     let mut theta_xof_ctx = crate::hqc::ffi::shake256_xof_ctx { ctx: [0; 26] };
@@ -560,18 +692,20 @@ macro_rules! define_hqc_variant {
                     let mut r2 = [0u32; PARAM_OMEGA_R as usize];
                     let mut e = [0u32; PARAM_OMEGA_E as usize];
 
-                    unsafe {
-                        c_vect_generate_random_support2(&mut theta_xof_ctx, r2.as_mut_ptr(), PARAM_OMEGA_R);
-                        c_vect_generate_random_support2(&mut theta_xof_ctx, e.as_mut_ptr(), PARAM_OMEGA_E);
-                        // r1 is last in the XOF stream and unused for V-type responses.
-                    }
+                    sample_support(&mut theta_xof_ctx, &mut r2);
+                    sample_support(&mut theta_xof_ctx, &mut e);
 
                     let mut m_arr = [0u8; PARAM_SECURITY_BYTES];
                     m_arr.copy_from_slice(m);
 
-                    SupportParameters { m: m_arr, r1: [0u32; PARAM_OMEGA_R as usize], r2, e, r1_len: 0 }
+                    SupportParameters {
+                        m: m_arr,
+                        r1: [0u32; PARAM_OMEGA_R as usize],
+                        r2,
+                        e,
+                        r1_len: 0,
+                    }
                 }
-
 
                 #[cfg(test)]
                 fn encrypt_pke(
@@ -596,31 +730,37 @@ macro_rules! define_hqc_variant {
                     assert_eq!(s.len(), VEC_N_SIZE_64);
                     assert_eq!(e.len(), VEC_N_SIZE_64);
 
-                    // `vect_mul` shares global scratch under `avx2`; see its wrapper.
-                    #[cfg(feature = "avx2")]
-                    let _guard = crate::hqc::ffi::FFI_LOCK.lock().unwrap();
-
                     unsafe {
                         vect_mul(u, r2, h);
-                        c_vect_add(u.as_mut_ptr(), r1.as_ptr(), u.as_ptr(), VEC_N_SIZE_64 as u32);
+                        c_vect_add(
+                            u.as_mut_ptr(),
+                            r1.as_ptr(),
+                            u.as_ptr(),
+                            VEC_N_SIZE_64 as u32,
+                        );
 
                         c_code_encode(v.as_mut_ptr(), m.as_ptr() as *const u64);
 
                         let mut tmp = [0u64; VEC_N_SIZE_64];
                         vect_mul(&mut tmp, r2, s);
-                        c_vect_add(tmp.as_mut_ptr(), e.as_ptr(), tmp.as_ptr(), VEC_N_SIZE_64 as u32);
+                        c_vect_add(
+                            tmp.as_mut_ptr(),
+                            e.as_ptr(),
+                            tmp.as_ptr(),
+                            VEC_N_SIZE_64 as u32,
+                        );
                         c_vect_truncate(tmp.as_mut_ptr());
 
-                        c_vect_add(v.as_mut_ptr(), v.as_ptr(), tmp.as_ptr(), VEC_N1N2_SIZE_64 as u32);
+                        c_vect_add(
+                            v.as_mut_ptr(),
+                            v.as_ptr(),
+                            tmp.as_ptr(),
+                            VEC_N1N2_SIZE_64 as u32,
+                        );
                     }
                 }
 
-                fn serialize_ciphertext(
-                    ct: &mut [u8],
-                    u: &[u64],
-                    v: &[u64],
-                    salt: &[u8],
-                ) {
+                fn serialize_ciphertext(ct: &mut [u8], u: &[u64], v: &[u64], salt: &[u8]) {
                     assert_eq!(ct.len(), CIPHERTEXT_BYTES);
                     assert_eq!(u.len(), VEC_N_SIZE_64);
                     assert_eq!(v.len(), VEC_N_SIZE_64);
@@ -634,7 +774,8 @@ macro_rules! define_hqc_variant {
                     let v_bytes = unsafe {
                         core::slice::from_raw_parts(v.as_ptr() as *const u8, VEC_N1N2_SIZE_BYTES)
                     };
-                    ct[VEC_N_SIZE_BYTES .. VEC_N_SIZE_BYTES + VEC_N1N2_SIZE_BYTES].copy_from_slice(v_bytes);
+                    ct[VEC_N_SIZE_BYTES..VEC_N_SIZE_BYTES + VEC_N1N2_SIZE_BYTES]
+                        .copy_from_slice(v_bytes);
                     ct[VEC_N_SIZE_BYTES + VEC_N1N2_SIZE_BYTES..].copy_from_slice(salt);
                 }
             }
@@ -646,16 +787,22 @@ macro_rules! define_hqc_variant {
             ///
             /// # Safety
             /// `entropy` must contain at least 48 bytes of high-quality randomness.
-            pub unsafe fn keypair(entropy: &[u8], pk: &mut [u8; PUBLIC_KEY_BYTES], sk: &mut [u8; SECRET_KEY_BYTES]) -> i32 {
-                unsafe {
-                    <$struct_name as crate::hqc::HqcScheme>::keypair(entropy, pk, sk)
-                }
+            pub unsafe fn keypair(
+                entropy: &[u8],
+                pk: &mut [u8; PUBLIC_KEY_BYTES],
+                sk: &mut [u8; SECRET_KEY_BYTES],
+            ) -> i32 {
+                unsafe { <$struct_name as crate::hqc::HqcScheme>::keypair(entropy, pk, sk) }
             }
 
             /// Decapsulates a shared secret from a ciphertext using a secret key.
             ///
             /// Returns `0` on success.
-            pub fn dec(ss: &mut [u8; SHARED_SECRET_BYTES], ct: &[u8; CIPHERTEXT_BYTES], sk: &[u8; SECRET_KEY_BYTES]) -> i32 {
+            pub fn dec(
+                ss: &mut [u8; SHARED_SECRET_BYTES],
+                ct: &[u8; CIPHERTEXT_BYTES],
+                sk: &[u8; SECRET_KEY_BYTES],
+            ) -> i32 {
                 <$struct_name as crate::hqc::HqcScheme>::dec(ss, ct, sk)
             }
 
@@ -701,9 +848,8 @@ define_hqc_variant!(
     75,
     17669,
     18048,
-    7,
-    32,
-    "../math/newton_weights_17669.bin"
+    crate::crt::params::HQC1_MODULI,
+    "../crt/garner_hqc1.bin"
 );
 define_hqc_variant!(
     hqc3,
@@ -722,9 +868,8 @@ define_hqc_variant!(
     114,
     35851,
     36480,
-    15,
-    64,
-    "../math/newton_weights_35851.bin"
+    crate::crt::params::HQC3_MODULI,
+    "../crt/garner_hqc3.bin"
 );
 define_hqc_variant!(
     hqc5,
@@ -743,9 +888,8 @@ define_hqc_variant!(
     149,
     57637,
     59904,
-    25,
-    128,
-    "../math/newton_weights_57637.bin"
+    crate::crt::params::HQC5_MODULI,
+    "../crt/garner_hqc5.bin"
 );
 
 pub use hqc1::Hqc1;
@@ -755,6 +899,112 @@ pub use hqc5::Hqc5;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const KAT_RECORDS_CHECKED: usize = 3;
+    const ALL_KAT_RECORDS: usize = usize::MAX;
+
+    struct KatRecord {
+        seed: Vec<u8>,
+        pk: Vec<u8>,
+        sk: Vec<u8>,
+        ct: Vec<u8>,
+        ss: Vec<u8>,
+    }
+
+    fn kat_field(record: &str, name: &str) -> Vec<u8> {
+        let prefix = format!("{name} = ");
+        let line = record
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix.as_str()))
+            .unwrap();
+        hex::decode(line.trim()).unwrap()
+    }
+
+    const KAT_FILE_HQC1: &str = include_str!("../../hqc/kats/ref/hqc-1/PQCkemKAT_2321.rsp");
+    const KAT_FILE_HQC3: &str = include_str!("../../hqc/kats/ref/hqc-3/PQCkemKAT_4602.rsp");
+    const KAT_FILE_HQC5: &str = include_str!("../../hqc/kats/ref/hqc-5/PQCkemKAT_7333.rsp");
+
+    fn kat_file(level: u8) -> &'static str {
+        match level {
+            1 => KAT_FILE_HQC1,
+            3 => KAT_FILE_HQC3,
+            5 => KAT_FILE_HQC5,
+            _ => unreachable!("HQC has levels 1, 3 and 5"),
+        }
+    }
+
+    fn kat_records(level: u8, count: usize) -> Vec<KatRecord> {
+        kat_file(level)
+            .split("\n\n")
+            .filter(|record| record.contains("count = "))
+            .take(count)
+            .map(|record| KatRecord {
+                seed: kat_field(record, "seed"),
+                pk: kat_field(record, "pk"),
+                sk: kat_field(record, "sk"),
+                ct: kat_field(record, "ct"),
+                ss: kat_field(record, "ss"),
+            })
+            .collect()
+    }
+
+    fn test_decapsulation_matches_kat<T: HqcScheme>(level: u8) {
+        for backend in crate::math::poly_mul::Backend::available() {
+            for record in kat_records(level, KAT_RECORDS_CHECKED) {
+                let mut ss = vec![0u8; T::SHARED_SECRET_BYTES];
+                let status = backend.run_forced(|| T::dec(&mut ss, &record.ct, &record.sk));
+                assert_eq!(status, 0, "{}", backend.name());
+                assert_eq!(ss, record.ss, "{}", backend.name());
+            }
+        }
+    }
+
+    #[test]
+    fn test_decapsulation_matches_kat_hqc1() {
+        test_decapsulation_matches_kat::<Hqc1>(1);
+    }
+
+    #[test]
+    fn test_decapsulation_matches_kat_hqc3() {
+        test_decapsulation_matches_kat::<Hqc3>(3);
+    }
+
+    #[test]
+    fn test_decapsulation_matches_kat_hqc5() {
+        test_decapsulation_matches_kat::<Hqc5>(5);
+    }
+
+    fn test_full_kat<T: HqcScheme>(level: u8) {
+        for record in kat_records(level, ALL_KAT_RECORDS) {
+            let mut pk = vec![0u8; T::PUBLIC_KEY_BYTES];
+            let mut sk = vec![0u8; T::SECRET_KEY_BYTES];
+            let mut ct = vec![0u8; T::CIPHERTEXT_BYTES];
+            let mut ss = vec![0u8; T::SHARED_SECRET_BYTES];
+            T::kat_run(&record.seed, &mut pk, &mut sk, &mut ct, &mut ss);
+            assert_eq!(pk, record.pk);
+            assert_eq!(sk, record.sk);
+            assert_eq!(ct, record.ct);
+            assert_eq!(ss, record.ss);
+            let mut decapsulated = vec![0u8; T::SHARED_SECRET_BYTES];
+            assert_eq!(T::dec(&mut decapsulated, &record.ct, &record.sk), 0);
+            assert_eq!(decapsulated, record.ss);
+        }
+    }
+
+    #[test]
+    fn test_full_kat_hqc1() {
+        test_full_kat::<Hqc1>(1);
+    }
+
+    #[test]
+    fn test_full_kat_hqc3() {
+        test_full_kat::<Hqc3>(3);
+    }
+
+    #[test]
+    fn test_full_kat_hqc5() {
+        test_full_kat::<Hqc5>(5);
+    }
 
     fn test_flow_generic<T: HqcScheme>() {
         let entropy = [42u8; 48];
@@ -815,6 +1065,46 @@ mod tests {
             // Verify they match
             assert_eq!(ss_params.K(), ss_dec.as_slice());
         }
+    }
+
+    fn test_u_windows_match_reference_generic<T: HqcScheme>()
+    where
+        T::MessageParameters: HqcMessageParameters,
+    {
+        let mut pk = vec![0u8; T::PUBLIC_KEY_BYTES];
+        let mut sk = vec![0u8; T::SECRET_KEY_BYTES];
+        assert_eq!(unsafe { T::keypair(&[7u8; 48], &mut pk, &mut sk) }, 0);
+        let pk_params = T::partial_public_key_encaps(&pk);
+        let m = vec![0x3Cu8; T::PARAM_SECURITY_BYTES];
+        let theta = [0x99u8; 32];
+        let msg_params = T::partial_message_encaps(&m, &theta);
+        let mut u = vec![0u64; T::VEC_N_SIZE_64];
+        let mut v = vec![0u64; T::VEC_N_SIZE_64];
+        T::encrypt_pke(&mut u, &mut v, &pk_params, &msg_params);
+        let expected: Vec<u8> = u.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let expected = &expected[..T::VEC_N_SIZE_BYTES];
+
+        let h_seed = &pk[..32];
+        let mut whole = vec![0u8; T::VEC_N_SIZE_BYTES];
+        T::compute_u(h_seed, &theta, &mut whole);
+        assert_eq!(whole, expected);
+
+        let window_len = 1100;
+        let mut start = 0;
+        while start < T::VEC_N_SIZE_BYTES {
+            let len = window_len.min(T::VEC_N_SIZE_BYTES - start);
+            let mut window = vec![0u8; len];
+            T::compute_u_window(h_seed, &theta, start, &mut window);
+            assert_eq!(window, &expected[start..start + len]);
+            start += window_len;
+        }
+    }
+
+    #[test]
+    fn test_u_windows_match_reference() {
+        test_u_windows_match_reference_generic::<Hqc1>();
+        test_u_windows_match_reference_generic::<Hqc3>();
+        test_u_windows_match_reference_generic::<Hqc5>();
     }
 
     #[test]

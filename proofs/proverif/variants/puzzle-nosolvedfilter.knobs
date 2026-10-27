@@ -1,0 +1,2 @@
+puz	letfun puz(x: bitstring) = true.
+solvedfilter	event SolvedUnfiltered(run);

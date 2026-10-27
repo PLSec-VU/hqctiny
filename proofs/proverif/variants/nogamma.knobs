@@ -1,0 +1,1 @@
+gamma	letfun gcheck(g: bitstring, e: bitstring) = true.

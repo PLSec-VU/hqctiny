@@ -1,10 +1,3 @@
-use lazy_static::lazy_static;
-use std::sync::Mutex;
-
-lazy_static! {
-    pub static ref FFI_LOCK: Mutex<()> = Mutex::new(());
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct shake256_xof_ctx {
@@ -19,13 +12,11 @@ pub struct shake256_xof_ctx {
 /// dereference the pointer at `__m256i` alignment. A Rust `[u64; VEC_N_SIZE_64]`
 /// is neither long enough nor aligned enough, so the AVX2 paths sample into one
 /// of these and copy the `VEC_N_SIZE_64`-word prefix they model back out.
-#[cfg(feature = "avx2")]
 #[repr(C, align(32))]
 pub(crate) struct Vec256<const WORDS: usize> {
     words: [u64; WORDS],
 }
 
-#[cfg(feature = "avx2")]
 impl<const WORDS: usize> Vec256<WORDS> {
     /// The C side XORs into its destination, so it must start zeroed.
     pub(crate) fn zeroed() -> Self {
@@ -33,7 +24,6 @@ impl<const WORDS: usize> Vec256<WORDS> {
     }
 
     /// Copies `src` into the low words, leaving the 256-bit padding zeroed.
-    #[cfg(test)]
     pub(crate) fn from_prefix(src: &[u64]) -> Self {
         let mut buf = Self::zeroed();
         buf.words[..src.len()].copy_from_slice(src);
@@ -44,9 +34,16 @@ impl<const WORDS: usize> Vec256<WORDS> {
         self.words.as_mut_ptr()
     }
 
-    #[cfg(test)]
     pub(crate) fn as_ptr(&self) -> *const u64 {
         self.words.as_ptr()
+    }
+
+    pub(crate) fn words(&self) -> &[u64; WORDS] {
+        &self.words
+    }
+
+    pub(crate) fn words_mut(&mut self) -> &mut [u64; WORDS] {
+        &mut self.words
     }
 
     /// Copies back as many leading words as `dst` holds, dropping the padding.
@@ -93,6 +90,13 @@ macro_rules! hqc_ffi_decls {
                 seed_size: u32,
             );
 
+            #[link_name = concat!($prefix, "xof_get_bytes")]
+            pub(crate) fn c_xof_get_bytes(
+                xof_ctx: *mut $crate::hqc::ffi::shake256_xof_ctx,
+                output: *mut u8,
+                output_size: u32,
+            );
+
             #[link_name = concat!($prefix, "vect_sample_fixed_weight2")]
             pub(crate) fn c_vect_sample_fixed_weight2(
                 xof_ctx: *mut $crate::hqc::ffi::shake256_xof_ctx,
@@ -100,6 +104,27 @@ macro_rules! hqc_ffi_decls {
                 weight: u16,
             );
 
+            #[link_name = concat!($prefix, "code_encode")]
+            pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
+
+            #[link_name = concat!($prefix, "crypto_kem_enc")]
+            pub(crate) fn c_crypto_kem_enc(ct: *mut u8, ss: *mut u8, pk: *const u8) -> i32;
+
+            #[link_name = concat!($prefix, "vect_set_random")]
+            pub(crate) fn c_vect_set_random(
+                xof_ctx: *mut $crate::hqc::ffi::shake256_xof_ctx,
+                v: *mut u64,
+            );
+
+            #[link_name = concat!($prefix, "vect_mul")]
+            pub(crate) fn c_vect_mul(o: *mut u64, v1: *const u64, v2: *const u64);
+
+            #[link_name = concat!($prefix, "prng_get_bytes")]
+            pub(crate) fn c_prng_get_bytes(output: *mut u8, outlen: u32);
+        }
+
+        #[cfg(test)]
+        unsafe extern "C" {
             /// The first half of `vect_sample_fixed_weight2`: draws `weight`
             /// distinct positions in [0, PARAM_N) from the XOF. The second
             /// half (`vect_write_support_to_vector`) scatters them into a
@@ -112,19 +137,6 @@ macro_rules! hqc_ffi_decls {
                 support: *mut u32,
                 weight: u16,
             );
-
-            #[link_name = concat!($prefix, "code_encode")]
-            pub(crate) fn c_code_encode(em: *mut u64, m: *const u64);
-        }
-
-        // These are unused outside of tests
-        #[cfg(test)]
-        unsafe extern "C" {
-            #[link_name = concat!($prefix, "crypto_kem_enc")]
-            pub(crate) fn c_crypto_kem_enc(ct: *mut u8, ss: *mut u8, pk: *const u8) -> i32;
-
-            #[link_name = concat!($prefix, "vect_mul")]
-            pub(crate) fn c_vect_mul(o: *mut u64, v1: *const u64, v2: *const u64);
 
             #[link_name = concat!($prefix, "vect_add")]
             pub(crate) fn c_vect_add(o: *mut u64, v1: *const u64, v2: *const u64, size: u32);

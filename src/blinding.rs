@@ -1,8 +1,7 @@
-//! Blinding mask generation and stripping operations.
-//!
-//! This module provides functions to:
-use crate::math::gf2_9009::{DEGREE, Gf2_9009};
-use crate::math::segmentation::W;
+//! Reduction modulo x^n - 1 and the pseudorandom masks of the v half.
+
+use chacha20::ChaCha12;
+use chacha20::cipher::{KeyIvInit, StreamCipher};
 
 /// Reduce a polynomial modulo x^n - 1 (constant-time for fixed `n`).
 ///
@@ -85,6 +84,27 @@ fn fill_mask_words(theta: &[u8], context: &[u8], out: &mut [u64]) {
     xof.fill(bytemuck::cast_slice_mut::<u64, u8>(out));
 }
 
+const QUOTIENT_MASK_KEY_LABEL: &[u8] = b"quotient mask stream key";
+
+fn keystream(theta: &[u8], context: &[u8], label: &[u8]) -> ChaCha12 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(theta);
+    hasher.update(context);
+    hasher.update(label);
+    let key = *hasher.finalize().as_bytes();
+    ChaCha12::new(&key.into(), &[0u8; 12].into())
+}
+
+fn fill_keystream(stream: &mut ChaCha12, out: &mut [u64]) {
+    out.fill(0);
+    stream.apply_keystream(bytemuck::cast_slice_mut::<u64, u8>(out));
+}
+
+fn fill_quotient_mask_words(theta: &[u8], context: &[u8], out: &mut [u64]) {
+    let mut stream = keystream(theta, context, QUOTIENT_MASK_KEY_LABEL);
+    fill_keystream(&mut stream, out);
+}
+
 /// Clear all bits at positions >= start.
 fn clear_bits_from(words: &mut [u64], start: usize) {
     let word = start / 64;
@@ -123,7 +143,7 @@ pub fn generate_quotient_mask<'o>(
     );
 
     let out = &mut out[..n_words];
-    fill_mask_words(theta, context, out);
+    fill_quotient_mask_words(theta, context, out);
     clear_bits_from(out, n);
     out
 }
@@ -150,38 +170,16 @@ pub fn generate_truncate_mask<'o>(
     out
 }
 
-/// Evaluate the truncate mask (random bits over [n1n2, n)) at a^idx, without
-/// materializing the full `n`-bit mask polynomial.
-///
-/// The random region always fits inside a single W-block for every current
-/// parameter set (verified: n1n2 % W + (n - n1n2) <= W for HQC-1/3/5), so we
-/// only need the `n - n1n2` bits that survive `clear_bits_below`/`clear_bits_from`
-/// instead of the full `n.div_ceil(64)`-word XOF fill, and the evaluation is
-/// one `mul_by_x_pow` of a near-empty element instead of a full block-by-block
-/// pass. `fill_mask_words` maps XOF byte `b` to bits `[8b, 8b+8)` of the mask
-/// polynomial (little-endian byte order), so the surviving bits start at XOF
-/// byte `n1n2 / 8`; BLAKE3's XOF supports O(1) seeking there instead of
-/// discarding the bytes before it.
-pub fn evaluate_truncate_mask_at_generator(
-    theta: &[u8],
-    context: &[u8],
-    n: usize,
-    n1n2: usize,
-    idx: u8,
-    out: &mut Gf2_9009,
-) {
+/// The random bits of the truncate mask, from bit `n1n2` up to bit `n`, as one
+/// word. They equal bits `n1n2..n` of `generate_truncate_mask`, and the
+/// BLAKE3 output is read from byte `n1n2 / 8` on instead of from the start.
+#[inline(always)]
+pub fn truncate_mask_word(theta: &[u8], context: &[u8], n: usize, n1n2: usize) -> u64 {
     let bits = n - n1n2;
     debug_assert!(
         bits <= 64,
         "truncate range must fit in one machine word for this fast path"
     );
-    let block = n1n2 / W;
-    let offset = n1n2 % W;
-    debug_assert!(
-        offset + bits <= W,
-        "truncate range crosses a block boundary; fast path is invalid for these parameters"
-    );
-
     let byte_start = n1n2 / 8;
     let bit_off_in_byte = n1n2 % 8;
     let byte_len = (bit_off_in_byte + bits).div_ceil(8);
@@ -204,103 +202,12 @@ pub fn evaluate_truncate_mask_at_generator(
     if bits < 128 {
         wide &= (1u128 << bits) - 1;
     }
-    let word = wide as u64;
-
-    let mut coeff = Gf2_9009::zero();
-    let word_idx = offset / 64;
-    let bit_shift = offset % 64;
-    debug_assert!(word_idx + 1 < crate::math::gf2_9009::GF29009_NUM_U64);
-    coeff.data[word_idx] ^= word << bit_shift;
-    if bit_shift != 0 {
-        coeff.data[word_idx + 1] ^= word >> (64 - bit_shift);
-    }
-
-    coeff.mul_by_x_pow((idx as usize) * block, out);
-}
-
-pub const KER_DELTA_BITS: usize = DEGREE - W;
-
-pub fn num_kernel_deltas(n: usize) -> usize {
-    2 * n.div_ceil(W) - 2
-}
-
-pub fn generate_kernel_deltas(theta: &[u8], context: &[u8], count: usize) -> Vec<Gf2_9009> {
-    let delta_words = KER_DELTA_BITS.div_ceil(64);
-    let rem_bits = KER_DELTA_BITS % 64;
-    let mask = if rem_bits > 0 {
-        (1u64 << rem_bits) - 1
-    } else {
-        u64::MAX
-    };
-
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(theta);
-    hasher.update(context);
-    let mut xof = hasher.finalize_xof();
-
-    let mut deltas = vec![Gf2_9009::zero(); count];
-    for delta in &mut deltas {
-        xof.fill(bytemuck::cast_slice_mut::<u64, u8>(
-            &mut delta.data[..delta_words],
-        ));
-        delta.data[delta_words - 1] &= mask;
-    }
-    deltas
-}
-
-/// Evaluate the kernel chain of `deltas` at the point a^power.
-pub fn evaluate_ker_chain(deltas: &[Gf2_9009], power: usize) -> Gf2_9009 {
-    let mut acc = Gf2_9009::zero();
-    let eff_words = KER_DELTA_BITS.div_ceil(64); // 71 — deltas have no significant bits beyond this
-    for (j, delta) in deltas.iter().enumerate() {
-        delta.mul_by_x_pow_xor_into(W + power * j, eff_words, &mut acc);
-        delta.mul_by_x_pow_xor_into(power * (j + 1), eff_words, &mut acc);
-    }
-    acc
-}
-
-/// Generate `count` kernel deltas from theta and evaluate their chain at
-/// a^power in one pass, without materializing the `Vec<Gf2_9009>` that
-/// `generate_kernel_deltas` + `evaluate_ker_chain` would otherwise allocate
-/// (each element is a full 1128-byte `Gf2_9009` even though only 71 words
-/// are ever significant). Streams one delta at a time from the XOF into a
-/// reused buffer instead.
-pub fn evaluate_kernel_deltas_at_generator(
-    theta: &[u8],
-    context: &[u8],
-    count: usize,
-    power: usize,
-) -> Gf2_9009 {
-    let delta_words = KER_DELTA_BITS.div_ceil(64);
-    let rem_bits = KER_DELTA_BITS % 64;
-    let mask = if rem_bits > 0 {
-        (1u64 << rem_bits) - 1
-    } else {
-        u64::MAX
-    };
-
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(theta);
-    hasher.update(context);
-    let mut xof = hasher.finalize_xof();
-
-    let mut acc = Gf2_9009::zero();
-    let mut delta = Gf2_9009::zero();
-    for j in 0..count {
-        xof.fill(bytemuck::cast_slice_mut::<u64, u8>(
-            &mut delta.data[..delta_words],
-        ));
-        delta.data[delta_words - 1] &= mask;
-        delta.mul_by_x_pow_xor_into(W + power * j, delta_words, &mut acc);
-        delta.mul_by_x_pow_xor_into(power * (j + 1), delta_words, &mut acc);
-    }
-    acc
+    wide as u64
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::segmentation::{combine, evaluate_at_generator, evaluate_poly_at_generator};
 
     #[test]
     fn test_truncate_mask() {
@@ -355,93 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn test_kernel_delta_degree() {
-        let theta = b"kernel theta test ______________";
-        let deltas = generate_kernel_deltas(theta, b"kernel deltas u", 6);
-        assert_eq!(deltas.len(), 6);
-        let delta_words = KER_DELTA_BITS.div_ceil(64);
-        let rem_bits = KER_DELTA_BITS % 64;
-        for delta in &deltas {
-            assert_eq!(
-                delta.data[delta_words - 1] >> rem_bits,
-                0,
-                "delta degree must be < KER_DELTA_BITS"
-            );
-            for w in &delta.data[delta_words..] {
-                assert_eq!(*w, 0);
-            }
-        }
-    }
-
-    #[test]
-    fn test_kernel_chain_vanishes_under_combine() {
-        let theta = b"kernel theta test ______________";
-        let count = 6;
-        let deltas = generate_kernel_deltas(theta, b"kernel deltas u", count);
-
-        // Chain coefficients in K[z]: C_j = delta_j * x^W + delta_{j-1}
-        let mut chain = vec![Gf2_9009::zero(); count + 1];
-        let mut shifted = Gf2_9009::zero();
-        for (j, delta) in deltas.iter().enumerate() {
-            delta.mul_by_x_pow(W, &mut shifted);
-            chain[j].add(&shifted);
-            chain[j + 1].add(delta);
-        }
-
-        // The chain lies in the kernel of combine, so the client's
-        // interpolate + combine recovery is unaffected by it.
-        let combined = combine(&chain);
-        assert!(
-            combined.iter().all(|&w| w == 0),
-            "kernel chain must vanish under combine"
-        );
-
-        // The shift-based evaluator agrees with generic evaluation.
-        for power in 1..=7u8 {
-            let mut expected = Gf2_9009::zero();
-            evaluate_at_generator(&chain, power, &mut expected);
-            let got = evaluate_ker_chain(&deltas, power as usize);
-            assert_eq!(got, expected, "evaluator mismatch at power {}", power);
-        }
-    }
-
-    /// The fused streaming evaluator must agree with the original
-    /// generate-then-evaluate path for the kernel chain.
-    #[test]
-    fn test_evaluate_kernel_deltas_at_generator_matches_reference() {
-        let theta = b"kernel theta test ______________";
-        let count = 6;
-        let deltas = generate_kernel_deltas(theta, b"kernel deltas u", count);
-        for power in 1..=25usize {
-            let expected = evaluate_ker_chain(&deltas, power);
-            let got = evaluate_kernel_deltas_at_generator(theta, b"kernel deltas u", count, power);
-            assert_eq!(got, expected, "mismatch at power {}", power);
-        }
-    }
-
-    /// The fast single-word truncate mask evaluator must agree with
-    /// generating the full mask polynomial and evaluating it densely, for
-    /// each real HQC-1/3/5 (n, n1n2) pair.
-    #[test]
-    fn test_evaluate_truncate_mask_at_generator_matches_reference() {
-        let theta = b"truncate theta test _____________";
-        let context = b"truncate mask";
-        for &(n, n1n2) in &[(17669usize, 17664usize), (35851, 35840), (57637, 57600)] {
-            let n_words = n.div_ceil(64);
-            let mut buf = vec![0u64; n_words];
-            let mask_poly = generate_truncate_mask(theta, context, n, n1n2, &mut buf).to_vec();
-
-            for idx in 1..=25u8 {
-                let mut expected = Gf2_9009::zero();
-                evaluate_poly_at_generator(&mask_poly, idx, &mut expected);
-                let mut got = Gf2_9009::zero();
-                evaluate_truncate_mask_at_generator(theta, context, n, n1n2, idx, &mut got);
-                assert_eq!(got, expected, "mismatch n={n} n1n2={n1n2} idx={idx}");
-            }
-        }
-    }
-
-    #[test]
     fn test_reduce_mod() {
         let n = 17669;
         let n_word = n / 64;
@@ -454,6 +274,21 @@ mod tests {
         assert_eq!(reduced[0], 1, "x^n should reduce to 1");
         for item in reduced.iter().skip(1) {
             assert_eq!(*item, 0, "unexpected bits in reduced");
+        }
+    }
+
+    #[test]
+    fn test_truncate_mask_word_matches_full_mask() {
+        let theta = b"truncate theta test _____________";
+        let context = b"truncate mask";
+        for &(n, n1n2) in &[(17669usize, 17664usize), (35851, 35840), (57637, 57600)] {
+            let mut buf = vec![0u64; n.div_ceil(64)];
+            let mask = generate_truncate_mask(theta, context, n, n1n2, &mut buf).to_vec();
+            let word = truncate_mask_word(theta, context, n, n1n2);
+            for bit in 0..n - n1n2 {
+                let from_mask = (mask[(n1n2 + bit) / 64] >> ((n1n2 + bit) % 64)) & 1;
+                assert_eq!(from_mask, (word >> bit) & 1, "n={n} bit={bit}");
+            }
         }
     }
 }

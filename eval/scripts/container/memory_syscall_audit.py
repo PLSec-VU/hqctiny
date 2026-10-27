@@ -17,10 +17,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from util import find_tiny_server_pids  # noqa: E402
+from systems import SYSTEMS  # noqa: E402
+from util import find_tiny_server_pids, log_command  # noqa: E402
 
-SERVER_BIN = "/work/target-linux/tiny-release/hqclethe-server"
-CLI = "/work/target-linux/release/hqclethe-client"
+SYSTEM = SYSTEMS["stateless"]
 
 # `strace -f` prefixes every line with the tracee's PID once more than one
 # thread/process is being traced -- hqclethe-server spawns its key-rotation
@@ -35,37 +35,28 @@ def main() -> None:
     trace_path = Path(f"/tmp/ts-{port}.strace")
     trace_path.unlink(missing_ok=True)
 
-    server = subprocess.Popen(
-        [
-            "strace",
-            "-f",
-            "-ttt",
-            "-o",
-            str(trace_path),
-            "-e",
-            "trace=memory",
-            SERVER_BIN,
-            "--port",
-            port,
-            "--variant",
-            variant,
-        ]
-    )
+    strace_command = [
+        "strace", "-f", "-ttt", "-o", str(trace_path), "-e", "trace=memory",
+        *SYSTEM.server_command(variant, int(port)),
+    ]
+    log_command("server", strace_command)
+    server = subprocess.Popen(strace_command)
     time.sleep(1)
     boundary = time.time()
 
+    client_command = SYSTEM.client_command(variant, f"127.0.0.1:{port}")
+    log_command("client", client_command)
+    completed = 0
     for _ in range(num_sessions):
-        subprocess.run(
-            [CLI, "client", "--addr", f"127.0.0.1:{port}", "--variant", variant],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        result = subprocess.run(client_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        completed += result.returncode == 0
+    print(f"completed_sessions: {completed}/{num_sessions}")
 
     time.sleep(0.3)
     # `strace -f prog` forks prog as strace's *child* and ptrace-attaches to
     # it; terminating the strace Popen handle we hold doesn't reliably kill
     # or reap that child within a short timeout. Find the actual hqclethe-server
-    # process by its listening port (same helper dos_flood_variant.py uses)
+    # process by its listening port (see util.find_tiny_server_pids)
     # and signal that directly; strace then notices its tracee exited and
     # exits on its own.
     for pid in find_tiny_server_pids(port):

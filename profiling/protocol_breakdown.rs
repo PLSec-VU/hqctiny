@@ -1,15 +1,18 @@
 //! One-off diagnostic: splits the "ours" (non-FFI) share of the round trip
 //! reported by timing-breakdown into its constituent phases, so we can see
-//! which part of the protocol layer (wire encode/decode, Merkle tree/proof
-//! work, server point evaluation, client interpolation) actually dominates.
+//! which part of the protocol layer (s residues, server u and v
+//! computation, client reconstruction) actually dominates.
 
-use HQCLethe::client::{Client, PointResult};
-use HQCLethe::encoding::{Packet, decode_packet, encode_packet};
+use HQCLethe::auth::shared_keypair;
+use HQCLethe::client::{Client, Progress};
+use HQCLethe::encoding::{Kind, MAX_UDP_PAYLOAD};
 use HQCLethe::hqc::{Hqc1, Hqc3, Hqc5, HqcScheme};
 use HQCLethe::server::Server;
 use HQCLethe::traits::*;
 use rand::Rng;
 use std::time::{Duration, Instant};
+
+const PEER: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 
 #[derive(Clone)]
 struct Entropy;
@@ -28,86 +31,53 @@ impl SessionStore for NullSessionStore {
 #[derive(Default)]
 struct Buckets {
     client_init: Duration,
-    hreq_wire: Duration,
     server_handshake: Duration,
-    hres_wire: Duration,
     client_handshake_response: Duration,
-    preq_wire: Duration,
-    server_point_eval: Duration,
-    pres_wire: Duration,
+    server_uchunk: Duration,
+    server_vresidue: Duration,
     client_collect: Duration,
     client_complete: Duration,
 }
 
 fn run_once<SCHEME: HqcScheme>(b: &mut Buckets) {
-    let server = Server::<SCHEME, _, _>::new(NullSessionStore, Entropy);
+    let keys = shared_keypair::<SCHEME>();
+    let server = Server::<SCHEME, _, _>::new(NullSessionStore, Entropy, keys.secret.clone());
     let client = Client::<SCHEME, _, _, _>::new(NullSessionStore, Entropy);
+    let mut out = [0u8; MAX_UDP_PAYLOAD];
 
     let t = Instant::now();
-    let (client, req) = client.initialize();
+    let (client, request) = client.initialize(&keys.public);
     b.client_init += t.elapsed();
 
     let t = Instant::now();
-    let mut buf = vec![0u8; 4096];
-    let encoded = encode_packet::<SCHEME>(&Packet::HandshakeRequest(req), &mut buf).unwrap();
-    let decoded_req = match decode_packet::<SCHEME>(encoded).unwrap() {
-        Packet::HandshakeRequest(r) => r,
-        _ => unreachable!(),
-    };
-    b.hreq_wire += t.elapsed();
-
-    let t = Instant::now();
-    let res = server.handle_handshake(decoded_req).unwrap();
+    let len = server.handle_packet(PEER, &request, &mut out).unwrap();
     b.server_handshake += t.elapsed();
 
     let t = Instant::now();
-    let mut buf = vec![0u8; 4096];
-    let encoded = encode_packet::<SCHEME>(&Packet::HandshakeResponse(res), &mut buf).unwrap();
-    let decoded_res = match decode_packet::<SCHEME>(encoded).unwrap() {
-        Packet::HandshakeResponse(r) => r,
-        _ => unreachable!(),
-    };
-    b.hres_wire += t.elapsed();
-
-    let t = Instant::now();
-    let (mut client, point_reqs) = client.handle_handshake_response(decoded_res).unwrap();
+    let mut client = client.handle_handshake_response(&out[..len]).unwrap();
     b.client_handshake_response += t.elapsed();
 
-    for req in point_reqs {
+    let requests = client.requests().to_vec();
+    for request in requests {
         let t = Instant::now();
-        let mut buf = vec![0u8; 8192];
-        let encoded = encode_packet::<SCHEME>(&Packet::PointRequest(req), &mut buf).unwrap();
-        let decoded_preq = match decode_packet::<SCHEME>(encoded).unwrap() {
-            Packet::PointRequest(r) => r,
-            _ => unreachable!(),
-        };
-        b.preq_wire += t.elapsed();
-
-        let t = Instant::now();
-        let point_res = server.handle_point_request(decoded_preq).unwrap();
-        b.server_point_eval += t.elapsed();
-
-        let t = Instant::now();
-        let mut buf = vec![0u8; 8192];
-        let encoded = encode_packet::<SCHEME>(&Packet::PointResponse(point_res), &mut buf).unwrap();
-        let decoded_pres = match decode_packet::<SCHEME>(encoded).unwrap() {
-            Packet::PointResponse(r) => r,
-            _ => unreachable!(),
-        };
-        b.pres_wire += t.elapsed();
-
-        let t = Instant::now();
-        let result = client.handle_point_response(decoded_pres).unwrap();
+        let len = server
+            .handle_packet(PEER, &request.bytes, &mut out)
+            .unwrap();
         let elapsed = t.elapsed();
-        match result {
-            PointResult::Collecting(c) => {
-                client = *c;
-                b.client_collect += elapsed;
-            }
-            PointResult::Completed(_, _) => {
+        match request.kind {
+            Kind::UChunk => b.server_uchunk += elapsed,
+            _ => b.server_vresidue += elapsed,
+        }
+
+        let t = Instant::now();
+        let progress = client.handle_response(&out[..len]).unwrap();
+        let elapsed = t.elapsed();
+        match progress {
+            Progress::Complete(_) => {
                 b.client_complete += elapsed;
                 break;
             }
+            _ => b.client_collect += elapsed,
         }
     }
 }
@@ -143,13 +113,10 @@ fn measure<SCHEME: HqcScheme>(name: &str, iters: u32) {
 
     let per = |d: Duration| d / iters;
     let total = b.client_init
-        + b.hreq_wire
         + b.server_handshake
-        + b.hres_wire
         + b.client_handshake_response
-        + b.preq_wire
-        + b.server_point_eval
-        + b.pres_wire
+        + b.server_uchunk
+        + b.server_vresidue
         + b.client_collect
         + b.client_complete;
 
@@ -161,45 +128,33 @@ fn measure<SCHEME: HqcScheme>(name: &str, iters: u32) {
         per(total)
     );
     println!(
-        "  client_init (total)            {:>9.2?}  [of which keypair FFI {:>9.2?}, merkle/setup {:>9.2?}]",
+        "  client_init (total)            {:>9.2?}  [of which keypair FFI {:>9.2?}, s evals/setup {:>9.2?}]",
         per(b.client_init),
         keypair_time,
         client_init_protocol
-    );
-    println!(
-        "  handshake_req wire encode/decode{:>9.2?}",
-        per(b.hreq_wire)
     );
     println!(
         "  server handle_handshake         {:>9.2?}",
         per(b.server_handshake)
     );
     println!(
-        "  handshake_res wire encode/decode{:>9.2?}",
-        per(b.hres_wire)
-    );
-    println!(
-        "  client build point requests     {:>9.2?}",
+        "  client verify + build requests  {:>9.2?}",
         per(b.client_handshake_response)
     );
     println!(
-        "  point_req wire encode/decode    {:>9.2?}  (summed over all points)",
-        per(b.preq_wire)
+        "  server u-chunk requests         {:>9.2?}  (summed over all chunks)",
+        per(b.server_uchunk)
     );
     println!(
-        "  server handle_point_request     {:>9.2?}  (summed over all points)",
-        per(b.server_point_eval)
+        "  server v-residue requests         {:>9.2?}  (summed over all points)",
+        per(b.server_vresidue)
     );
     println!(
-        "  point_res wire encode/decode    {:>9.2?}  (summed over all points)",
-        per(b.pres_wire)
-    );
-    println!(
-        "  client collect (non-final)      {:>9.2?}  (summed over all but last point)",
+        "  client collect (non-final)      {:>9.2?}  (summed over all but last response)",
         per(b.client_collect)
     );
     println!(
-        "  client complete (final)         {:>9.2?}  [of which dec FFI {:>9.2?}, interpolate/combine/serialize {:>9.2?}]",
+        "  client complete (final)         {:>9.2?}  [of which dec FFI {:>9.2?}, reconstruct/serialize {:>9.2?}]",
         per(b.client_complete),
         dec_time,
         client_complete_protocol

@@ -1,3 +1,6 @@
 [submodule "hqc"]
 	path = hqc
 	url = https://gitlab.com/pqc-hqc/hqc.git
+[submodule "hqc-addfft"]
+	path = hqc-addfft
+	url = https://github.com/ChunTaoPengim/HQC_with_addFFT_tches2026

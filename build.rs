@@ -1,3 +1,8 @@
+#[path = "build/addfft.rs"]
+mod addfft;
+
+const VARIANTS: [&str; 3] = ["1", "3", "5"];
+
 fn main() {
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
 
@@ -10,6 +15,8 @@ fn main() {
          an x86 target (target architecture is `{target_arch}`)"
     );
 
+    let multipliers = VARIANTS.map(|variant| addfft::multiplier(&target_arch, variant));
+    let avx2 = avx2 || multipliers.iter().flatten().any(|m| m.needs_avx2_defines());
     // Compile fips202 Keccak/SHA3 implementation once
     let mut fips_build = cc::Build::new();
     fips_build.include("hqc/lib/fips202");
@@ -24,13 +31,24 @@ fn main() {
     };
 
     // Compile HQC variants
-    compile_variant("1", avx2, immintrin_shim.as_deref());
-    compile_variant("3", avx2, immintrin_shim.as_deref());
-    compile_variant("5", avx2, immintrin_shim.as_deref());
+    for (variant, multiplier) in VARIANTS.into_iter().zip(multipliers) {
+        compile_variant(variant, avx2, multiplier, immintrin_shim.as_deref());
+    }
+    compile_shared_multiplier_libraries(&multipliers);
 
-    // Re-run build script if any C source/header files change
+    println!("cargo::rustc-check-cfg=cfg(mceliece_vec)");
+    if uses_mceliece_vec(&target_arch) && std::env::var_os("CARGO_FEATURE_MCELIECE_REF").is_some() {
+        println!("cargo:rustc-cfg=mceliece_vec");
+        for parameter_set in MCELIECE_VEC_PARAMETER_SETS {
+            compile_mceliece_vec(parameter_set);
+        }
+    }
+
+    println!("cargo:rerun-if-changed=third_party/mceliece-vec");
     println!("cargo:rerun-if-changed=hqc/src");
     println!("cargo:rerun-if-changed=hqc/lib/fips202");
+    println!("cargo:rerun-if-changed=hqc-addfft/hqc-fft/src");
+    println!("cargo:rerun-if-changed=build/addfft.rs");
 }
 
 /// The vendored HQC reference sources unconditionally `#include
@@ -57,7 +75,52 @@ fn non_x86_immintrin_shim(target_arch: &str) -> Option<std::path::PathBuf> {
     Some(shim_dir)
 }
 
-fn compile_variant(v: &str, avx2: bool, immintrin_shim: Option<&std::path::Path>) {
+const MCELIECE_VEC_PARAMETER_SETS: [&str; 3] = ["348864", "460896", "6688128"];
+
+fn uses_mceliece_vec(target_arch: &str) -> bool {
+    !matches!(target_arch, "x86_64" | "x86")
+}
+
+fn compile_shared_multiplier_libraries(multipliers: &[Option<addfft::Multiplier>]) {
+    let mut compiled: Vec<addfft::Multiplier> = Vec::new();
+    for multiplier in multipliers.iter().flatten() {
+        if !compiled.contains(multiplier) {
+            compiled.push(*multiplier);
+            multiplier.compile_shared_library();
+        }
+    }
+}
+
+fn compile_mceliece_vec(parameter_set: &str) {
+    let root = std::path::Path::new("third_party/mceliece-vec");
+    let set_dir = root.join(parameter_set);
+    let namespace = format!("mce{parameter_set}vec_");
+    let mut build = cc::Build::new();
+    build.include(&set_dir);
+    build.include(root.join("include"));
+    build.include(root.join("shim"));
+    build.define("CRYPTO_NAMESPACE(x)", Some(&*format!("{namespace}##x")));
+    build.define(
+        "CRYPTO_SHARED_NAMESPACE(x)",
+        Some(&*format!("{namespace}##x")),
+    );
+    build.opt_level(3);
+    build.warnings(false);
+    for entry in std::fs::read_dir(&set_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "c") {
+            build.file(path);
+        }
+    }
+    build.compile(&format!("mceliece{parameter_set}vec"));
+}
+
+fn compile_variant(
+    v: &str,
+    avx2: bool,
+    addfft: Option<addfft::Multiplier>,
+    immintrin_shim: Option<&std::path::Path>,
+) {
     let mut build = cc::Build::new();
 
     // Set target architecture configuration, mirroring the upstream CMake build
@@ -126,11 +189,14 @@ fn compile_variant(v: &str, avx2: bool, immintrin_shim: Option<&std::path::Path>
         .to_vec()
     };
 
-    for src in common_sources {
-        build.file(src);
-    }
-    for src in &arch_sources {
-        build.file(src);
+    let replaced_source = addfft.map(|multiplier| multiplier.replaced_source(v));
+    let sources = common_sources
+        .iter()
+        .map(|src| src.to_string())
+        .chain(arch_sources)
+        .filter(|src| Some(src) != replaced_source.as_ref());
+    for src in sources {
+        build.file(per_thread_copy(&src, v));
     }
 
     // Prefix all global symbols to avoid conflicts between variants
@@ -210,4 +276,79 @@ fn compile_variant(v: &str, avx2: bool, immintrin_shim: Option<&std::path::Path>
     }
 
     build.compile(&format!("hqc{}", v));
+    if let Some(multiplier) = addfft {
+        multiplier.compile_for_variant(v);
+    }
+}
+
+const PER_THREAD_STORAGE: &str = "_Thread_local ";
+
+const MUTABLE_FUNCTION_STATICS: [&str; 3] =
+    ["static __m256i ", "static uint64_t ", "static int32_t d0;"];
+
+const MUTABLE_GLOBALS: [&str; 7] = [
+    "shake256incctx shake256_prng_ctx;",
+    "__m256i a1_times_a2[",
+    "__m256i o256[",
+    "uint64_t a1_times_a2[",
+    "uint64_t o256[",
+    "uint64_t bloc64[",
+    "uint64_t bit64[",
+];
+
+/// A global initialised with the address of a thread-local is not valid C,
+/// so the pointer into `o256` becomes an expression.
+const THREAD_LOCAL_ALIASES: [(&str, &str); 1] = [(
+    "uint64_t *tmp_reduce = (uint64_t *)o256;",
+    "#define tmp_reduce ((uint64_t *)o256)",
+)];
+
+fn is_function_static(line: &str) -> bool {
+    let inside_a_function = line.starts_with(char::is_whitespace);
+    let declaration = line.trim_start();
+    inside_a_function
+        && MUTABLE_FUNCTION_STATICS
+            .iter()
+            .any(|prefix| declaration.starts_with(prefix))
+}
+
+fn per_thread_line(line: &str) -> Option<String> {
+    if is_function_static(line) {
+        return Some(line.replacen("static ", &format!("static {PER_THREAD_STORAGE}"), 1));
+    }
+    let declaration = line.trim_start();
+    if MUTABLE_GLOBALS
+        .iter()
+        .any(|global| declaration.starts_with(global))
+    {
+        return Some(format!("{PER_THREAD_STORAGE}{declaration}"));
+    }
+    THREAD_LOCAL_ALIASES
+        .iter()
+        .find(|(global, _)| line == *global)
+        .map(|(_, alias)| alias.to_string())
+}
+
+/// Returns `source`, or a copy of it in OUT_DIR with its mutable globals and
+/// function statics declared per thread.
+pub fn per_thread_copy(source: &str, variant: &str) -> std::path::PathBuf {
+    let original = std::path::PathBuf::from(source);
+    let text = std::fs::read_to_string(&original).unwrap();
+    let rewritten: Vec<Option<String>> = text.lines().map(per_thread_line).collect();
+    if rewritten.iter().all(Option::is_none) {
+        return original;
+    }
+    let lines = text
+        .lines()
+        .zip(&rewritten)
+        .map(|(line, new)| new.as_deref().unwrap_or(line));
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap())
+        .join("per_thread")
+        .join(format!("hqc-{variant}"))
+        .join(original.parent().unwrap());
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let copy = out_dir.join(original.file_name().unwrap());
+    std::fs::write(&copy, lines.collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    println!("cargo:rerun-if-changed={source}");
+    copy
 }

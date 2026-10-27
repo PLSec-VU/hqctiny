@@ -1,0 +1,2 @@
+puz	letfun puz(x: bitstring) = true.
+comp	let Compromise = phase 1; out(c, (ckf(zero), ckf(one))).

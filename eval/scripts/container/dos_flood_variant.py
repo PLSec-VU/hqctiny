@@ -1,21 +1,36 @@
 #!/usr/bin/env python3
-"""Runs inside the eval container (invoked by ../dos_flood.py). Starts
-the real hqclethe-server, then for `reps` repetitions samples its RSS/CPU
-across an idle baseline and a flood window while `hqclethe-client
-flood-client` blasts it, tracking two exact, kernel/server-reported
-counters: the server socket's receive-buffer drop count (packets that
-never reached recv_from) and the server's own successfully-sent-response
-count (queried via a magic-byte UDP probe -- see FLOOD_STATS_QUERY and
---features flood-stats in hqclethe-server/src/main.rs). Together with the
-client's self-reported sent count, that fully accounts for where flood
-packets go: dropped at the kernel, answered by the server, or the small
-residual (decode/handle failures, or still in flight at the sampling
-boundary). Reports per-rep numbers plus median/IQR across reps (a single
-flood window is not a distribution -- see eval/README.md's
-reproducibility notes). Finishes with a short strace memory-syscall check.
+"""Runs inside the eval container (invoked by ../dos_flood.py). Floods one
+system (stateless HQCLethe or the stateful baseline, both with ML-KEM
+server authentication) with one flood kind, for `reps` repetitions. Each
+repetition starts a fresh server process and records:
 
-Args: <variant> <flood_duration_secs> <num_sockets> [reps] [kind]
-  kind: "handshake" (default) or "point" -- see hqclethe-client's FloodKind.
+  * server CPU over the flood interval, exactly: schedstat of all server
+    threads when the flood process starts and when it exits, divided by the
+    time between the two (`cpu_util_pct`). The tick-based figure from
+    /proc/<pid>/stat is a cross-check (`cpu_util_pct_ticks`).
+  * attacker packets sent and per second, server responses sent and per
+    second, kernel receive-buffer drops of the server socket,
+  * for the stateful server: its table counters (entries created, evictions,
+    dropped_table_full, peak bytes, watched-source counters),
+  * server RSS (idle, mean and peak during the flood, after settling),
+  * legitimate-client probes, started open loop every LEGIT_INTERVAL_MS
+    across the flood window from another source address, plus recovery
+    probes after the flood. See legit_probes.py.
+
+The "none" kind runs the same measurement with no flood process.
+
+Args: <mode> <variant> <duration_secs> <sockets> <reps> <kind> [source_ips]
+  mode:  stateless | stateful (see systems.py)
+  kind:  none, or one of the system's flood kinds
+Env:   STATEFUL_SERVER_ARGS  extra arguments for hqclethe-server-stateful
+       LEGIT_INTERVAL_MS     probe interval (default 200)
+       LEGIT_RECOVERY_PROBES probes after the flood (default 3)
+       LEGIT_TIMEOUT_S       kill a probe after this long (default 10)
+       REP_BASE              repetitions are numbered from REP_BASE+1
+       SETTLE_SECS           wait before the final RSS read (default 0)
+       STRACE_BURST          1 runs the post-flood strace check for the
+                             stateless server after the last repetition
+Prints "RUN {json}" per repetition and one "RESULT {json}" at the end.
 """
 
 from __future__ import annotations
@@ -23,270 +38,335 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import signal
-import socket as pysocket
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from util import read_cpu_ticks, read_rss_kb, read_udp_socket_drops  # noqa: E402
+import legit_probes as lp  # noqa: E402
+from placement import FLOOD_CORE, LEGIT_CORE, ORCHESTRATOR_CORE, SERVER_CORE  # noqa: E402
+from systems import LEGIT_SOURCE_IP, SYSTEMS, System  # noqa: E402
+from util import (  # noqa: E402
+    median_iqr, pin_to_core, popen_logged, query_responses_sent, query_stateful_stats_full,
+    read_cpu_ns, read_cpu_ticks, read_rss_kb, read_udp_socket_drops, run_logged,
+)
 
-SERVER_BIN = "/work/target-linux/tiny-release/hqclethe-server"
-CLI = "/work/target-linux/release/hqclethe-client"
-PORT = "24100"
-PORT_INT = int(PORT)
-# Standalone-run fallback; the suite always passes an explicit count.
-# Kept in step with run.py's --dos-reps default.
-DEFAULT_REPS = 10
-DEFAULT_KIND = "handshake"
-
-# Pin the server and the flood client to distinct cores: without this they
-# compete for the same cores in the same container, which conflates "the
-# server is overloaded" with "the server lost a scheduling fight against
-# the thing attacking it" -- not the resource picture a remote attacker
-# with their own machine would produce. Skipped (both lists empty) below
-# 2 cores, where isolation isn't possible anyway.
-def _taskset_prefix(core: int) -> list[str]:
-    return ["taskset", "-c", str(core)]
-
-# Must match FLOOD_STATS_QUERY in hqclethe-server/src/main.rs exactly.
-FLOOD_STATS_QUERY = b"HQCLETHE_FLOOD_STATS_QUERY_V1"
-
+PORT = 24100
+ADDR = f"127.0.0.1:{PORT}"
+IDLE_PROBES = 3
+IDLE_RSS_SECS = 2.0
+RSS_SAMPLE_INTERVAL_S = 0.1
+SERVER_STARTUP_SECS = 1.0
+FLOOD_EXIT_GRACE_S = 30
+STATS_DELTAS = (
+    "hellos_answered", "fragments_accepted", "fragments_duplicate", "rejected_cookie",
+    "dropped_source_limit", "dropped_table_full", "encaps_completed", "auth_proofs", "rejected_auth",
+    "rejected_ae", "evictions", "timeouts", "entries_created", "watched_created", "watched_evictions", "watched_timeouts",
+)
 BRK_MMAP_RE = re.compile(r"\b(?:brk|mmap)\(")
+NO_FLOOD = "none"
 
 
-def query_responses_sent(port: int) -> int | None:
-    """Asks the server (built with --features flood-stats) for its
-    successfully-sent-response counter. A plain request/response over the
-    same socket the server already listens on -- no ptrace overhead, so
-    unlike strace this is safe to call inside the timed flood window.
-    Returns None if the server wasn't built with the feature (no reply
-    within the timeout) rather than raising, so callers can fall back
-    gracefully.
-    """
-    with pysocket.socket(pysocket.AF_INET, pysocket.SOCK_DGRAM) as s:
-        s.settimeout(1.0)
-        try:
-            s.sendto(FLOOD_STATS_QUERY, ("127.0.0.1", port))
-            data, _ = s.recvfrom(16)
-        except OSError:
-            return None
-    if len(data) < 8:
-        return None
-    return int.from_bytes(data[:8], "little")
+def take_snapshot(ctx: dict, *, cpu_first: bool) -> dict:
+    """Server counters at one instant. CPU is read last before the flood
+    starts and first after it exits, so the queries stay outside the
+    measured interval."""
+    def counters() -> dict:
+        return {
+            "drops": read_udp_socket_drops(PORT),
+            "responses": query_responses_sent(PORT),
+            "stats": query_stateful_stats_full(PORT) if ctx["system"].stats_probe else None,
+        }
+
+    def cpu() -> dict:
+        return {"ns": read_cpu_ns(ctx["pid"]), "ticks": read_cpu_ticks(ctx["pid"])}
+
+    if cpu_first:
+        cpu_part = cpu()
+        return {**cpu_part, **counters()}
+    counter_part = counters()
+    return {**counter_part, **cpu()}
 
 
-def sample_rss_for(pid: int, seconds: float, interval: float = 0.1) -> list[int]:
-    samples = []
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        samples.append(read_rss_kb(pid))
-        time.sleep(interval)
-    return samples
+def delta(after: int | None, before: int | None) -> int:
+    return after - before if None not in (after, before) else 0
 
 
-def run_one_flood(
-    server_pid: int,
-    variant: str,
-    duration: int,
-    sockets: str,
-    clk_tck: int,
-    client_prefix: list[str],
-    kind: str,
-) -> dict:
-    print("Sampling idle baseline RSS (2s)...")
-    idle_samples = sample_rss_for(server_pid, 2.0)
-
-    cpu_before = read_cpu_ticks(server_pid)
-    # Left None (not 0): a missing "before" paired with a real "after" would
-    # report the socket's lifetime total as this window's delta.
-    drops_before = read_udp_socket_drops(PORT_INT)
-    resp_before = query_responses_sent(PORT_INT)
-    t0 = time.monotonic()
-
-    flood = subprocess.Popen(
-        [
-            *client_prefix,
-            CLI,
-            "flood-client",
-            "--addr",
-            f"127.0.0.1:{PORT}",
-            "--variant",
-            variant,
-            "--duration",
-            str(duration),
-            "--sockets",
-            sockets,
-            "--kind",
-            kind,
-        ],
-        stdout=subprocess.PIPE,
-    )
-
-    print(f"Sampling RSS during flood ({duration}s)...")
-    # Sampling blocks for `duration` seconds while flood-client runs
-    # concurrently in the background, same as the RSS window it's measuring.
-    flood_samples = sample_rss_for(server_pid, float(duration))
-    flood_stdout, _ = flood.communicate()
-    t1 = time.monotonic()
-    cpu_after = read_cpu_ticks(server_pid)
-    drops_after = read_udp_socket_drops(PORT_INT)
-    drops_delta = (
-        (drops_after - drops_before)
-        if drops_after is not None and drops_before is not None
-        else None
-    )
-    resp_after = query_responses_sent(PORT_INT)
-    resp_delta = (resp_after - resp_before) if resp_before is not None and resp_after is not None else None
-
-    print(flood_stdout.decode(), end="")
-    flood_json = json.loads(flood_stdout.decode().strip().splitlines()[-1])
-
-    idle_mean = statistics.mean(idle_samples)
-    idle_sd = statistics.pstdev(idle_samples)
-    flood_mean = statistics.mean(flood_samples)
-    flood_sd = statistics.pstdev(flood_samples)
-    cpu_seconds = (cpu_after - cpu_before) / clk_tck
-    wall = t1 - t0
-    cpu_pct = 100 * cpu_seconds / wall if wall > 0 else 0.0
-
-    client_sent = flood_json["packets_sent"]
-    # Full accounting: sent = dropped-at-kernel + answered + residual.
-    # The residual covers decode/handle failures (server silently discards
-    # those, no response) and packets still in flight in the queue at the
-    # instant we sampled "after" -- both expected to be small for this
-    # flood's fixed, always-valid payload.
-    unaccounted = None
-    if drops_delta is not None and resp_delta is not None:
-        unaccounted = client_sent - drops_delta - resp_delta
-
-    print(f"idle_rss_kb: mean={idle_mean:.0f} stddev={idle_sd:.2f}")
-    print(f"flood_rss_kb: mean={flood_mean:.0f} stddev={flood_sd:.2f}")
-    print(f"rss_growth_kb: {flood_mean - idle_mean:.0f}")
-    print(
-        f"server_cpu_seconds_during_flood: {cpu_seconds:.2f}s / {wall:.2f}s wall "
-        f"= {cpu_pct:.1f}% of one core"
-    )
-    print(f"client_packets_sent: {client_sent}")
-    print(f"server_socket_kernel_drops (exact, rcvbuf full before recv_from): {drops_delta}")
-    if resp_delta is not None:
-        print(f"server_responses_sent (exact, from server's own counter): {resp_delta}")
-        print(f"unaccounted (decode/handle failures + in-flight at sample boundary): {unaccounted}")
+def run_flood_window(ctx: dict, runner: lp.ProbeRunner) -> dict:
+    """Runs the flood process (or an idle wait for kind `none`) and
+    returns the snapshots and timing around it."""
+    before = take_snapshot(ctx, cpu_first=False)
+    flood = None
+    runner.origin = time.monotonic()
+    if ctx["kind"] != NO_FLOOD:
+        flood_cmd = [
+            *ctx["flood_prefix"],
+            *ctx["system"].flood_command(
+                ctx["variant"], ADDR, ctx["duration"], ctx["sockets"], ctx["source_ips"], ctx["kind"]
+            ),
+        ]
+        flood = popen_logged("flood", flood_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    probes_stop = threading.Event()
+    probe_scheduler = runner.start_open_loop(lp.PHASE_FLOOD, probes_stop)
+    rss_samples = []
+    cpu_series = [(0.0, before["ns"])]
+    flood_stdout = flood_stderr = b""
+    if flood:
+        while True:
+            try:
+                flood.wait(timeout=RSS_SAMPLE_INTERVAL_S)
+                break
+            except subprocess.TimeoutExpired:
+                cpu_series.append((runner.offset(), read_cpu_ns(ctx["pid"])))
+                rss_samples.append(read_rss_kb(ctx["pid"]))
+        end_offset = runner.offset()
+        probes_stop.set()
+        flood_stdout, flood_stderr = flood.communicate(timeout=FLOOD_EXIT_GRACE_S)
     else:
-        print(
-            "server_responses_sent: (unavailable -- server not built with "
-            "--features flood-stats, or the probe timed out)"
-        )
-
+        while runner.offset() < ctx["duration"]:
+            cpu_series.append((runner.offset(), read_cpu_ns(ctx["pid"])))
+            rss_samples.append(read_rss_kb(ctx["pid"]))
+            time.sleep(RSS_SAMPLE_INTERVAL_S)
+        end_offset = runner.offset()
+        probes_stop.set()
+    after = take_snapshot(ctx, cpu_first=True)
+    cpu_series.append((end_offset, after["ns"]))
+    probe_scheduler.join()
     return {
-        "rss_growth_kb": flood_mean - idle_mean,
-        "cpu_pct": cpu_pct,
-        "client_packets_sent": client_sent,
-        "kernel_drops": drops_delta if drops_delta is not None else 0,
-        "responses_sent": resp_delta if resp_delta is not None else 0,
+        "before": before, "after": after, "window_s": end_offset, "rss_samples": rss_samples,
+        "cpu_series": cpu_series,
+        "flood_stdout": flood_stdout, "flood_stderr": flood_stderr,
+        "exit_code": flood.returncode if flood else 0,
     }
 
 
-def print_aggregate(reps_results: list[dict]) -> None:
-    print(f"--- Aggregate across {len(reps_results)} reps ---")
-    fields = [
-        ("rss_growth_kb", "rss_growth_kb", "{:.1f}"),
-        ("cpu_pct", "server_cpu_pct", "{:.1f}"),
-        ("kernel_drops", "server_socket_kernel_drops", "{:.0f}"),
-        ("responses_sent", "server_responses_sent", "{:.0f}"),
-    ]
-    for key, label, fmt in fields:
-        values = [r[key] for r in reps_results]
-        med = statistics.median(values)
-        if len(values) >= 4:
-            q1, q3 = statistics.quantiles(values, n=4, method="inclusive")[0::2]
-        else:
-            q1, q3 = min(values), max(values)
-        print(f"{label}: median={fmt.format(med)} iqr=[{fmt.format(q1)}, {fmt.format(q3)}] (n={len(values)})")
+def parse_flood_json(window: dict, flooding: bool) -> dict:
+    if not flooding:
+        return {}
+    lines = window["flood_stdout"].decode(errors="replace").strip().splitlines()
+    if window["exit_code"] != 0 or not lines:
+        return {"flood_error": window["flood_stderr"].decode(errors="replace")[-400:] or "no output"}
+    return json.loads(lines[-1])
 
 
-def main() -> None:
-    # Our own print() calls interleave with output from hqclethe-server,
-    # flood-client, and strace below; without line buffering they'd sit in
-    # Python's block buffer (the default once stdout isn't a tty, which it
-    # isn't under `docker compose exec -T`) until process exit, landing
-    # after all the subprocess output instead of in the right order.
-    sys.stdout.reconfigure(line_buffering=True)
+def cpu_columns(window: dict, tick_hz: int) -> dict:
+    before, after, seconds = window["before"], window["after"], window["window_s"]
+    ticks_s = (after["ticks"] - before["ticks"]) / tick_hz
+    columns = {"cpu_util_pct_ticks": 100 * ticks_s / seconds, "cpu_seconds_ticks": ticks_s}
+    if None in (before["ns"], after["ns"]):
+        return {**columns, "cpu_source": "ticks", "cpu_util_pct": columns["cpu_util_pct_ticks"]}
+    cpu_s = (after["ns"] - before["ns"]) / 1e9
+    return {**columns, "cpu_source": "schedstat", "cpu_seconds": cpu_s, "cpu_util_pct": 100 * cpu_s / seconds}
 
-    variant, duration, sockets = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-    reps = int(sys.argv[4]) if len(sys.argv) > 4 else DEFAULT_REPS
-    kind = sys.argv[5] if len(sys.argv) > 5 else DEFAULT_KIND
 
-    nproc = os.cpu_count() or 1
-    if nproc >= 2:
-        server_prefix, client_prefix = _taskset_prefix(0), _taskset_prefix(1)
-        print(f"CPU isolation: server pinned to core 0, flood-client pinned to core 1 (nproc={nproc})")
-    else:
-        server_prefix, client_prefix = [], []
-        print(f"CPU isolation: skipped (nproc={nproc} < 2, no core to isolate onto)")
+def cpu_ns_at(series: list[tuple[float, int | None]], offset_s: float) -> float | None:
+    """Server CPU ns at `offset_s`, linearly interpolated between samples."""
+    points = [(t, ns) for t, ns in series if ns is not None]
+    for (t0, ns0), (t1, ns1) in zip(points, points[1:]):
+        if t0 <= offset_s <= t1:
+            return ns0 + (ns1 - ns0) * (offset_s - t0) / (t1 - t0) if t1 > t0 else ns1
+    return None
 
-    server = subprocess.Popen([*server_prefix, SERVER_BIN, "--port", PORT, "--variant", variant])
-    time.sleep(1)
 
-    clk_tck = os.sysconf("SC_CLK_TCK")
+def attack_phase_columns(window: dict, flood_json: dict) -> dict:
+    """Metrics for the part of the flood window after the flood client has
+    finished its setup (it reports `attack_started_secs`; the stateful
+    client spends up to a few seconds collecting cookies first)."""
+    started = flood_json.get("attack_started_secs")
+    if started is None:
+        return {}
+    window_s = window["window_s"]
+    attack_s = max(0.0, window_s - started)
+    columns = {"attack_started_s": started, "attack_phase_s": attack_s}
+    if attack_s <= 0:
+        return columns
+    columns["attacker_packets_per_s_attack_phase"] = flood_json.get("packets_sent", 0) / attack_s
+    ns_start, ns_end = cpu_ns_at(window["cpu_series"], started), window["after"]["ns"]
+    if ns_start is not None and ns_end is not None:
+        columns["cpu_util_pct_attack_phase"] = 100 * (ns_end - ns_start) / 1e9 / attack_s
+    return columns
 
-    reps_results = []
-    for rep in range(1, reps + 1):
-        print(f"--- Rep {rep}/{reps} ---")
-        reps_results.append(
-            run_one_flood(server.pid, variant, duration, sockets, clk_tck, client_prefix, kind)
-        )
-        print()
 
-    print_aggregate(reps_results)
+def attack_probe_columns(probes: list[dict], flood_json: dict) -> dict:
+    """Probe outcomes for the probes that started after the attack started."""
+    started = flood_json.get("attack_started_secs")
+    return {} if started is None else lp.summarize_flood_probes(probes, started_after_s=started)
 
-    print()
-    print(
-        "Post-flood strace memory-syscall snapshot (short burst, run after all flood reps "
-        "above so it doesn't perturb those numbers)..."
+
+def load_columns(window: dict, flood_json: dict) -> dict:
+    before, after, seconds = window["before"], window["after"], window["window_s"]
+    sent = flood_json.get("packets_sent", 0)
+    responses = delta(after["responses"], before["responses"])
+    columns = {
+        "flood_window_s": seconds,
+        "attacker_packets_sent": sent,
+        "attacker_packets_per_s": sent / seconds,
+        "server_responses_sent": responses,
+        "server_responses_per_s": responses / seconds,
+        "kernel_udp_drops": delta(after["drops"], before["drops"]),
+    }
+    if "flood_error" in flood_json:
+        columns["flood_error"] = flood_json["flood_error"]
+    if before["stats"] and after["stats"]:
+        for key in STATS_DELTAS:
+            columns[f"d_{key}"] = after["stats"][key] - before["stats"][key]
+        columns["entries_created_per_s"] = columns["d_entries_created"] / seconds
+        columns["evictions_per_s"] = columns["d_evictions"] / seconds
+        columns["table_entries_end"] = after["stats"]["table_entries"]
+        columns["table_bytes_end"] = after["stats"]["table_bytes"]
+        columns["peak_table_entries"] = after["stats"]["peak_entries"]
+        columns["peak_table_bytes"] = after["stats"]["peak_bytes"]
+    return columns
+
+
+def run_one(ctx: dict) -> dict:
+    system, pid = ctx["system"], ctx["pid"]
+    probe_config = lp.ProbeConfig(
+        command=[*ctx["legit_prefix"], *system.client_command(ctx["variant"], ADDR, LEGIT_SOURCE_IP)],
+        interval_s=ctx["probe_interval_s"], timeout_s=ctx["probe_timeout_s"],
+        recovery_probes=ctx["recovery_probes"],
     )
-    # Line-by-line -e trace=memory (as in category 1's audit), not -c: strace's
-    # -c summary is only flushed reliably when the *tracee* exits, not on a
-    # detach signal, which doesn't fit an attach-to-a-still-running-server
-    # check. Counting matching lines works regardless of how the trace ends.
+    idle = lp.ProbeRunner(probe_config, time.monotonic())
+    run_logged("legit", probe_config.command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    idle.run_sequential(lp.PHASE_IDLE, IDLE_PROBES, 0.0)
+    idle_samples = []
+    end = time.monotonic() + IDLE_RSS_SECS
+    while time.monotonic() < end:
+        idle_samples.append(read_rss_kb(pid))
+        time.sleep(RSS_SAMPLE_INTERVAL_S)
+    idle_rss = statistics.mean(idle_samples)
+
+    runner = lp.ProbeRunner(probe_config, time.monotonic())
+    window = run_flood_window(ctx, runner)
+    flood_json = parse_flood_json(window, ctx["kind"] != NO_FLOOD)
+    runner.run_sequential(lp.PHASE_RECOVERY, probe_config.recovery_probes,
+                          window["window_s"] + lp.RECOVERY_DELAY_S)
+    runner.join()
+    time.sleep(ctx["settle_secs"])
+    settled_rss = read_rss_kb(pid)
+
+    probes = sorted(runner.records, key=lambda r: r["scheduled_offset_s"])
+    lp.mark_during_flood(probes, window["window_s"])
+    samples = window["rss_samples"] or [idle_rss]
+    row = {
+        "rep": ctx["rep"],
+        "idle_rss_kb": idle_rss,
+        "rss_growth_kb": statistics.mean(samples) - idle_rss,
+        "peak_rss_growth_kb": max(samples) - idle_rss,
+        "peak_rss_abs_kb": max(samples),
+        "rss_after_settle_growth_kb": settled_rss - idle_rss,
+        **cpu_columns(window, ctx["tick_hz"]),
+        **load_columns(window, flood_json),
+        **attack_phase_columns(window, flood_json),
+        **lp.summarize_flood_probes(probes),
+        **attack_probe_columns(probes, flood_json),
+        **lp.summarize_other_phase(probes, lp.PHASE_RECOVERY),
+        "legit_idle_p50_s": lp.summarize_other_phase(idle.records, lp.PHASE_IDLE)["idle_p50_s"],
+        "flood_client_json": flood_json,
+        "probes": probes,
+    }
+    if row.get("attack_phase_s", 1) <= 0:
+        print(f"WARNING: rep {ctx['rep']}: the flood client was still setting up when the flood "
+              "window ended (attack_started_s >= flood_window_s). Raise FLOOD_DURATION.", flush=True)
+    print("RUN " + json.dumps(row), flush=True)
+    return row
+
+
+def strace_burst(system: System, variant: str, server_pid: int, flood_prefix: list[str], kind: str) -> None:
+    """Counts brk/mmap calls of a running stateless server during a short
+    flood after the main measurement, so it cannot perturb those numbers."""
     trace_path = Path("/tmp/flood.strace")
     trace_path.unlink(missing_ok=True)
-    tracer = subprocess.Popen(
-        ["strace", "-f", "-o", str(trace_path), "-e", "trace=memory", "-p", str(server.pid)]
+    tracer = popen_logged(
+        "strace", ["strace", "-f", "-o", str(trace_path), "-e", "trace=memory", "-p", str(server_pid)]
     )
     time.sleep(0.3)
-    subprocess.run(
-        [
-            *client_prefix,
-            CLI,
-            "flood-client",
-            "--addr",
-            f"127.0.0.1:{PORT}",
-            "--variant",
-            variant,
-            "--duration",
-            "1",
-            "--sockets",
-            "16",
-            "--kind",
-            kind,
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    run_logged(
+        "flood-burst",
+        [*flood_prefix, *system.flood_command(variant, ADDR, 1, 16, 1, kind)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     time.sleep(0.2)
     tracer.terminate()
     tracer.wait(timeout=5)
-
     text = trace_path.read_text() if trace_path.exists() else ""
-    burst_calls = len(BRK_MMAP_RE.findall(text))
-    print(f"brk_mmap_calls_during_1s_burst_after_main_flood: {burst_calls}")
+    print(f"brk_mmap_calls_during_1s_burst_after_main_flood: {len(BRK_MMAP_RE.findall(text))}")
 
-    server.send_signal(signal.SIGTERM)
-    server.wait(timeout=5)
+
+def server_extra_args(system: System) -> list[str]:
+    extra = shlex.split(os.environ.get(system.server_extra_args_env or "", ""))
+    if system.stats_probe and "--watch-source" not in extra:
+        extra += ["--watch-source", LEGIT_SOURCE_IP]
+    return extra
+
+
+def numeric_summary(rows: list[dict]) -> dict:
+    summary = {}
+    for key in rows[0]:
+        values = [r[key] for r in rows if isinstance(r.get(key), (int, float)) and r[key] == r[key]]
+        if values and key != "rep":
+            med, q1, q3 = median_iqr(values)
+            summary[key] = {"median": med, "q1": q1, "q3": q3, "n": len(values)}
+            print(f"{key}: median={med:.4g} iqr=[{q1:.4g}, {q3:.4g}] (n={len(values)})")
+    return summary
+
+
+def main() -> None:
+    mode, variant, duration, sockets, reps, kind = sys.argv[1:7]
+    source_ips = int(sys.argv[7]) if len(sys.argv) > 7 else 1
+    duration, sockets, reps = int(duration), int(sockets), int(reps)
+    system = SYSTEMS[mode]
+    if kind != NO_FLOOD and kind not in system.flood_kinds:
+        sys.exit(f"{mode} has no flood kind {kind}; choose from {system.flood_kinds}")
+    nproc = os.cpu_count() or 1
+    if nproc > ORCHESTRATOR_CORE:
+        os.sched_setaffinity(0, {ORCHESTRATOR_CORE})
+    print(f"mode={mode} variant={variant} kind={kind} sockets={sockets} source_ips={source_ips} "
+          f"duration={duration}s reps={reps} nproc={nproc}")
+
+    extra = server_extra_args(system)
+    rep_base = int(os.environ.get("REP_BASE", "0"))
+    base_ctx = {
+        "system": system, "variant": variant, "duration": duration, "sockets": sockets,
+        "kind": kind, "source_ips": source_ips, "tick_hz": os.sysconf("SC_CLK_TCK"),
+        "flood_prefix": pin_to_core(FLOOD_CORE, nproc, 2),
+        "legit_prefix": pin_to_core(LEGIT_CORE, nproc, 3),
+        "probe_interval_s": int(os.environ.get("LEGIT_INTERVAL_MS", "200")) / 1000,
+        "probe_timeout_s": float(os.environ.get("LEGIT_TIMEOUT_S", "10")),
+        "recovery_probes": int(os.environ.get("LEGIT_RECOVERY_PROBES", "3")),
+        "settle_secs": float(os.environ.get("SETTLE_SECS", "0")),
+    }
+    rows = []
+    for index in range(1, reps + 1):
+        rep = rep_base + index
+        print(f"--- Rep {rep} (fresh server process) ---")
+        server = popen_logged(
+            "server", [*pin_to_core(SERVER_CORE, nproc, 2), *system.server_command(variant, PORT, extra)]
+        )
+        try:
+            time.sleep(SERVER_STARTUP_SECS)
+            rows.append(run_one({**base_ctx, "pid": server.pid, "rep": rep}))
+            strace_wanted = (
+                index == reps and mode == "stateless" and kind != NO_FLOOD
+                and os.environ.get("STRACE_BURST", "0") == "1"
+            )
+            if strace_wanted:
+                strace_burst(system, variant, server.pid, base_ctx["flood_prefix"], kind)
+        finally:
+            server.send_signal(signal.SIGTERM)
+            server.wait(timeout=5)
+
+    summary = {"mode": mode, "variant": variant, "kind": kind, "sockets": sockets,
+               "source_ips": source_ips, "reps": reps, "duration_s": duration,
+               "server_args": extra, "rows": rows}
+    print(f"--- Aggregate across {reps} reps ---")
+    summary["summary"] = numeric_summary(rows)
+    print("RESULT " + json.dumps(summary))
 
 
 if __name__ == "__main__":

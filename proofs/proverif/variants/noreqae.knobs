@@ -1,0 +1,2 @@
+reqseal	letfun reqseal(k: key, n: bitstring, a: bitstring, x: bitstring) = x.
+reqopen	reduc forall k: key, n: bitstring, a: bitstring, x: bitstring; reqopen(k, n, a, x) = x.

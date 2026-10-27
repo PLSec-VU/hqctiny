@@ -1,223 +1,233 @@
-# HQCLethe
+# HqcLethe
 
-A server-stateless post-quantum key-exchange protocol built on the
-**Hamming Quasi-Cyclic (HQC)** KEM. The protocol design, security
-argument, and evaluation results are described in full in the accompanying
-paper; this README covers only what a reviewer needs to build the code and
-reproduce its numbers.
+HqcLethe is a post-quantum key exchange in which the server keeps no state for a
+client. HQC gives the ephemeral key, and ML-KEM-768 authenticates the server. The
+server receives the client's HQC public key and returns the ciphertext in
+packet-sized pieces. It handles each piece on its own and then forgets it.
 
-## Requirements
+This repository holds the implementation, the proofs, and the scripts that make
+the measurements. This file tells you where each part is.
 
-- **Docker + Docker Compose** — everything the evaluation suite needs
-  (Rust nightly, `strace`, `valgrind`, `iproute2`, `procps`) is installed
-  inside the container by `eval/Dockerfile`; nothing else needs to be
-  installed on the host to reproduce the paper's numbers.
-- **`python3`** on the host, to drive `eval/run.py`.
-- To build outside Docker instead (e.g. for development), a Rust nightly
-  toolchain is required; `rust-toolchain.toml` pins the exact one used for
-  the paper's numbers and `rustup` will install it automatically on first
-  `cargo build`.
-- The `avx2` Cargo feature (used for every main-body measurement in the
-  paper — see below) requires an x86\_64 CPU with AVX2, BMI1, and
-  PCLMULQDQ, and only builds on x86\_64. The portable build has no such
-  requirement and runs anywhere.
+## Where to look
 
-## Project Structure
+### Protocol
 
-| Path | Contents |
-|------|----------|
-| `src/` | The Rust protocol implementation (client, server, wire encoding, HQC bindings, field math) |
-| `hqc/` | The [official HQC reference implementation](https://gitlab.com/pqc-hqc/hqc.git), built by `build.rs` |
-| `hqclethe-client/` | The UDP client binary, plus `bandwidth-report`/`flood-client` measurement helpers |
-| `hqclethe-server/` | The UDP server binary, used for static-size/stack-depth/strace measurements |
-| `benches/` | Criterion and iai-callgrind benchmarks (feed Table 3 / the callgrind cycle counts) |
-| `profiling/` | Dev-loop profiling: heap (dhat), CPU flamegraphs, a stack-depth probe — see `profiling/README.md` |
-| `eval/` | The evaluation suite that reproduces the paper's measurements — see `eval/README.md` |
-| `sagemath/` | SageMath scripts used to generate precomputation artifacts (Newton weights, test vectors) — see `sagemath/README.md` |
-| `ssprove/` | The mechanized Coq/SSProve confidentiality proof (Appendix on trace confidentiality) — see `ssprove/README.md` |
-| `tests/` | Integration tests exercising the full protocol flow |
-| `build.rs` | Compiles and links the HQC C sources in `hqc/` (portable `ref` sources, or `x86_64/avx256` under the `avx2` feature) |
+| Path | Content |
+|---|---|
+| `src/server.rs` | The stateless server: request handlers, cookie keys and their rotation |
+| `src/client.rs` | The client |
+| `src/crt/` | The Chinese-remainder construction for `v`: the moduli (`params.rs`), the server residues (`server.rs`), and the client rebuild with Garner's algorithm (`client.rs`) |
+| `src/blinding.rs` | Reduction modulo `X^n - 1` and the masks that hide the unreduced product |
+| `src/auth.rs` | Server authentication with ML-KEM-768 |
+| `src/encoding.rs` | Wire format: packet layouts, lengths and padding |
+| `src/envelope.rs` | Authenticated encryption of every packet after the first exchange |
+| `src/kdf.rs` | Derivation of the session key |
+| `src/replay.rs` | Replay filter: a Bloom filter that answers each request at most four times per worker |
+| `src/puzzle.rs` | Optional client puzzle in front of the ML-KEM decapsulation |
+| `src/hqc/` | Rust interface to the HQC C code |
+| `src/math/` | Carry-less polynomial multiplication over GF(2) |
+| `hqclethe-server/`, `hqclethe-client/` | The UDP server and client programs. The client program also holds `keygen`, `bandwidth-report` and the flood modes. |
+| `hqc/` | Official HQC reference implementation (git submodule) |
+| `hqc-addfft/` | HQC polynomial multiplier for ARM without crypto extensions (git submodule, `hqc-addfft` feature) |
 
-## Fetching HQC (Required for Building)
+### Stateful baseline
 
-The build script (`build.rs`) compiles the C sources from the official HQC
-reference implementation inside `hqc/`. It is a git submodule pinned to
-commit `161cd4fdf6b4a5198cf40b3a1243f9f27f13e03d` (upstream
-`v5.0.0-3-g161cd4f`) — the exact revision every number in the paper was
-measured against.
+The baseline server buffers the client's public key until all fragments arrive.
+The code is in `src/stateful/`. The table of pending uploads is in
+`src/stateful/table.rs`. The programs are in `hqclethe-stateful/`. The baseline
+uses the same key files and command-line options as HqcLethe.
 
-If you cloned this repository with git:
+### Proofs
+
+| Path | Content |
+|---|---|
+| `ssprove/HQCLethe.v` | Rocq/SSProve proof that the masked residues reveal nothing more than a plain HQC ciphertext. Theorem: `hqclethe_indistinguishable`. |
+| `ssprove/DerivedMasks.v` | The same result when the masks come from the session seed. Theorem: `seeded_masks_simulatable`. |
+| `ssprove/HQC.v`, `ssprove/Tuple.v` | HQC encryption and the helper lemmas that the proofs use |
+| `ssprove/Assumptions.v` | Prints every assumption of the main theorems |
+| `proofs/proverif/hqclethe.pv` | ProVerif model of the whole protocol: secrecy, server authentication, forward secrecy, replay, and puzzle binding |
+| `proofs/proverif/variants/` | One file per variant of the model: a key compromise, a removed server check, or the puzzle on |
+| `scripts/check_crt_moduli.py`, `scripts/check_crt_moduli.sage` | Check that the moduli in `src/crt/params.rs` satisfy the hypotheses of the Rocq proof |
+| `tests/crt_masking.rs`, `scripts/crt_masking_toy.py` | Exhaustive check of the masking argument for a small ring (n = 7) |
+
+### Tests and benchmarks
+
+| Path | Content |
+|---|---|
+| `tests/protocol_flow.rs` | Full sessions at all levels. The rebuilt `(u, v)` must equal the reference HQC ciphertext. Also tampered, reordered and resent packets. |
+| `tests/zero_alloc.rs` | The server makes no heap allocation after start-up |
+| `tests/replay.rs`, `tests/puzzle.rs`, `tests/workers.rs` | Replay filter, client puzzle, multi-worker server |
+| `tests/stateful_*.rs` | The stateful baseline |
+| `benches/protocol_phases.rs` | Server cost of each request kind (Criterion) |
+| `benches/puzzle.rs`, `benches/replay.rs`, `benches/stateful_baseline.rs` | Puzzle, replay filter and baseline costs |
+| `profiling/ct_check.rs` | Program that Valgrind runs to check that the server code does not branch on secrets or use them as addresses |
+
+### Measurements
+
+| Path | Content |
+|---|---|
+| `eval/` | Measurement harness for x86. It runs in Docker (`eval/Dockerfile`). |
+| `artifact/x86/` | The x86 campaigns. Each stage list in `artifact/x86/stages/` names the harness runs of one campaign. |
+| `eval/arm/` | The Raspberry Pi campaign |
+| `eval/arm/memcap/` | Smallest memory limit under which each server still completes every session |
+| `artifact/mctiny/` | Build of McTiny for the comparison |
+| `artifact/tables/` | Scripts that turn raw results into tables |
+| `artifact/env/collect_env.sh` | Records the software and hardware of a machine |
+
+## Build and test
+
+Get the submodules first. They are pinned to the exact revisions that we
+measured.
 
 ```sh
-git submodule update --init --recursive
+git submodule update --init
 ```
 
-If you obtained it as an archive or via the anonymized mirror (neither
-preserves submodules), clone it and check out the pinned revision
-explicitly — plain `git clone` gives you upstream HEAD, which is *not*
-guaranteed to match the paper:
+`rust-toolchain.toml` pins the Rust toolchain (nightly-2026-06-15). `rustup`
+installs it on the first build.
 
 ```sh
-git clone https://gitlab.com/pqc-hqc/hqc.git hqc
-git -C hqc checkout 161cd4fdf6b4a5198cf40b3a1243f9f27f13e03d
-```
-
-## Building
-
-```sh
-cargo build --release                    # portable HQC backend, runs anywhere
-cargo build --release --features avx2    # AVX2 HQC backend; needs AVX2/BMI1/PCLMULQDQ
-```
-
-Both produce identical keys, ciphertexts, and shared secrets — `avx2` is a
-performance-only opt-in (roughly 50-90x faster keygen, 40-70x faster
-decapsulation), not a correctness or wire-format change. The evaluation
-suite (below) builds with `avx2` automatically for the categories that use
-it; you don't need to pass the flag yourself when reproducing paper numbers.
-
-### Smoke test
-
-To confirm a working build end-to-end without running the full evaluation
-suite (takes about a minute after the build):
-
-```sh
+cargo build --release                        # portable HQC code, any machine
+cargo build --release --features avx2        # HQC AVX2 code, x86-64 with AVX2, BMI1 and PCLMULQDQ
+cargo build --release --features hqc-addfft  # aarch64 without crypto extensions (Raspberry Pi 3B+)
 cargo test --release
 ```
 
-This runs 44 unit tests plus 8 integration tests, the latter driving
-complete client/server protocol runs at all three security levels
-(`test_protocol_flow_hqc1/3/5`) along with the negative cases — tampered
-Merkle roots and witnesses, corrupted handshake tags, and cookie-key
-rotation. All 52 should pass.
+All builds give the same keys, ciphertexts and session keys. The features change
+only the speed. Always build with `--release`. Without it, the C code is built
+without optimization and is very slow.
 
-## Checking the Proofs
-
-The mechanized confidentiality proofs (Appendix on trace confidentiality) are formalized in Rocq / Coq using the [SSProve](https://github.com/SSProve/ssprove) foundational framework and MathComp in `ssprove/`.
-
-### Requirements
-
-- **Rocq / Coq** (version 9.0+) with `rocq-mathcomp-ssreflect`, `rocq-mathcomp-algebra`, and `ssprove` installed (via `opam`):
-
-  ```sh
-  opam repo add coq-released https://coq.inria.fr/opam/released
-  opam install coq-ssprove
-  ```
-
-### Verifying Proofs
-
-`ssprove/Makefile` is *generated* (it bakes in the absolute paths of the opam
-switch that produced it), so it is not committed. Generate it once, then
-build:
+To run a server and a client:
 
 ```sh
-cd ssprove && rocq makefile -f _CoqProject -o Makefile && make -j"$(nproc)"
+target/release/hqclethe-client keygen --variant hqc5      # writes server-hqc5.pk and server-hqc5.sk
+target/release/hqclethe-server --variant hqc5 --key server-hqc5.sk
+target/release/hqclethe-client client --variant hqc5 --server-key server-hqc5.pk
 ```
 
-That compiles and verifies all four proof scripts (`Tuple.v`,
-`Interpolate.v`, `HQC.v`, `HQCLethe.v`). Expect roughly 30-60 min on a
-warm opam switch; the `opam install coq-ssprove` that precedes it builds
-SSProve from source and can take considerably longer.
+To turn on the client puzzle, add `--puzzle-difficulty N` to the server. `N` is
+the number of leading zero bits that the client's hash must have. To run N
+server threads on one port, add `--workers N`.
 
-To re-check the compiled proofs with the standalone kernel (`rocqchk`),
-which ignores the tactic engine and independently re-verifies the proof
-terms:
+## Check the proofs
+
+The Rocq proofs need Rocq 9.0 or newer and SSProve:
 
 ```sh
-make -C ssprove validate
+opam repo add coq-released https://coq.inria.fr/opam/released
+opam install coq-ssprove
+cd ssprove
+rocq makefile -f _CoqProject -o Makefile
+make -j"$(nproc)"
+make validate        # check the proof terms again with rocqchk
 ```
 
-The main theorem is `hqclethe_indistinguishable` in `ssprove/HQCLethe.v`.
-One axiom is deliberately left open (irreducibility of `X^9009 + X^29 + 1`
-over GF(2)), matching the disclosure in the paper's SSProve appendix. See
-[`ssprove/README.md`](ssprove/README.md) for the proof structure, parameter
-sets, and the full axiom rationale.
+The opam install builds SSProve from source and can take more than an hour. The
+proofs keep the moduli and the HQC message encoding as parameters. The moduli
+must have degree at least 1, be pairwise coprime, and have degrees that add up to
+at least `2n - 1`. `python3 scripts/check_crt_moduli.py` checks this for the
+moduli in the code.
 
-## Reproducing the Paper's Evaluation
-
-`eval/run.py` builds a Docker measurement environment and drives all five
-evaluation categories:
-
-| Category | Paper section | What it measures |
-|---|---|---|
-| 1 | §7.1 RAM Consumption | Binary size, stack depth, startup/steady-state memory (`strace`) |
-| 2 | §7.2 Network Usage | Packet sizes and per-session bandwidth (protocol-intrinsic, host-independent) |
-| 3 | §7.3 CPU Usage | Criterion micro/macrobenchmarks, FFI-vs-protocol timing breakdown, iai-callgrind cycle counts (Table 3) |
-| 4 | §7.4 CPU/Memory Overload Attacks | Flood resilience under handshake and point-request DoS (Table 4) |
-| 5 | §7.5 Latency on a Real Network Path | Client/server session latency, optionally under injected loss (Table 5) |
-
-Category 1 backs §7.1's prose figures specifically: the 546,765-byte
-`hqclethe-server` binary (532,475 B text / 12,504 B data / 1,786 B bss),
-the 143 KB minimum-working-stack bound found by binary search over
-`ulimit -s`, and the 19 startup `brk`/`mmap` calls with zero further heap
-growth across 50 traced sessions.
-
-### Measurement environment
-
-The paper's categories 1-4 were measured on an **8-core/16-thread Intel
-Xeon Silver 4110 @ 2.10 GHz with 15 GB RAM** running the Docker harness.
-Any x86\_64 host with AVX2 will run them, but absolute CPU numbers
-(§7.3, §7.4) scale with the host — the deterministic outputs (binary size,
-stack depth, syscall counts, packet sizes, and iai-callgrind *Estimated
-Cycles*, which come from a synthetic cachegrind model rather than the
-wall clock) should reproduce closely anywhere, while Criterion wall-clock
-medians will not.
-
-Category 5's paper numbers come from two physical machines on the open
-internet: a 4-core Intel Celeron N5095 @ 2.00 GHz / 8 GB RAM running
-`hqclethe-server` in Hong Kong behind a residential NAT, and a shared AMD
-EPYC 9375F node in Amsterdam running `hqclethe-client`. See the note below
-on what the default local run does and does not reproduce.
-
-Budget roughly **20 GB of disk** for the Docker image plus cargo build
-caches. A full default `eval/run.py` takes on the order of a few hours,
-dominated by category 3's Criterion and callgrind benchmarks; `--categories
-1,2` finishes in minutes and is the fastest way to confirm the harness
-works.
-
-Full usage, flags, and output layout are in `eval/README.md`; the short
-version:
+The ProVerif model needs ProVerif 2.05:
 
 ```sh
-eval/run.py                       # all 5 categories, all 3 variants, local WAN profile
-eval/run.py --categories 1,3,4    # just the AVX2 host measurements (fast, no WAN/remote setup)
-eval/run.py --dos-reps 20 --wan-reps 50   # tighter CIs, matching the paper-final run
+cd proofs/proverif
+proverif hqclethe.pv      # the base model
+./run.sh OUT_DIR          # every variant, 900 s limit for each
 ```
 
-Each run writes `eval/results/<UTC timestamp>/report.md` plus the raw logs
-and JSON it was built from.
+## Repeat the measurements
 
-**Categories 1, 3, and 4 build with the `avx2` feature** (the eval scripts
-pass `--features avx2` to every `cargo build`/`cargo bench` invocation),
-matching the AVX2 host used for the paper's main-body numbers. **Category
-2** is protocol-intrinsic and unaffected by the crypto backend. **Category
-5 (WAN)** run locally (the default) exercises the same retransmission and
-congestion-handling logic as the paper's real Hong Kong–Amsterdam
-measurement, but will not reproduce those exact numbers — that path was
-run against a specific (since-decommissioned) remote deployment. Point
-`--remote host:port` at your own two-host setup, or use `--wan-profile` to
-approximate a WAN path's RTT/loss locally via `netem`, to get comparable
-(not identical) latency numbers.
+### Hardware
 
-### Appendix A: The McTiny Comparison
+- x86: an AMD Ryzen 7 5800H with Linux, Docker with Compose, and root access.
+  The scripts pin work to cpus 0, 2, 4, 10 and 12 to 15, so the machine needs at
+  least 16 logical CPUs. `eval/scripts/container/placement.py` sets the pins.
+- ARM: a Raspberry Pi 3 Model B Plus on the same LAN as the x86 machine. The x86
+  machine cross-builds the Pi programs and sends the floods.
+- Disk: about 20 GB for the Docker image and the builds.
 
-Appendix A's numbers are **not** produced by this repo or by `eval/run.py`
-— they come from benchmarking the public
-[McTiny](https://mctiny.cr.yp.to/) reference release
-(`mctiny-20200804` with `supercop-20200702`) directly, built with its AVX2
-Classic McEliece (`mceliece6960119`) backend, alongside a same-host AVX2
-build of this repo. To redo that comparison:
+`eval/scripts/host/measurement_on.sh` puts the x86 machine into the measurement
+state: the `performance` governor, boost off, the hyperthreading sibling of the
+server core offline, and interrupts moved off the measured cores. If the clock
+is more than 2 % away from 3169 MHz, the script stops. `measurement_off.sh`
+undoes the changes.
 
-1. Fetch and build `mctiny-20200804` + `supercop-20200702` per McTiny's own
-   instructions, on the same machine you'll build this repo's `avx2`
-   feature on.
-2. Client/server keygen, encap, decap medians come from a small custom
-   `mctiny-bench.c` harness (median of 20 reps, calling McTiny's own
-   `mctiny_keypair`/`mctiny_enc`/`mctiny_dec`) dropped into the McTiny
-   source tree, and from this repo's `cargo bench --features avx2`
-   (Criterion medians), respectively.
-3. Per-session server CPU for both systems is measured directly from
-   server process CPU time (`/usr/bin/time -v`) across N repeated
-   sessions on localhost.
-4. The two WAN rows are carried over unchanged from Category 5's real
-   Hong Kong–Amsterdam measurement and are not re-derived on the AVX2 host.
+### x86
 
+`eval/run_all.sh` runs the harness. `--categories` selects the measurements, and
+`--variant hqc1|hqc3|hqc5` selects one level. Each run writes
+`eval/results/<UTC time>/`. Run `eval/run_all.sh --smoke` first. It takes a few
+minutes and checks the setup.
+
+| Category | Measurement |
+|---|---|
+| 1 | Resident memory, idle and after sessions |
+| 2 | Packet sizes and bytes per session |
+| 3 | Server cost of each request kind (Criterion) |
+| 4 | Floods: legitimate clients during each kind of flood, and filling the baseline's table |
+| 5 | Session time over a network path |
+| 6 | Server CPU per session |
+| 7 | Smallest stack limit under which a session completes |
+| 8 | Session time under emulated delay and loss (`tc netem`) |
+| 9 | Valgrind check for secret-dependent branches and addresses |
+
+Each category measures HqcLethe and the stateful baseline. The campaign scripts
+run the categories in the order and with the repetitions that we used:
+
+```sh
+export CAMPAIGN_OUT=$HOME/campaign-out
+export MEASURE_LOCK=$HOME/measure.lock
+artifact/x86/campaign_final.sh       # HqcLethe and the baseline, about 10 hours
+artifact/x86/campaign_part3.sh       # McTiny under loss, about 4 hours
+```
+
+Build McTiny first with `artifact/mctiny/build_x86.sh`. It downloads McTiny
+20200804 and SUPERCOP 20200702 and adds one file,
+`artifact/mctiny/mctiny_keygen_decap_bench.c`, that times key generation and
+decapsulation.
+
+### Raspberry Pi
+
+```sh
+export PI=user@host PLAY=x86-host
+eval/arm/run_all.sh REV
+```
+
+`REV` is the git revision to build. The script cross-builds it on the x86 host,
+installs it on the Pi, and runs the tests and Valgrind on the Pi. Then it
+measures server CPU, client CPU, memory, floods over the LAN, and session time
+over the LAN. `eval/arm/config.sh` holds the other settings. To size the replay
+filter for the Pi, set `STATELESS_REPLAY_RATES=hqc1=R1,hqc3=R3,hqc5=R5`.
+`eval/arm/item6_multicore_hello.sh` measures how the server scales with four
+cores. `eval/arm/memcap/run.sh` searches for the smallest memory limit of each
+server inside a Linux control group. Run it with `--smoke` first.
+
+### Tables
+
+```sh
+export RESULTS_DIR=$HOME/results
+artifact/tables/build_tables.sh $RESULTS_DIR OUT_DIR
+```
+
+`RESULTS_DIR` holds one directory for each campaign (`part1`, `part2`, `part3`,
+`final-x86`, `arm-final`). `artifact/x86/fetch_results.sh` copies the results of
+a campaign there. The table scripts name the result directories that they read
+at the top of `make_tables_final.py` and `make_tables_dos.py`. After a new run,
+change these names to your directories.
+
+Absolute times depend on the machine. On other hardware, expect other absolute
+values but similar ratios.
+
+## Third-party code
+
+| Code | Version | Licence | Use |
+|---|---|---|---|
+| HQC reference implementation, https://gitlab.com/pqc-hqc/hqc | `161cd4f` | Public domain | submodule `hqc/` |
+| addFFT HQC multiplier (Chen, Chiu, Peng, Yang), https://github.com/ChunTaoPengim/HQC_with_addFFT_tches2026 | `c94c84d` | CC0 1.0 and Unlicense | submodule `hqc-addfft/` |
+| libcrux ML-KEM | crate `libcrux-ml-kem` 0.0.11 | Apache-2.0 | server authentication |
+| libmceliece `vec` code | 20230612 | Public domain | `third_party/mceliece-vec/`, Classic McEliece on non-x86 targets (`mceliece-ref` feature) |
+| McTiny, https://mctiny.org | 20200804 | Public domain | downloaded by `artifact/mctiny/build_x86.sh` |
+| SUPERCOP | 20200702 | Public domain or similar | downloaded with McTiny |
+| SSProve | opam package `coq-ssprove` | MIT | proofs |
+| Other Rust crates | `Cargo.lock` | MIT or Apache-2.0 | Cargo |

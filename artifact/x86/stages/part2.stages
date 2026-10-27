@@ -1,0 +1,9 @@
+2026-10-09T17:23:44Z START cat4_hqc1 :: eval/run_all.sh --categories 4 --variant hqc1
+2026-10-09T18:38:57Z END cat4_hqc1 rc=0 dirs=20261009T172345Z 
+2026-10-09T18:38:57Z START cat4_hqc3 :: eval/run_all.sh --categories 4 --variant hqc3
+2026-10-09T19:54:47Z END cat4_hqc3 rc=0 dirs=20261009T183858Z 
+2026-10-09T19:54:47Z START cat4_hqc5 :: eval/run_all.sh --categories 4 --variant hqc5
+2026-10-09T21:11:36Z END cat4_hqc5 rc=0 dirs=20261009T195447Z 
+2026-10-09T21:11:36Z START cat4_rtt_hqc5 :: eval/run_all.sh --categories 4 --variant hqc5 --dos-args=--rtts-ms 75,300 --kinds none,handshake,vpoint,partial,churn2
+2026-10-09T22:54:38Z END cat4_rtt_hqc5 rc=0 dirs=20261009T211137Z 
+2026-10-09T22:54:38Z ALLDONE

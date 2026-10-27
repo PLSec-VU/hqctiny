@@ -28,3 +28,4 @@ quiet = []
 flood-stats = []
 # Links the AVX2 build of HQC (x86 only); see the root crate's feature.
 avx2 = ["HQCLethe/avx2"]
+hqc-addfft = ["HQCLethe/hqc-addfft"]

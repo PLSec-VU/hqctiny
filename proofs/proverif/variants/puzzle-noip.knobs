@@ -1,0 +1,2 @@
+puz	letfun puz(x: bitstring) = true.
+chalmsg	letfun chalmsg(ip: bitstring, pn: bitstring) = pn.

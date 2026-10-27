@@ -1,0 +1,363 @@
+(* HqcLethe (sp27 final: CRT v residues, requests without timestamp, replay
+   filter over the cookie life, optional client puzzle): symbolic model.
+   Run with `./run.sh`.
+
+   Lines that end in a (*KNOB:...*) tag are replaced by run.sh to build the
+   variants (compromise scenarios and ablations). The text here is the
+   baseline: no party is compromised and every check is on. *)
+
+(* Precise actions keep ProVerif's attack traces reconstructible. *)
+set preciseActions = true.
+
+free c: channel.
+
+type key.
+type skey.
+type pkey.
+
+(* ---------- constants: header fields, indices ---------- *)
+const hs_k: bitstring.      (* kind: handshake *)
+const u_k: bitstring.       (* kind: u-chunk *)
+const v_k: bitstring.       (* kind: v-residue *)
+const sh_k: bitstring.      (* kind: solved handshake *)
+const c2s: bitstring.       (* direction bit: client to server *)
+const s2c: bitstring.       (* direction bit: server to client *)
+const zero: bitstring.      (* cookie key index 0 *)
+const one: bitstring.       (* cookie key index 1 *)
+const i0: bitstring.        (* u-chunk 0 *)
+const i1: bitstring.        (* v-residue 1 *)
+const i2: bitstring.        (* v-residue 2 *)
+const empty: bitstring.     (* empty body / empty cookie AAD *)
+
+(* ---------- hash, KDF, MAC: random oracles ---------- *)
+fun digest(bitstring, bitstring, bitstring): bitstring.   (* BLAKE3 of Phase-0 body *)
+fun transcript(bitstring, bitstring, bitstring): bitstring.
+fun kdfC2S(key): key.
+fun kdfS2C(key): key.
+fun bind(key, key): key.            (* auth::bind_secret(K_hqc, K_auth) *)
+fun kdfSess(key): key.
+fun kdfTr(key): key.
+fun mac(key, bitstring): bitstring.
+fun G(bitstring, bitstring, bitstring): bitstring.        (* theta = G(m, salt, hash_ek) *)
+fun rqn(bitstring, bitstring, bitstring): bitstring.  (* request nonce from cookie nonce, kind, index *)
+fun fpr(bitstring, bitstring, bitstring): bitstring.  (* replay-filter fingerprint of cookie nonce, kind, index *)
+fun pkd(key): key.                  (* puzzle MAC key derived from a cookie key *)
+fun ckd(key): key.                  (* solved-handshake coins key derived from a cookie key *)
+fun coinm(key, bitstring, bitstring): bitstring.     (* m from coins key, challenge nonce, request digest *)
+fun coins(key, bitstring, bitstring): bitstring.     (* salt, same inputs *)
+fun coinn(key, bitstring, bitstring): bitstring.     (* cookie nonce, same inputs *)
+fun puzzlesol(bitstring, bitstring, bitstring, bitstring): bitstring [private].  (* a solution costs work: only the Mined oracle and honest clients compute it *)
+
+(* ---------- AEAD: XChaCha20-Poly1305, ideal ---------- *)
+fun senc(key, bitstring, bitstring, bitstring): bitstring.  (* key, nonce, aad, plaintext *)
+reduc forall k: key, n: bitstring, a: bitstring, x: bitstring;
+  sdec(k, n, a, senc(k, n, a, x)) = x.
+
+(* Sealing of request bodies. KNOB:reqae removes it. *)
+fun reqseal(key, bitstring, bitstring, bitstring): bitstring.                   (*KNOB:reqseal*)
+reduc forall k: key, n: bitstring, a: bitstring, x: bitstring; reqopen(k, n, a, reqseal(k, n, a, x)) = x. (*KNOB:reqopen*)
+
+(* Response gamma check. KNOB:gamma removes it. *)
+letfun gcheck(g: bitstring, e: bitstring) = (g = e).                            (*KNOB:gamma*)
+
+(* ---------- ML-KEM-768 as an ideal KEM, static server key ---------- *)
+fun mlkempk(skey): pkey.
+fun mlkemct(pkey, bitstring): bitstring.            (* encapsulation with randomness r *)
+fun mlkemkey(pkey, bitstring): key.                 (* K_auth *)
+reduc forall sk: skey, r: bitstring; mlkemdec(sk, mlkemct(mlkempk(sk), r)) = mlkemkey(mlkempk(sk), r).
+
+(* ---------- HQC as an ideal KEM whose ciphertext is delivered in pieces ----------
+   Client key pair: pk = hqcpk(sk). The Phase-0 request carries only hek(pk) and
+   hseed(pk). The residues of s are never sent in clear.
+   Ciphertext pieces: upart (u-chunk), vres i (v-residue i), plus the salt.
+   ABSTRACTION (the place the Rocq proof plugs in): the server's answer to a
+   v-residue request that carries the residue e of s modulo f_i is ansf(theta, m, e, i).
+     - If e = sres(pk, i), the honest residue s mod f_i, the answer is the i-th
+       masked residue of the plain HQC ciphertext, vres. The Rocq masking theorem
+       says the masked residues are simulatable from the ordinary ciphertext, so
+       this answer adds no information beyond the ciphertext.
+     - For every other e the answer is leak(...), from which anyone can
+       compute m. This is the dangerous case, modelled as a total break of
+       the masks. *)
+fun hqcpk(skey): pkey.
+fun hek(pkey): bitstring.
+fun hseed(pkey): bitstring.
+fun hqckey(bitstring, bitstring, bitstring): key.        (* K_hqc(m, salt, hek) *)
+fun sres(pkey, bitstring): bitstring.                    (* honest residue s mod f_i *)
+fun upart(bitstring, bitstring): bitstring.              (* u from (h seed, theta) *)
+fun vres(pkey, bitstring, bitstring, bitstring): bitstring.    (* masked v residue *)
+fun leak(bitstring, bitstring, bitstring, bitstring): bitstring.
+reduc forall th: bitstring, m: bitstring, e: bitstring, i: bitstring; leakm(leak(th, m, e, i)) = m.
+
+fun ansf(bitstring, bitstring, bitstring, bitstring): bitstring
+reduc forall th: bitstring, m: bitstring, pk: pkey, i: bitstring;
+  ansf(th, m, sres(pk, i), i) = vres(pk, th, m, i)
+otherwise forall th: bitstring, m: bitstring, e: bitstring, i: bitstring;
+  ansf(th, m, e, i) = leak(th, m, e, i)
+[private].
+
+(* Decapsulation: succeeds only on the genuine ciphertext pieces. *)
+reduc forall sk: skey, m: bitstring, salt: bitstring;
+  hqcdec(sk,
+         upart(hseed(hqcpk(sk)), G(m, salt, hek(hqcpk(sk)))),
+         vres(hqcpk(sk), G(m, salt, hek(hqcpk(sk))), m, i1),
+         vres(hqcpk(sk), G(m, salt, hek(hqcpk(sk))), m, i2),
+         salt)
+  = hqckey(m, salt, hek(hqcpk(sk))).
+
+(* ---------- server secrets ---------- *)
+free skS: skey [private].                         (* static ML-KEM key *)
+fun ckf(bitstring): key [private].                (* cookie keys: ckf(zero), ckf(one) *)
+
+(* ---------- compromise and ablation knobs ---------- *)
+let Compromise = 0.                               (*KNOB:comp*)
+let ClientLeak(skC: skey) = 0.                    (*KNOB:clientleak*)
+letfun late(x: bitstring) = false.                (*KNOB:late*)
+
+(* Knobs for the optional client puzzle, the replay filter and their ablations. *)
+letfun puz(x: bitstring) = false.                 (*KNOB:puz*)
+letfun chalmsg(ip: bitstring, pn: bitstring) = (ip, pn).        (*KNOB:chalmsg*)
+letfun chalok(kc: bitstring, ip: bitstring, pn: bitstring, tg: bitstring) = (tg = mac(pkd(ckf(kc)), chalmsg(ip, pn))).  (*KNOB:chalok*)
+letfun solok(ctr: bitstring, pn: bitstring, tg: bitstring, ip: bitstring, d: bitstring) = (ctr = puzzlesol(pn, tg, ip, d)).  (*KNOB:solok*)
+
+(* The replay filter: a fingerprint is admitted once. The restriction removes every trace in which
+   two server runs admit the same fingerprint. (A table with get/insert is not atomic in ProVerif,
+   so two runs could both pass the check.) The model has no time and its cookie keys never
+   rotate, so an entry is kept for the whole life of its cookie, as in the code, where filter
+   generations advance with the cookie-key rotations. *)
+event Admit(bitstring, bitstring).      (* fingerprint, server run *)
+event SolvedUnfiltered(bitstring).      (* server run; only in the variant without the solved-handshake filter *)
+restriction fp: bitstring, a: bitstring, b: bitstring; event(Admit(fp, a)) && event(Admit(fp, b)) ==> a = b.   (*KNOB:restr*)
+
+(* ---------- events ---------- *)
+event HonestKauth(key).
+event ClientDone(bitstring, bitstring, bitstring, bitstring, bitstring, key).  (* hek, hseed, ct_auth, salt, kidx, session key *)
+event SrvP0(bitstring, bitstring, bitstring, bitstring, bitstring, key).     (* same fields *)
+event ServerSess(bitstring, key, key).            (* m, K_auth, session key *)
+event ServerServedU(key, bitstring, bitstring).   (* K_auth, cookie nonce, index *)
+event ServerServedV(key, bitstring, bitstring, bitstring).  (* K_auth, cookie nonce, index, residue *)
+event ClientSentU(key, bitstring, bitstring).
+event ClientSentV(key, bitstring, bitstring, bitstring).
+event Answered(bitstring, bitstring, bitstring, bitstring).  (* cookie nonce, kind, index, server run; any K_auth *)
+event Issued(bitstring, bitstring, bitstring, bitstring).    (* challenge: key index, nonce, mac, client address *)
+event Mined(bitstring, bitstring, bitstring, bitstring).     (* solution work: nonce, mac, client address, request digest *)
+event Decap(bitstring, bitstring, bitstring, bitstring, bitstring).  (* server decapsulates: key index, nonce, mac, address, request digest *)
+event DecapRun(bitstring, bitstring).    (* challenge nonce, server run that decapsulates for it *)
+event SolvedCookie(bitstring, bitstring). (* challenge nonce, cookie nonce of the cookie issued for it *)
+
+(* ---------- queries ---------- *)
+(* Q1 secrecy of the client's session key *)
+query hk: bitstring, hs: bitstring, ct: bitstring, sl: bitstring, ki: bitstring, k: key;
+  event(ClientDone(hk, hs, ct, sl, ki, k)) && attacker(k) ==> false.
+(* Q2 secrecy of the server's copy of the session key, honest K_auth *)
+query m: bitstring, ka: key, k: key;
+  event(ServerSess(m, ka, k)) && event(HonestKauth(ka)) && attacker(k) ==> false.
+(* Q3 secrecy of m for honest clients: a third party with copied cookies *)
+query m: bitstring, ka: key, k: key;
+  event(ServerSess(m, ka, k)) && event(HonestKauth(ka)) && attacker(m) ==> false.
+(* Q4 server-to-client authentication, injective, with key agreement and gamma *)
+query hk: bitstring, hs: bitstring, ct: bitstring, sl: bitstring, ki: bitstring, k: key;
+  inj-event(ClientDone(hk, hs, ct, sl, ki, k)) ==> inj-event(SrvP0(hk, hs, ct, sl, ki, k)).
+(* Q5 the server answers a Phase-1 request under an honest K_auth only if the client sent it
+   (cookie nonce, index, residue) *)
+query ka: key, cn: bitstring, i: bitstring, e: bitstring;
+  event(ServerServedV(ka, cn, i, e)) && event(HonestKauth(ka)) ==> event(ClientSentV(ka, cn, i, e)).
+query ka: key, cn: bitstring, i: bitstring;
+  event(ServerServedU(ka, cn, i)) && event(HonestKauth(ka)) ==> event(ClientSentU(ka, cn, i)).
+(* Q6 replay filter: each answer matches its own client send (at most once per sent request) *)
+query ka: key, cn: bitstring, i: bitstring, e: bitstring;
+  inj-event(ServerServedV(ka, cn, i, e)) && event(HonestKauth(ka)) ==> inj-event(ClientSentV(ka, cn, i, e)).
+query ka: key, cn: bitstring, i: bitstring;
+  inj-event(ServerServedU(ka, cn, i)) && event(HonestKauth(ka)) ==> inj-event(ClientSentU(ka, cn, i)).
+(* R1 one budget per cookie, kind and index, for any K_auth (also a cookie the attacker holds):
+   two answers to requests with the same cookie nonce, kind and index come from one server run,
+   whatever else the requests carry. *)
+query cn: bitstring, k: bitstring, i: bitstring, r1: bitstring, r2: bitstring;
+  event(Answered(cn, k, i, r1)) && event(Answered(cn, k, i, r2)) ==> r1 = r2.
+(* Q7 client puzzle: a decapsulation needs a challenge that the server issued to the same
+   address, and solution work for the same request digest *)
+query k: bitstring, pn: bitstring, tg: bitstring, ip: bitstring, d: bitstring;
+  event(Decap(k, pn, tg, ip, d)) ==> event(Issued(k, pn, tg, ip)).
+query k: bitstring, pn: bitstring, tg: bitstring, ip: bitstring, d: bitstring;
+  event(Decap(k, pn, tg, ip, d)) ==> event(Mined(pn, tg, ip, d)).
+(* P3 one decapsulation per issued challenge: each decapsulation matches its own issued
+   challenge (injective), so a resent or replayed solved request buys no second one *)
+query k: bitstring, pn: bitstring, tg: bitstring, ip: bitstring, d: bitstring;
+  inj-event(Decap(k, pn, tg, ip, d)) ==> inj-event(Issued(k, pn, tg, ip)).
+(* P4 one server run decapsulates per challenge nonce, whatever request digest it carries *)
+query pn: bitstring, r1: bitstring, r2: bitstring;
+  event(DecapRun(pn, r1)) && event(DecapRun(pn, r2)) ==> r1 = r2.
+(* P5 one cookie per challenge nonce *)
+query pn: bitstring, n1: bitstring, n2: bitstring;
+  event(SolvedCookie(pn, n1)) && event(SolvedCookie(pn, n2)) ==> n1 = n2.
+(* Sanity: these must come out false (the events are reachable) *)
+query hk: bitstring, hs: bitstring, ct: bitstring, sl: bitstring, ki: bitstring, k: key;
+  event(ClientDone(hk, hs, ct, sl, ki, k)).
+query ka: key, cn: bitstring, i: bitstring, e: bitstring;
+  event(ServerServedV(ka, cn, i, e)).
+query ka: key, cn: bitstring, i: bitstring;
+  event(ServerServedU(ka, cn, i)).
+query k: bitstring, pn: bitstring, tg: bitstring, ip: bitstring, d: bitstring;
+  event(Decap(k, pn, tg, ip, d)).
+(* A client the attacker runs (own K_auth) does learn m and the leak value:
+   the dangerous path is live. This must come out false. *)
+query m: bitstring, ka: key, k: key;
+  event(ServerSess(m, ka, k)) && attacker(m).
+
+(* ---------- server: Phase 0 ---------- *)
+let ServerP0Coins(skS: skey, kidx: bitstring, hk: bitstring, hs: bitstring, ct: bitstring,
+                  m: bitstring, salt: bitstring, cn: bitstring) =
+  let ka = mlkemdec(skS, ct) in
+  let dig = digest(hk, hs, ct) in
+  let th = G(m, salt, hk) in
+  let jk = bind(hqckey(m, salt, hk), ka) in
+  let sk = kdfSess(jk) in
+  let gamma = mac(kdfTr(jk), transcript(dig, salt, kidx)) in
+  let cookie = (cn, senc(ckf(kidx), cn, empty, (th, m, hs, ka))) in
+  new rn: bitstring;
+  event SrvP0(hk, hs, ct, salt, kidx, sk);
+  event ServerSess(m, ka, sk);
+  out(c, (rn, kidx, senc(kdfS2C(ka), rn, (s2c, hs_k, kidx, i0, dig), (cookie, salt, gamma)))).
+
+(* The plain handshake draws fresh coins. *)
+let ServerP0Body(skS: skey, kidx: bitstring, hk: bitstring, hs: bitstring, ct: bitstring) =
+  new m: bitstring;
+  new salt: bitstring;
+  new cn: bitstring;
+  ServerP0Coins(skS, kidx, hk, hs, ct, m, salt, cn).
+
+(* Puzzles off: a plain request is served. *)
+let ServerP0Plain(skS: skey, kidx: bitstring) =
+  in(c, (ip: bitstring, hk: bitstring, hs: bitstring, ct: bitstring));
+  if puz(zero) = false then
+  ServerP0Body(skS, kidx, hk, hs, ct).
+
+(* Puzzles on: a plain request gets a stateless challenge. *)
+let ServerChallenge(kidx: bitstring) =
+  in(c, (ip: bitstring, hk: bitstring, hs: bitstring, ct: bitstring));
+  if puz(zero) = true then
+  new pn: bitstring;
+  let tg = mac(pkd(ckf(kidx)), chalmsg(ip, pn)) in
+  event Issued(kidx, pn, tg, ip);
+  out(c, (kidx, pn, tg, ip)).
+
+(* Puzzles on: a solved request is checked, then admitted once by the replay filter under the
+   fingerprint of its challenge nonce, before the decapsulation. Its coins come from a PRF keyed
+   by the challenge's cookie key, so resends of one solved request get the same cookie. *)
+let ServerSolved(skS: skey, kidx: bitstring) =
+  in(c, (ip: bitstring, kc: bitstring, hk: bitstring, hs: bitstring, ct: bitstring,
+         pn: bitstring, tg: bitstring, ctr: bitstring));
+  if puz(zero) = true then
+  if kc = zero || kc = one then
+  if chalok(kc, ip, pn, tg) = true then
+  if solok(ctr, pn, tg, ip, digest(hk, hs, ct)) = true then
+  let dig = digest(hk, hs, ct) in
+  new run: bitstring;
+  event Admit(fpr(pn, sh_k, i0), run);   (*KNOB:solvedfilter*)
+  let ck = ckd(ckf(kc)) in
+  let cn = coinn(ck, pn, dig) in
+  event Decap(kc, pn, tg, ip, dig);
+  event DecapRun(pn, run);
+  event SolvedCookie(pn, cn);
+  ServerP0Coins(skS, kidx, hk, hs, ct, coinm(ck, pn, dig), coins(ck, pn, dig), cn).
+
+(* The attacker may buy solutions for any challenge it holds. *)
+let Miner =
+  in(c, (pn: bitstring, tg: bitstring, ip: bitstring, d: bitstring));
+  event Mined(pn, tg, ip, d);
+  out(c, puzzlesol(pn, tg, ip, d)).
+
+(* ---------- server: Phase 1 (u-chunk and v-residue) ---------- *)
+let ServeReq(kind: bitstring, idx: bitstring, cn: bitstring, th: bitstring, m: bitstring,
+             hs: bitstring, ka: key, pl: bitstring, run: bitstring) =
+  new rn: bitstring;
+  if kind = u_k && idx = i0 && pl = empty then
+    event ServerServedU(ka, cn, idx);
+    event Answered(cn, kind, idx, run);
+    out(c, (rn, senc(kdfS2C(ka), rn, (s2c, u_k, zero, idx), upart(hs, th))))
+  else if kind = v_k && (idx = i1 || idx = i2) then
+    event ServerServedV(ka, cn, idx, pl);
+    event Answered(cn, kind, idx, run);
+    let a = ansf(th, m, pl, idx) in
+    out(c, (rn, senc(kdfS2C(ka), rn, (s2c, v_k, zero, idx), a))).
+
+let ServerReq =
+  in(c, (kind: bitstring, kidx: bitstring, idx: bitstring, cookie: bitstring, sealed: bitstring));
+  if kidx = zero || kidx = one then
+  let (cn: bitstring, cbody: bitstring) = cookie in
+  let (th: bitstring, m: bitstring, hs: bitstring, ka: key) = sdec(ckf(kidx), cn, empty, cbody) in
+  let pl = reqopen(kdfC2S(ka), rqn(cn, kind, idx), (c2s, kind, kidx, idx, cookie), sealed) in
+  let fp = fpr(cn, kind, idx) in
+  new run: bitstring;
+  event Admit(fp, run);
+  ServeReq(kind, idx, cn, th, m, hs, ka, pl, run).
+
+(* ---------- honest client ---------- *)
+(* The three Phase-1 requests. They are deterministic, so a resend is the same bytes,
+   which the attacker can replay at will; the client builds them once. *)
+let ClientReqs(ka: key, cookie: bitstring, cn: bitstring, kidx: bitstring, pkC: pkey) =
+  let kc = kdfC2S(ka) in
+  event ClientSentU(ka, cn, i0);
+  out(c, (u_k, kidx, i0, cookie,
+          reqseal(kc, rqn(cn, u_k, i0), (c2s, u_k, kidx, i0, cookie), empty)));
+  event ClientSentV(ka, cn, i1, sres(pkC, i1));
+  out(c, (v_k, kidx, i1, cookie,
+          reqseal(kc, rqn(cn, v_k, i1), (c2s, v_k, kidx, i1, cookie), sres(pkC, i1))));
+  event ClientSentV(ka, cn, i2, sres(pkC, i2));
+  out(c, (v_k, kidx, i2, cookie,
+          reqseal(kc, rqn(cn, v_k, i2), (c2s, v_k, kidx, i2, cookie), sres(pkC, i2)))).
+
+let ClientAfterP0(skC: skey, ka: key, hk: bitstring, hs: bitstring, ct: bitstring, dig: bitstring) =
+  let pkC = hqcpk(skC) in
+  in(c, (rn: bitstring, kidx: bitstring, body: bitstring));
+  if kidx = zero || kidx = one then
+  let (cookie: bitstring, salt: bitstring, gamma: bitstring) =
+    sdec(kdfS2C(ka), rn, (s2c, hs_k, kidx, i0, dig), body) in
+  let (cn: bitstring, cbody: bitstring) = cookie in
+  let ks = kdfS2C(ka) in
+  new p0: channel;
+  new p1: channel;
+  new p2: channel;
+  ( ClientReqs(ka, cookie, cn, kidx, pkC)
+  | ( in(c, (rn0: bitstring, b0: bitstring));
+      let x0 = sdec(ks, rn0, (s2c, u_k, zero, i0), b0) in out(p0, x0) )
+  | ( in(c, (rn1: bitstring, b1: bitstring));
+      let x1 = sdec(ks, rn1, (s2c, v_k, zero, i1), b1) in out(p1, x1) )
+  | ( in(c, (rn2: bitstring, b2: bitstring));
+      let x2 = sdec(ks, rn2, (s2c, v_k, zero, i2), b2) in out(p2, x2) )
+  | ( in(p0, y0: bitstring); in(p1, y1: bitstring); in(p2, y2: bitstring);
+      let khqc = hqcdec(skC, y0, y1, y2, salt) in
+      let jk = bind(khqc, ka) in
+      if gcheck(gamma, mac(kdfTr(jk), transcript(dig, salt, kidx))) then
+      event ClientDone(hk, hs, ct, salt, kidx, kdfSess(jk)) ) ).
+
+let Client(pkS: pkey) =
+  new skC: skey;
+  new r: bitstring;
+  new ipC: bitstring;
+  let pkC = hqcpk(skC) in
+  let hk = hek(pkC) in
+  let hs = hseed(pkC) in
+  let ct = mlkemct(pkS, r) in
+  let ka = mlkemkey(pkS, r) in
+  event HonestKauth(ka);
+  ( ClientLeak(skC) |
+  ( let dig = digest(hk, hs, ct) in
+    out(c, (ipC, hk, hs, ct));
+    if puz(zero) = true then
+      ( in(c, (kc: bitstring, pn: bitstring, tg: bitstring, ipseen: bitstring));
+        if kc = zero || kc = one then
+        event Mined(pn, tg, ipseen, dig);
+        out(c, (ipC, kc, hk, hs, ct, pn, tg, puzzlesol(pn, tg, ipseen, dig)));
+        ClientAfterP0(skC, ka, hk, hs, ct, dig) )
+    else ClientAfterP0(skC, ka, hk, hs, ct, dig) ) ).
+
+(* ---------- system ---------- *)
+process
+  ( !ServerP0Plain(skS, zero) | !ServerP0Plain(skS, one)
+  | !ServerChallenge(zero) | !ServerChallenge(one)
+  | !ServerSolved(skS, zero) | !ServerSolved(skS, one)
+  | !Miner
+  | !ServerReq | !Client(mlkempk(skS)) | out(c, mlkempk(skS))
+  | Compromise
+  | (phase 1; if late(zero) = true then !ServerReq) )
